@@ -1,7 +1,11 @@
 import '../../../../models/project.dart';
 
-const Project demoProject = Project(
+final demoProject = Project(
+  id: 'demo',
   name: 'Nenhum projeto aberto',
   client: 'FLCAD Platform',
   description: 'Crie um projeto para iniciar um escaneamento.',
+  createdAt: DateTime.now(),
+  updatedAt: DateTime.now(),
+  status: ProjectStatus.created,
 );

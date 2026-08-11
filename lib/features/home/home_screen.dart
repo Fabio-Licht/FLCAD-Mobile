@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'projects/data/project_repository.dart';
 import '../../shared/widgets/dashboard_grid.dart';
 import '../../shared/widgets/dashboard_header.dart';
 import '../../shared/widgets/flcad_bottom_navigation.dart';
@@ -12,6 +13,8 @@ class HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final project =
+    ProjectRepository.instance.currentProject ?? demoProject;
     return Scaffold(
       backgroundColor: FLCADColors.background,
       bottomNavigationBar: const FLCADBottomNavigation(),
@@ -26,7 +29,7 @@ class HomeScreen extends StatelessWidget {
               const SizedBox(height: 24),
 
               ProjectCard(
-                project: demoProject,
+                project: project,
               ),
 
               const SizedBox(height: 28),

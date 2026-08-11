@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/camera_service_impl.dart';
+import 'camera_preview_widget.dart';
 
 class CaptureView extends StatefulWidget {
   const CaptureView({super.key});
@@ -37,19 +38,16 @@ class _CaptureViewState extends State<CaptureView> {
           );
         }
 
-        return Container(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Center(
-            child: Text(
-              'Camera Preview',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-              ),
-            ),
+        if (_camera.controller == null) {
+          return const Center(
+            child: Text("Camera não disponível"),
+          );
+        }
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: CameraPreviewWidget(
+            controller: _camera.controller!,
           ),
         );
       },

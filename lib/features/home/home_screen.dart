@@ -4,8 +4,8 @@ import '../../shared/widgets/dashboard_grid.dart';
 import '../../shared/widgets/dashboard_header.dart';
 import '../../shared/widgets/flcad_bottom_navigation.dart';
 import '../../theme/flcad_colors.dart';
-import 'data/demo_project.dart';
-import 'widgets/project_card.dart';
+import 'projects/data/demo_project.dart';
+import 'projects/widgets/project_card.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});

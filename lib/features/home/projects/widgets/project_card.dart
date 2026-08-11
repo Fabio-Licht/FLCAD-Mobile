@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../../../models/project.dart';
-import '../../../theme/flcad_colors.dart';
+import '../presentation/new_project_screen.dart';
+import '../../../../models/project.dart';
+import '../../../../theme/flcad_colors.dart';
 
 class ProjectCard extends StatelessWidget {
   final Project project;
@@ -67,7 +68,14 @@ class ProjectCard extends StatelessWidget {
           const SizedBox(height: 20),
 
           FilledButton.icon(
-            onPressed: () {},
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const NewProjectScreen(),
+             ),
+         );
+     },
             icon: const Icon(Icons.add),
             label: const Text("Novo Projeto"),
           ),

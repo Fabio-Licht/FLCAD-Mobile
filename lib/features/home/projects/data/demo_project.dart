@@ -1,4 +1,4 @@
-import '../../../models/project.dart';
+import '../../../../models/project.dart';
 
 const Project demoProject = Project(
   name: 'Nenhum projeto aberto',

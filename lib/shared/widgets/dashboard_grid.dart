@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../features/scanner/presentation/scanner_screen.dart';
 import 'flcad_card.dart';
 
 class DashboardGrid extends StatelessWidget {
@@ -14,23 +15,22 @@ class DashboardGrid extends StatelessWidget {
       crossAxisSpacing: 16,
       mainAxisSpacing: 16,
       childAspectRatio: 1.15,
-      children: const [
-        FLCADCard(
-          icon: Icons.folder_open_rounded,
-          title: 'Projetos',
-        ),
+      children: [
+        const FLCADCard(icon: Icons.folder_open_rounded, title: 'Projetos'),
+
         FLCADCard(
           icon: Icons.document_scanner_rounded,
           title: 'Scanner',
+          onTap: () {
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const ScannerScreen()));
+          },
         ),
-        FLCADCard(
-          icon: Icons.auto_awesome_rounded,
-          title: 'IA',
-        ),
-        FLCADCard(
-          icon: Icons.settings_rounded,
-          title: 'Configurações',
-        ),
+
+        const FLCADCard(icon: Icons.auto_awesome_rounded, title: 'IA'),
+
+        const FLCADCard(icon: Icons.settings_rounded, title: 'Configurações'),
       ],
     );
   }

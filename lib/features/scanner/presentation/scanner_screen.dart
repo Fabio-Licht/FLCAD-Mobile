@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../widgets/capture_view.dart';
 
 class ScannerScreen extends StatelessWidget {
@@ -7,13 +8,8 @@ class ScannerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Nova Sessão"),
-      ),
-      body: const Padding(
-        padding: EdgeInsets.all(20),
-        child: CaptureView(),
-      ),
+      appBar: AppBar(title: const Text("Nova Sessão")),
+      body: const Padding(padding: EdgeInsets.all(20), child: CaptureView()),
     );
   }
 }

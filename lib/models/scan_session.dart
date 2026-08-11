@@ -1,3 +1,5 @@
+import 'captured_image.dart';
+
 enum ScanSessionStatus {
   created,
   capturing,
@@ -11,6 +13,7 @@ class ScanSession {
   final String name;
   final DateTime createdAt;
   final ScanSessionStatus status;
+  final List<CapturedImage> images;
 
   const ScanSession({
     required this.id,
@@ -18,6 +21,7 @@ class ScanSession {
     required this.name,
     required this.createdAt,
     required this.status,
+    required this.images,
   });
 
   ScanSession copyWith({
@@ -26,6 +30,7 @@ class ScanSession {
     String? name,
     DateTime? createdAt,
     ScanSessionStatus? status,
+    List<CapturedImage>? images,
   }) {
     return ScanSession(
       id: id ?? this.id,
@@ -33,6 +38,13 @@ class ScanSession {
       name: name ?? this.name,
       createdAt: createdAt ?? this.createdAt,
       status: status ?? this.status,
+      images: images ?? this.images,
     );
   }
+
+  int get imageCount => images.length;
+
+  bool get isEmpty => images.isEmpty;
+
+  bool get isNotEmpty => images.isNotEmpty;
 }

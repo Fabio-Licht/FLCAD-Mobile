@@ -1,3 +1,5 @@
+import 'package:camera/camera.dart';
+
 abstract class CameraService {
   Future<void> initialize();
 
@@ -5,7 +7,7 @@ abstract class CameraService {
 
   Future<void> stopPreview();
 
-  Future<String?> capturePhoto();
+  Future<XFile?> capturePhoto();
 
   Future<void> dispose();
 }

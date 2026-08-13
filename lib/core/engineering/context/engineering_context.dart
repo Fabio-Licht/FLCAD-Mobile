@@ -9,6 +9,7 @@ import '../learning/engineering_learning.dart';
 import '../queries/engineering_query_bus.dart';
 import '../runtime/engineering_runtime.dart';
 import '../services/engineering_service_registry.dart';
+import '../../geometric_kernel/api/geometric_kernel_api.dart';
 
 class EngineeringSession {
   const EngineeringSession(
@@ -49,19 +50,23 @@ class EngineeringContext {
   final EngineeringServiceRegistry services;
   final EngineeringConfiguration configuration;
   final EngineeringSession session;
-  factory EngineeringContext.standard(String projectId) => EngineeringContext(
-    projectId: projectId,
-    runtime: EngineeringRuntime(),
-    events: EngineeringEventBus(),
-    commands: EngineeringCommandBus(),
-    queries: EngineeringQueryBus(),
-    history: EngineeringHistory(),
-    cache: EngineeringCache(),
-    graph: EngineeringGraph(),
-    kernel: const NoEngineeringKernel(),
-    learning: EngineeringLearning(),
-    services: EngineeringServiceRegistry(),
-    configuration: const EngineeringConfiguration(),
-    session: const EngineeringSession('local', 'local'),
-  );
+  factory EngineeringContext.standard(String projectId) {
+    final services = EngineeringServiceRegistry()
+      ..register<GeometricKernelApi>(const GeometricKernelApi());
+    return EngineeringContext(
+      projectId: projectId,
+      runtime: EngineeringRuntime(),
+      events: EngineeringEventBus(),
+      commands: EngineeringCommandBus(),
+      queries: EngineeringQueryBus(),
+      history: EngineeringHistory(),
+      cache: EngineeringCache(),
+      graph: EngineeringGraph(),
+      kernel: const NoEngineeringKernel(),
+      learning: EngineeringLearning(),
+      services: services,
+      configuration: const EngineeringConfiguration(),
+      session: const EngineeringSession('local', 'local'),
+    );
+  }
 }

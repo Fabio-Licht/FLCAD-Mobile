@@ -9,6 +9,7 @@ import '../../intelligent_sketch/commands/fel_sketch_commands.dart';
 import '../../adaptive_surface/commands/fel_surface_commands.dart';
 import '../../hybrid_topology/commands/fel_topology_commands.dart';
 import '../../parametric_engineering/commands/fel_parametric_commands.dart';
+import 'fel_geometry_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -193,6 +194,20 @@ FELCommandRegistry createNativeCommandRegistry() {
   }
   for (final command in createParametricFELCommands()) {
     r.register(command);
+  }
+  for (final command in createGeometryFELCommands()) {
+    r.register(command);
+  }
+  for (final name in [
+    'INTERSECTION',
+    'TRANSFORM',
+    'TRANSLATE',
+    'FIT LINE',
+    'FIT CIRCLE',
+  ]) {
+    if (r.find(name) == null) {
+      r.register(UnsupportedEngineeringCommand(name, const []));
+    }
   }
   return r;
 }

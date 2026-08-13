@@ -12,6 +12,7 @@ import '../../parametric_engineering/commands/fel_parametric_commands.dart';
 import 'fel_geometry_commands.dart';
 import '../../reverse_intelligence/commands/fel_reverse_intelligence_commands.dart';
 import '../../engineering_knowledge/commands/fel_knowledge_commands.dart';
+import '../../engineering_cognition/commands/fel_cognition_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -204,6 +205,9 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createKnowledgeFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createCognitionFELCommands()) {
     r.register(command);
   }
   for (final name in [

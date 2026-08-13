@@ -14,6 +14,10 @@ import '../../reverse_intelligence/commands/fel_reverse_intelligence_commands.da
 import '../../engineering_knowledge/commands/fel_knowledge_commands.dart';
 import '../../engineering_cognition/commands/fel_cognition_commands.dart';
 import '../../autonomous_reconstruction/commands/fel_autonomous_commands.dart';
+import '../../engineering_decision/commands/fel_decision_commands.dart';
+import '../../geometric_recognition/commands/fel_recognition_commands.dart';
+import '../../professional_recognition/commands/fel_professional_recognition_commands.dart';
+import '../../engineering_reconstruction/commands/fel_reconstruction_intelligence_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -212,6 +216,18 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createAutonomousFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createDecisionFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createRecognitionFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createProfessionalRecognitionFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createERIFELCommands()) {
     r.register(command);
   }
   for (final name in [

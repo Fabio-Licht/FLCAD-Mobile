@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'bootstrap/app_bootstrap.dart';
 import '../features/home/home_screen.dart';
 import '../features/professional_workspace/presentation/professional_workspace_screen.dart';
+import '../features/engineering_studio/presentation/engineering_studio_screen.dart';
+import 'package:flutter/foundation.dart';
 import '../theme/flcad_theme.dart';
 
 class FLCADApp extends StatefulWidget {
@@ -34,8 +36,16 @@ class _FLCADAppState extends State<FLCADApp> {
             );
           }
           final project = snapshot.data;
-          return project == null
-              ? const HomeScreen()
+          if (project == null) return const HomeScreen();
+          final desktop =
+              !kIsWeb &&
+              const {
+                TargetPlatform.windows,
+                TargetPlatform.macOS,
+                TargetPlatform.linux,
+              }.contains(defaultTargetPlatform);
+          return desktop
+              ? EngineeringStudioScreen(project: project)
               : ProfessionalWorkspaceScreen(project: project);
         },
       ),

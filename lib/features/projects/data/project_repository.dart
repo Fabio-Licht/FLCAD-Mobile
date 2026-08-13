@@ -42,6 +42,8 @@ class ProjectRepository implements Repository<Project, String> {
     'Topology',
     'Features',
     'Sessions',
+    'Decisions',
+    'Workspace',
   ];
 
   Future<Project> create({

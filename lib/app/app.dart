@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'bootstrap/app_bootstrap.dart';
 import '../features/home/home_screen.dart';
-import '../features/scanner/presentation/scanner_screen.dart';
+import '../features/professional_workspace/presentation/professional_workspace_screen.dart';
 import '../theme/flcad_theme.dart';
 
 class FLCADApp extends StatefulWidget {
@@ -36,7 +36,7 @@ class _FLCADAppState extends State<FLCADApp> {
           final project = snapshot.data;
           return project == null
               ? const HomeScreen()
-              : ScannerScreen(project: project);
+              : ProfessionalWorkspaceScreen(project: project);
         },
       ),
     );

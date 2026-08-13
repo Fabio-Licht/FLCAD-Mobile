@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../theme/flcad_colors.dart';
-import '../../scanner/presentation/scanner_screen.dart';
+import '../../professional_workspace/presentation/professional_workspace_screen.dart';
 import '../domain/project_manager.dart';
 import '../models/project.dart';
 import '../models/project_status.dart';
@@ -44,7 +44,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (!mounted) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => ScannerScreen(project: opened)),
+      MaterialPageRoute(
+        builder: (_) => ProfessionalWorkspaceScreen(project: opened),
+      ),
     );
   }
 
@@ -62,7 +64,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (!mounted) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => ScannerScreen(project: project)),
+      MaterialPageRoute(
+        builder: (_) => ProfessionalWorkspaceScreen(project: project),
+      ),
     );
   }
 

@@ -25,20 +25,14 @@ class FLCADCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: FLCADColors.surface,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: FLCADColors.border,
-            ),
+            border: Border.all(color: FLCADColors.border),
           ),
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  icon,
-                  size: 34,
-                  color: FLCADColors.primary,
-                ),
+                Icon(icon, size: 34, color: FLCADColors.primary),
                 const SizedBox(height: 16),
                 Text(
                   title,

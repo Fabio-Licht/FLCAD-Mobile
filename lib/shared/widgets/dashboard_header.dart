@@ -14,24 +14,15 @@ class DashboardHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'FLCAD',
-                style: FLCADTextTheme.title,
-              ),
+              Text('FLCAD', style: FLCADTextTheme.title),
               const SizedBox(height: 4),
-              Text(
-                'Engineering Intelligence',
-                style: FLCADTextTheme.caption,
-              ),
+              Text('Engineering Intelligence', style: FLCADTextTheme.caption),
             ],
           ),
         ),
         IconButton(
           onPressed: () {},
-          icon: const Icon(
-            Icons.menu_rounded,
-            color: FLCADColors.textPrimary,
-          ),
+          icon: const Icon(Icons.menu_rounded, color: FLCADColors.textPrimary),
         ),
       ],
     );

@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 
 import '../../smart_regions/models/geometry.dart';
 import '../analytics/reference_analytics_engine.dart';
@@ -18,7 +18,11 @@ class IsolateReferenceRuntime implements ReferenceComputeRuntime {
   Future<ReferenceAnalytics> analyze(
     ReferenceGeometry geometry,
     List<Vec3> samples,
-  ) => Isolate.run(
-    () => const ReferenceAnalyticsEngine().evaluate(geometry, samples),
-  );
+  ) => EngineeringRuntime.shared
+      .submit(
+        'reference:${DateTime.now().microsecondsSinceEpoch}',
+        () => const ReferenceAnalyticsEngine().evaluate(geometry, samples),
+        namespace: 'reference',
+      )
+      .future;
 }

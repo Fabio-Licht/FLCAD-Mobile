@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 
 import '../../../core/logger/app_logger.dart';
+import '../../../core/engineering/repositories/repository.dart';
+import '../../../core/projects/project_manifest.dart';
 import '../../../core/storage/image_storage_service.dart';
 import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/id_generator.dart';
@@ -12,7 +14,7 @@ import '../models/project_history.dart';
 import '../models/project_status.dart';
 import 'project_serializer.dart';
 
-class ProjectRepository {
+class ProjectRepository implements Repository<Project, String> {
   ProjectRepository({
     LocalStorageService? storage,
     ImageStorageService? imageStorage,
@@ -75,6 +77,7 @@ class ProjectRepository {
   Future<Directory> directoryFor(String projectId) =>
       ensureStructure(projectId);
 
+  @override
   Future<void> save(Project project) async {
     final directory = await ensureStructure(project.id);
     final file = File(path.join(directory.path, 'job.json'));
@@ -87,8 +90,30 @@ class ProjectRepository {
     );
     if (await file.exists()) await file.delete();
     await temporary.rename(file.path);
+    await _saveManifest(directory, project);
   }
 
+  Future<void> _saveManifest(Directory directory, Project project) async {
+    final file = File(path.join(directory.path, 'project.manifest.json'));
+    final existing = await file.exists()
+        ? ProjectManifest.fromJson(
+            jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+          )
+        : null;
+    final now = DateTime.now();
+    final manifest = ProjectManifest(
+      projectId: project.id,
+      schemaVersion: ProjectManifest.currentVersion,
+      createdAt: existing?.createdAt ?? project.createdAt,
+      updatedAt: now,
+    );
+    await file.writeAsString(
+      const JsonEncoder.withIndent(' ').convert(manifest.toJson()),
+      flush: true,
+    );
+  }
+
+  @override
   Future<Project?> findById(String id) async {
     final jobs = await _storage.getJobsDirectory();
     final directory = Directory(path.join(jobs.path, id));
@@ -110,6 +135,7 @@ class ProjectRepository {
     }
   }
 
+  @override
   Future<List<Project>> findAll() async {
     final jobs = await _storage.getJobsDirectory();
     final projects = <Project>[];
@@ -156,6 +182,7 @@ class ProjectRepository {
     }
   }
 
+  @override
   Future<void> delete(Project project) async {
     final jobs = await _storage.getJobsDirectory();
     final directory = Directory(path.join(jobs.path, project.id));

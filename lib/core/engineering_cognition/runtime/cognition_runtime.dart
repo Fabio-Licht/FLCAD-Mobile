@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../../reverse_intelligence/models/intelligence_models.dart';
 import '../orchestrator/cognition_orchestrator.dart';
 
@@ -17,9 +17,13 @@ class CognitionRuntime {
     CognitionCancellationToken? cancellation,
   }) async {
     cancellation?.check();
-    final result = await Isolate.run(
-      () => EngineeringCognitionOrchestrator().analyze(arei),
-    );
+    final result = await EngineeringRuntime.shared
+        .submit(
+          'cognition:${DateTime.now().microsecondsSinceEpoch}',
+          () => EngineeringCognitionOrchestrator().analyze(arei),
+          namespace: 'cognition',
+        )
+        .future;
     cancellation?.check();
     return result;
   }

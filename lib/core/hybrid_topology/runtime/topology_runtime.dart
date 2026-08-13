@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../../smart_regions/models/geometry.dart';
 import '../constraints/topology_constraint.dart';
 import '../morphing/mesh_morph_engine.dart';
@@ -9,7 +9,11 @@ class IsolateTopologyRuntime {
     MeshTopology mesh,
     MorphRequest request,
     List<TopologyConstraint> constraints,
-  ) => Isolate.run(
-    () => const MeshMorphEngine().apply(mesh, request, constraints),
-  );
+  ) => EngineeringRuntime.shared
+      .submit(
+        'topology:${DateTime.now().microsecondsSinceEpoch}',
+        () => const MeshMorphEngine().apply(mesh, request, constraints),
+        namespace: 'topology',
+      )
+      .future;
 }

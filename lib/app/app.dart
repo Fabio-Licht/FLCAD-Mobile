@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../core/ai/services/ai_bootstrap.dart';
+import 'bootstrap/app_bootstrap.dart';
 import '../features/home/home_screen.dart';
-import '../features/projects/domain/project_manager.dart';
 import '../features/scanner/presentation/scanner_screen.dart';
 import '../theme/flcad_theme.dart';
 
@@ -17,8 +16,7 @@ class _FLCADAppState extends State<FLCADApp> {
   late final _restore = _initialize();
 
   Future<dynamic> _initialize() async {
-    await AIBootstrap.instance.initialize();
-    return ProjectManager.instance.initialize();
+    return AppBootstrap.instance.initialize();
   }
 
   @override

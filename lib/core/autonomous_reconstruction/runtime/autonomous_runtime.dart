@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../../engineering_cognition/models/cognition_models.dart';
 import '../models/reconstruction_models.dart';
 import '../planner/master_planner.dart';
@@ -20,11 +20,15 @@ class AutonomousReconstructionRuntime {
     AutonomousCancellationToken? cancellation,
   }) async {
     cancellation?.check();
-    final result = await Isolate.run(
-      () => const ReconstructionMasterPlanner().build(
-        ReconstructionPlanInput(cognition),
-      ),
-    );
+    final result = await EngineeringRuntime.shared
+        .submit(
+          'reconstruction:${DateTime.now().microsecondsSinceEpoch}',
+          () => const ReconstructionMasterPlanner().build(
+            ReconstructionPlanInput(cognition),
+          ),
+          namespace: 'reconstruction',
+        )
+        .future;
     cancellation?.check();
     return result;
   }

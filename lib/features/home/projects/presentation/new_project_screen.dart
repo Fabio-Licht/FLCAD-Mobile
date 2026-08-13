@@ -25,32 +25,24 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Novo Projeto"),
-      ),
+      appBar: AppBar(title: const Text("Novo Projeto")),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
             TextField(
               controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: "Nome do Projeto",
-              ),
+              decoration: const InputDecoration(labelText: "Nome do Projeto"),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _clientController,
-              decoration: const InputDecoration(
-                labelText: "Cliente",
-              ),
+              decoration: const InputDecoration(labelText: "Cliente"),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _descriptionController,
-              decoration: const InputDecoration(
-                labelText: "Descrição",
-              ),
+              decoration: const InputDecoration(labelText: "Descrição"),
             ),
             const Spacer(),
             FilledButton(
@@ -61,9 +53,7 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
 
                 if (name.isEmpty || client.isEmpty || description.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Preencha todos os campos"),
-                    ),
+                    const SnackBar(content: Text("Preencha todos os campos")),
                   );
                   return;
                 }

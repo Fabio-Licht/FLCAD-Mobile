@@ -27,10 +27,7 @@ class ProjectRepository {
 
     if (index == -1) return;
 
-    final updated = project.copyWith(
-      name: newName,
-      updatedAt: DateTime.now(),
-    );
+    final updated = project.copyWith(name: newName, updatedAt: DateTime.now());
 
     _projects[index] = updated;
 

@@ -34,6 +34,10 @@ void main() {
         await File(path.join(directory.path, 'job.json')).exists(),
         isTrue,
       );
+      expect(
+        await File(path.join(directory.path, 'project.manifest.json')).exists(),
+        isTrue,
+      );
       expect((await repository.restoreCurrent())?.id, created.id);
     },
   );

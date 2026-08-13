@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../entities/sketch_entity.dart';
 import '../constraints/sketch_constraint.dart';
 import '../solver/adaptive_constraint_solver.dart';
@@ -15,9 +15,13 @@ class IsolateSketchRuntime {
   Future<SketchSolveResult> solve(
     List<SketchEntity> entities,
     List<SketchConstraint> constraints,
-  ) => Isolate.run(
-    () => AdaptiveConstraintSolver().solve(entities, constraints),
-  );
+  ) => EngineeringRuntime.shared
+      .submit(
+        'sketch:${DateTime.now().microsecondsSinceEpoch}',
+        () => AdaptiveConstraintSolver().solve(entities, constraints),
+        namespace: 'sketch',
+      )
+      .future;
 }
 
 abstract interface class GPUSketchRenderer {

@@ -1,11 +1,6 @@
 import 'captured_image.dart';
 
-enum ScanSessionStatus {
-  created,
-  capturing,
-  processing,
-  completed,
-}
+enum ScanSessionStatus { created, capturing, processing, completed }
 
 class ScanSession {
   final String id;

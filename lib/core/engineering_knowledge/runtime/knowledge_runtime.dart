@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../models/knowledge_models.dart';
 import '../reasoning/engineering_reasoner.dart';
 
@@ -17,7 +17,13 @@ class KnowledgeRuntime {
     KnowledgeCancellationToken? cancellation,
   }) async {
     cancellation?.check();
-    final result = await Isolate.run(() => EngineeringReasoner().reason(value));
+    final result = await EngineeringRuntime.shared
+        .submit(
+          'knowledge:${DateTime.now().microsecondsSinceEpoch}',
+          () => EngineeringReasoner().reason(value),
+          namespace: 'knowledge',
+        )
+        .future;
     cancellation?.check();
     return result;
   }

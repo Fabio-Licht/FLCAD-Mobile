@@ -11,9 +11,11 @@ class EngineeringCommandResult<T> {
     this.value, {
     this.undo,
     this.description = '',
+    this.redo,
   });
   final T value;
   final Future<void> Function()? undo;
+  final Future<void> Function()? redo;
   final String description;
 }
 
@@ -26,6 +28,7 @@ class EngineeringCommandBus {
   final EngineeringEventBus events;
   final Map<Type, dynamic> _handlers = {};
   final List<EngineeringCommandResult<dynamic>> _undo = [], _redo = [];
+  final List<EngineeringCommand<dynamic>> _history = [];
   void register<T>(EngineeringCommandHandler<T> handler) =>
       _handlers[EngineeringCommand<T>] = handler;
   Future<EngineeringCommandResult<T>> execute<T>(
@@ -36,6 +39,7 @@ class EngineeringCommandBus {
     if (handler == null) throw StateError('No handler for ${command.name}');
     final result = await handler(command);
     _undo.add(result);
+    _history.add(command);
     _redo.clear();
     await events.publish(
       EngineeringEvent(
@@ -58,5 +62,20 @@ class EngineeringCommandBus {
     _redo.add(result);
   }
 
+  Future<void> redo() async {
+    if (_redo.isEmpty) return;
+    final result = _redo.removeLast();
+    await result.redo?.call();
+    _undo.add(result);
+  }
+
+  Future<void> replay(Iterable<EngineeringCommand<dynamic>> commands) async {
+    for (final command in commands) {
+      await execute<dynamic>(command);
+    }
+  }
+
   int get undoDepth => _undo.length;
+  int get redoDepth => _redo.length;
+  List<EngineeringCommand<dynamic>> get history => List.unmodifiable(_history);
 }

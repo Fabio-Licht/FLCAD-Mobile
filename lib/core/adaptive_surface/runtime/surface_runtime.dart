@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../builders/surface_builder.dart';
 import '../solver/adaptive_surface_solver.dart';
 
@@ -11,5 +11,11 @@ class IsolateSurfaceRuntime implements SurfaceComputeRuntime {
   final List<SurfaceBuilder> builders;
   @override
   Future<SurfaceSolverResult> solve(SurfaceBuildRequest request) =>
-      Isolate.run(() => AdaptiveSurfaceSolver(builders).solve(request));
+      EngineeringRuntime.shared
+          .submit(
+            'surface:${DateTime.now().microsecondsSinceEpoch}',
+            () => AdaptiveSurfaceSolver(builders).solve(request),
+            namespace: 'surface',
+          )
+          .future;
 }

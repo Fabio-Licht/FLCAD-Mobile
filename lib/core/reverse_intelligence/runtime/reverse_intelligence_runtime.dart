@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../../smart_regions/models/geometry.dart';
 import '../brain/reverse_brain.dart';
 
@@ -19,9 +19,13 @@ class ReverseIntelligenceRuntime {
     ReverseIntelligenceCancellation? cancellation,
   }) async {
     cancellation?.check();
-    final result = await Isolate.run(
-      () => const ReverseBrain().reason(projectId, mesh),
-    );
+    final result = await EngineeringRuntime.shared
+        .submit(
+          'ai:${DateTime.now().microsecondsSinceEpoch}',
+          () => const ReverseBrain().reason(projectId, mesh),
+          namespace: 'ai',
+        )
+        .future;
     cancellation?.check();
     return result;
   }

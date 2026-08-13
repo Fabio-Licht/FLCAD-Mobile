@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:isolate';
+import '../../engineering/runtime/engineering_runtime.dart';
 import '../precision/precision.dart';
 
 class KernelExecutionMetrics {
@@ -62,7 +62,13 @@ class GeometricTaskScheduler {
     KernelCancellationToken? cancellation,
   }) async {
     cancellation?.throwIfCancelled();
-    final result = await Isolate.run(computation);
+    final result = await EngineeringRuntime.shared
+        .submit(
+          'geometry:${DateTime.now().microsecondsSinceEpoch}',
+          computation,
+          namespace: 'geometry',
+        )
+        .future;
     cancellation?.throwIfCancelled();
     return result;
   }

@@ -13,6 +13,7 @@ import '../../geometric_kernel/api/geometric_kernel_api.dart';
 import '../../reverse_intelligence/api/reverse_intelligence_api.dart';
 import '../../engineering_knowledge/api/engineering_knowledge_api.dart';
 import '../../engineering_cognition/api/engineering_cognition_api.dart';
+import '../../autonomous_reconstruction/api/autonomous_reconstruction_api.dart';
 
 class EngineeringSession {
   const EngineeringSession(
@@ -59,6 +60,9 @@ class EngineeringContext {
       ..register<ReverseIntelligenceApi>(ReverseIntelligenceApi())
       ..register<EngineeringKnowledgeApi>(EngineeringKnowledgeApi());
     services.register<EngineeringCognitionApi>(EngineeringCognitionApi());
+    services.register<AutonomousReconstructionApi>(
+      AutonomousReconstructionApi(),
+    );
     return EngineeringContext(
       projectId: projectId,
       runtime: EngineeringRuntime(),

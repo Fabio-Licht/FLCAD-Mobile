@@ -13,6 +13,7 @@ import 'fel_geometry_commands.dart';
 import '../../reverse_intelligence/commands/fel_reverse_intelligence_commands.dart';
 import '../../engineering_knowledge/commands/fel_knowledge_commands.dart';
 import '../../engineering_cognition/commands/fel_cognition_commands.dart';
+import '../../autonomous_reconstruction/commands/fel_autonomous_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -208,6 +209,9 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createCognitionFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createAutonomousFELCommands()) {
     r.register(command);
   }
   for (final name in [

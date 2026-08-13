@@ -39,6 +39,14 @@ enum StudioEntityType {
   workflow,
   decision,
   analytics,
+  vertex,
+  edge,
+  wire,
+  face,
+  shell,
+  solid,
+  body,
+  cadFeature,
 }
 
 enum SelectionMode { single, multiple, box, lasso }

@@ -19,6 +19,10 @@ import '../../core/engineering_decision/engine/engineering_decision_engine.dart'
 import '../../core/engineering_decision/memory/decision_memory.dart';
 import '../../core/engineering_reconstruction/api/engineering_reconstruction_api.dart';
 import '../../core/engineering_reconstruction/planner/engineering_reconstruction_planner.dart';
+import '../../core/cad_kernel/manager/kernel_manager.dart';
+import '../../core/cad_kernel/opencascade/open_cascade_kernel_plugin.dart';
+import '../../core/cad_builder/integration/cad_builder_factory.dart';
+import '../../core/cad_features/integration/feature_factory.dart';
 import '../../core/engineering_knowledge/api/engineering_knowledge_api.dart';
 import '../../core/geometric_kernel/api/geometric_kernel_api.dart';
 import '../../core/geometric_recognition/api/recognition_api.dart';
@@ -80,6 +84,11 @@ class EngineeringBootstrap {
         ),
       ),
     );
+    final kernelManager = KernelManager();
+    OpenCascadeKernelPlugin().register(kernelManager);
+    services.register<KernelManager>(kernelManager);
+    services.register<CadBuilderFactory>(CadBuilderFactory(kernelManager));
+    services.register<FeatureFactory>(FeatureFactory(kernelManager));
     _initialized = true;
   }
 

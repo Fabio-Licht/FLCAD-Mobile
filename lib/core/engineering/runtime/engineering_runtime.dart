@@ -81,6 +81,7 @@ class EngineeringRuntime {
     EngineeringTaskPriority priority = EngineeringTaskPriority.normal,
     String namespace = 'engineering',
     void Function(EngineeringTaskProgress progress)? onProgress,
+    bool runInIsolate = true,
   }) {
     if (_disposed) throw StateError('Engineering runtime is disposed');
     if (_tasks.containsKey(id)) throw StateError('Task $id is already active');
@@ -95,6 +96,7 @@ class EngineeringRuntime {
       completer: completer,
       onProgress: onProgress,
       sequence: _sequence++,
+      runInIsolate: runInIsolate,
     );
     _tasks[id] = queued;
     _queue.add(queued);
@@ -198,6 +200,7 @@ class _QueuedTask<T> {
     required this.namespace,
     required this.completer,
     required this.sequence,
+    required this.runInIsolate,
     this.onProgress,
   });
   final String id, namespace;
@@ -206,6 +209,7 @@ class _QueuedTask<T> {
   final EngineeringTaskPriority priority;
   final Completer<T> completer;
   final int sequence;
+  final bool runInIsolate;
   final void Function(EngineeringTaskProgress progress)? onProgress;
   EngineeringTaskState state = EngineeringTaskState.queued;
   Duration elapsed = Duration.zero;
@@ -216,7 +220,9 @@ class _QueuedTask<T> {
     onProgress?.call(const EngineeringTaskProgress(0));
     try {
       token.throwIfCancelled();
-      final value = await Isolate.run(operation);
+      final value = await (runInIsolate
+          ? Isolate.run(operation)
+          : Future<T>.sync(operation));
       token.throwIfCancelled();
       state = EngineeringTaskState.completed;
       onProgress?.call(const EngineeringTaskProgress(1));

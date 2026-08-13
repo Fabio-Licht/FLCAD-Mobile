@@ -18,6 +18,9 @@ import '../../engineering_decision/commands/fel_decision_commands.dart';
 import '../../geometric_recognition/commands/fel_recognition_commands.dart';
 import '../../professional_recognition/commands/fel_professional_recognition_commands.dart';
 import '../../engineering_reconstruction/commands/fel_reconstruction_intelligence_commands.dart';
+import '../../cad_kernel/commands/fel_kernel_commands.dart';
+import '../../cad_builder/commands/fel_cad_builder_commands.dart';
+import '../../cad_features/commands/fel_feature_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -228,6 +231,15 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createERIFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createKernelFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createCadBuilderFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createFeatureFELCommands()) {
     r.register(command);
   }
   for (final name in [

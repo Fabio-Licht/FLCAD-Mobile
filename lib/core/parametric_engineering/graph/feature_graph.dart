@@ -1,0 +1,4 @@
+export '../../adaptive_surface/graph/surface_graph.dart';
+import '../../adaptive_surface/graph/surface_graph.dart';
+
+typedef FeatureGraph = ReverseEngineeringKnowledgeGraph;

@@ -1,10 +1,12 @@
 import 'package:camera/camera.dart';
 
 import '../domain/camera_service.dart';
+import '../../../core/logger/app_logger.dart';
 
 class CameraServiceImpl implements CameraService {
   CameraController? _controller;
 
+  @override
   CameraController? get controller => _controller;
 
   @override
@@ -51,10 +53,25 @@ class CameraServiceImpl implements CameraService {
     try {
       final image = await _controller!.takePicture();
       return image;
-    } catch (e) {
+    } catch (error, stackTrace) {
+      AppLogger.log(
+        'Camera capture failed',
+        level: LogLevel.error,
+        error: error,
+        stackTrace: stackTrace,
+      );
       return null;
     }
   }
+
+  @override
+  Future<double> getMinZoomLevel() => _controller!.getMinZoomLevel();
+
+  @override
+  Future<double> getMaxZoomLevel() => _controller!.getMaxZoomLevel();
+
+  @override
+  Future<void> setZoomLevel(double zoom) => _controller!.setZoomLevel(zoom);
 
   @override
   Future<void> dispose() async {

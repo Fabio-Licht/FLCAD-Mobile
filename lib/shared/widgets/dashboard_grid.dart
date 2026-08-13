@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../features/scanner/presentation/scanner_screen.dart';
 import 'flcad_card.dart';
 
 class DashboardGrid extends StatelessWidget {
@@ -22,9 +21,11 @@ class DashboardGrid extends StatelessWidget {
           icon: Icons.document_scanner_rounded,
           title: 'Scanner',
           onTap: () {
-            Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => const ScannerScreen()));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Crie um projeto antes de iniciar o scanner.'),
+              ),
+            );
           },
         ),
 

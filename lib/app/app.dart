@@ -1,10 +1,25 @@
 import 'package:flutter/material.dart';
 
+import '../core/ai/services/ai_bootstrap.dart';
 import '../features/home/home_screen.dart';
+import '../features/projects/domain/project_manager.dart';
+import '../features/scanner/presentation/scanner_screen.dart';
 import '../theme/flcad_theme.dart';
 
-class FLCADApp extends StatelessWidget {
+class FLCADApp extends StatefulWidget {
   const FLCADApp({super.key});
+
+  @override
+  State<FLCADApp> createState() => _FLCADAppState();
+}
+
+class _FLCADAppState extends State<FLCADApp> {
+  late final _restore = _initialize();
+
+  Future<dynamic> _initialize() async {
+    await AIBootstrap.instance.initialize();
+    return ProjectManager.instance.initialize();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -12,7 +27,20 @@ class FLCADApp extends StatelessWidget {
       title: 'FLCAD Mobile',
       debugShowCheckedModeBanner: false,
       theme: FLCADTheme.dark(),
-      home: const HomeScreen(),
+      home: FutureBuilder(
+        future: _restore,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final project = snapshot.data;
+          return project == null
+              ? const HomeScreen()
+              : ScannerScreen(project: project);
+        },
+      ),
     );
   }
 }

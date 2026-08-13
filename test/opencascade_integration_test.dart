@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/cad_kernel/commands/fel_kernel_commands.dart';
 import 'package:flcad_mobile/core/cad_kernel/io/kernel_io_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
@@ -5,6 +7,9 @@ import 'package:flcad_mobile/core/cad_kernel/models/kernel_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_bridge.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_plugin.dart';
+import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
+import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_runtime_repository.dart';
+import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_studio_integration.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -17,6 +22,10 @@ void main() {
       final health = await manager.select('opencascade');
       expect(health.status, KernelHealthStatus.healthy);
       expect(manager.active.descriptor.version, '7.8.1');
+      expect(
+        manager.active.descriptor.capabilities.values,
+        containsAll([KernelCapability.step, KernelCapability.planeSurface]),
+      );
       await manager.unload('opencascade');
       expect(bridge.shutdownCalled, isTrue);
     },
@@ -97,8 +106,58 @@ void main() {
         'EXPORT IGES',
         'VALIDATE GEOMETRY',
         'HEAL GEOMETRY',
+        'SHOW KERNEL VERSION',
+        'SHOW KERNEL STATUS',
+        'CREATE PLANE',
+        'CREATE CYLINDER',
+        'VALIDATE SHAPE',
+        'HEAL SHAPE',
       ]),
     );
+  });
+
+  test('FFI loader reports a missing native library without fabrication', () {
+    expect(OpenCascadeFFI.tryLoad(path: 'definitely-missing-occt.dll'), isNull);
+  });
+
+  test('native metadata repository creates project-first structure', () async {
+    final root = await Directory.systemTemp.createTemp('flcad-occ-');
+    addTearDown(() => root.delete(recursive: true));
+    const repository = OpenCascadeRuntimeRepository();
+    final handle = ShapeHandle.reference(
+      persistentId: 'shape-1',
+      kernelId: 'opencascade',
+      type: CADShapeType.face,
+      metadata: {'topoDSType': 'face'},
+    );
+    final file = await repository.saveShapeMetadata(root, handle);
+    expect(await file.exists(), isTrue);
+    for (final folder in const [
+      'Kernel',
+      'KernelCache',
+      'KernelDiagnostics',
+      'NativeShapes',
+    ]) {
+      expect(
+        await Directory(
+          '${root.path}${Platform.pathSeparator}$folder',
+        ).exists(),
+        isTrue,
+      );
+    }
+  });
+
+  test('Studio exposes kernel status and portable inspector context', () async {
+    final manager = KernelManager();
+    OpenCascadeKernelPlugin(bridge: _RecordingBridge()).register(manager);
+    await manager.select('opencascade');
+    final snapshot = await const OpenCascadeStudioIntegration().inspect(
+      manager,
+    );
+    final node = snapshot.toTreeNode('project');
+    expect(node.context['kernelId'], 'opencascade');
+    expect(node.context['kernelVersion'], '7.8.1');
+    expect(node.context.toString(), isNot(contains('TopoDS_Shape')));
   });
 }
 
@@ -112,6 +171,15 @@ class _RecordingBridge implements OpenCascadeNativeBridge {
   Future<void> shutdown() async => shutdownCalled = true;
   @override
   Future<String> version() async => '7.8.1';
+  @override
+  Future<Set<String>> capabilities() async => {
+    'STEP',
+    'IGES',
+    'BREP',
+    'Surface',
+    'Meshing',
+    'Healing',
+  };
   @override
   Future<Map<String, dynamic>> diagnostics() async => {'healthy': true};
   @override

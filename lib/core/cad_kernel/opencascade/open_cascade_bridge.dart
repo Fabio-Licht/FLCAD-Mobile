@@ -6,6 +6,7 @@ abstract interface class OpenCascadeNativeBridge {
   Future<void> initialize();
   Future<void> shutdown();
   Future<String> version();
+  Future<Set<String>> capabilities();
   Future<Map<String, dynamic>> diagnostics();
   Future<OpenCascadeNativeShape> createShape(
     String operation,
@@ -68,6 +69,8 @@ class UnavailableOpenCascadeBridge implements OpenCascadeNativeBridge {
   Future<void> shutdown() async {}
   @override
   Future<String> version() async => _fail();
+  @override
+  Future<Set<String>> capabilities() async => const {};
   @override
   Future<Map<String, dynamic>> diagnostics() async => {
     'available': false,

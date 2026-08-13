@@ -19,11 +19,13 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   final KernelRuntime runtime;
   final Map<String, String> _nativeTokens = {};
   String _version = 'uninitialized';
+  Set<KernelCapability> _capabilities = {};
   bool _initialized = false;
 
   Future<void> initialize() async {
     await _bridge.initialize();
     _version = await _bridge.version();
+    _capabilities = _mapCapabilities(await _bridge.capabilities());
     _initialized = true;
   }
 
@@ -33,25 +35,27 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     name: 'OpenCascade',
     version: _version,
     vendor: 'Open CASCADE Technology',
-    capabilities: const KernelCapabilities({
-      KernelCapability.step,
-      KernelCapability.iges,
-      KernelCapability.brep,
-      KernelCapability.healing,
-      KernelCapability.meshing,
-      KernelCapability.boolean,
-      KernelCapability.extrude,
-      KernelCapability.revolve,
-      KernelCapability.sweep,
-      KernelCapability.loft,
-      KernelCapability.offset,
-      KernelCapability.shell,
-      KernelCapability.draft,
-      KernelCapability.mirror,
-      KernelCapability.linearPattern,
-      KernelCapability.circularPattern,
-    }),
+    capabilities: KernelCapabilities(_capabilities),
   );
+
+  Set<KernelCapability> _mapCapabilities(Set<String> native) {
+    final normalized = native.map((e) => e.toLowerCase()).toSet();
+    return {
+      if (normalized.contains('step')) KernelCapability.step,
+      if (normalized.contains('iges')) KernelCapability.iges,
+      if (normalized.contains('brep')) KernelCapability.brep,
+      if (normalized.contains('boolean')) KernelCapability.boolean,
+      if (normalized.contains('healing')) KernelCapability.healing,
+      if (normalized.contains('meshing')) KernelCapability.meshing,
+      if (normalized.contains('surface')) ...{
+        KernelCapability.planeSurface,
+        KernelCapability.cylinderSurface,
+        KernelCapability.coneSurface,
+        KernelCapability.sphereSurface,
+      },
+    };
+  }
+
   @override
   Future<KernelHealth> healthCheck() async {
     try {

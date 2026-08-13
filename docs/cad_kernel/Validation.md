@@ -4,3 +4,4 @@ Validation returns structured `GeometryDiagnostic` objects for invalid geometry,
 
 The legacy validation contract is retained by formatting these diagnostics, preserving public compatibility.
 
+The native runtime uses `BRepCheck_Analyzer` and never mutates the inspected shape.

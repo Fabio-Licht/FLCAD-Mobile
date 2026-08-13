@@ -1,11 +1,15 @@
 import '../manager/kernel_manager.dart';
 import '../plugins/kernel_plugin.dart';
 import 'open_cascade_bridge.dart';
+import 'open_cascade_ffi.dart';
 import 'open_cascade_kernel_adapter.dart';
 
 class OpenCascadeKernelPlugin implements KernelPlugin {
   OpenCascadeKernelPlugin({OpenCascadeNativeBridge? bridge})
-    : bridge = bridge ?? const UnavailableOpenCascadeBridge();
+    : bridge =
+          bridge ??
+          OpenCascadeFFI.tryLoad() ??
+          const UnavailableOpenCascadeBridge();
   final OpenCascadeNativeBridge bridge;
   @override
   String get pluginId => 'opencascade-plugin';

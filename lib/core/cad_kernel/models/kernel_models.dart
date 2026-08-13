@@ -18,6 +18,10 @@ enum KernelCapability {
   mirror,
   linearPattern,
   circularPattern,
+  planeSurface,
+  cylinderSurface,
+  coneSurface,
+  sphereSurface,
 }
 
 enum CADShapeType { vertex, edge, wire, face, shell, solid, compound }

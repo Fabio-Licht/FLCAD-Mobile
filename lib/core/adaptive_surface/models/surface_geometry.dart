@@ -21,6 +21,7 @@ enum SurfaceKind {
   coons,
   gordon,
   subdivision,
+  freeform,
 }
 
 sealed class SurfaceGeometry {

@@ -25,6 +25,7 @@ class KernelFELCommand implements FELCommand {
   List<FELType> get argumentTypes => switch (action) {
     'load' || 'unload' => const [FELType.string],
     'import' || 'export' => const [FELType.string],
+    'createPlane' || 'createCylinder' => List.filled(8, FELType.number),
     _ => const [],
   };
   @override
@@ -41,6 +42,23 @@ class KernelFELCommand implements FELCommand {
         value = true;
       case 'show':
         value = state.manager.active.descriptor;
+      case 'version':
+        value = state.manager.active.descriptor.version;
+      case 'status':
+        final kernel = state.manager.active;
+        final health = await kernel.healthCheck();
+        value = {
+          'kernel': kernel.descriptor.name,
+          'kernelId': kernel.descriptor.id,
+          'version': kernel.descriptor.version,
+          'status': health.status.name,
+          'message': health.message,
+          'loaded': kernel.descriptor.id != 'none',
+          'backend': kernel.descriptor.vendor,
+          'capabilities': kernel.descriptor.capabilities.values
+              .map((e) => e.name)
+              .toList(),
+        };
       case 'capabilities':
         value = state.manager.active.descriptor.capabilities.values
             .map((e) => e.name)
@@ -55,6 +73,40 @@ class KernelFELCommand implements FELCommand {
         final handle = state.current;
         if (handle is! ShapeHandle) throw StateError('No ShapeHandle selected');
         value = await _interchange.proposeHealing(handle);
+      case 'createPlane' || 'createCylinder':
+        final kernel = state.manager.active;
+        final numbers = args.map((e) => (e.value as num).toDouble()).toList();
+        final id =
+            '${context.projectId}-$action-${DateTime.now().microsecondsSinceEpoch}';
+        final transaction = KernelTransaction(
+          'fel-${DateTime.now().microsecondsSinceEpoch}',
+          context.projectId,
+          kernel.descriptor.id,
+          DateTime.now(),
+          TransactionStatus.active,
+          const [],
+        );
+        final parameters = action == 'createPlane'
+            ? <String, dynamic>{
+                'origin': numbers.sublist(0, 3),
+                'normal': numbers.sublist(3, 6),
+                'lowerBound': numbers[6],
+                'upperBound': numbers[7],
+              }
+            : <String, dynamic>{
+                'axisOrigin': numbers.sublist(0, 3),
+                'axisDirection': numbers.sublist(3, 6),
+                'radius': numbers[6],
+                'lowerBound': 0.0,
+                'upperBound': numbers[7],
+              };
+        value = state.current = await kernel.create(
+          action == 'createPlane' ? 'GENERATE PLANE' : 'GENERATE CYLINDER',
+          parameters,
+          persistentId: id,
+          expectedType: CADShapeType.face,
+          transaction: transaction,
+        );
       case 'import':
         final format = KernelExchangeFormat.values.byName(
           name.split(' ').last.toLowerCase(),
@@ -115,11 +167,17 @@ List<FELCommand> createKernelFELCommands({KernelManager? manager}) {
     KernelFELCommand('LOAD KERNEL', 'load', state),
     KernelFELCommand('UNLOAD KERNEL', 'unload', state),
     KernelFELCommand('SHOW KERNEL', 'show', state),
+    KernelFELCommand('SHOW KERNEL VERSION', 'version', state),
+    KernelFELCommand('SHOW KERNEL STATUS', 'status', state),
     KernelFELCommand('SHOW CAPABILITIES', 'capabilities', state),
     KernelFELCommand('SHOW TOPOLOGY', 'topology', state),
     KernelFELCommand('SHOW GEOMETRY GRAPH', 'graph', state),
     KernelFELCommand('VALIDATE GEOMETRY', 'validate', state),
     KernelFELCommand('HEAL GEOMETRY', 'heal', state),
+    KernelFELCommand('VALIDATE SHAPE', 'validate', state),
+    KernelFELCommand('HEAL SHAPE', 'heal', state),
+    KernelFELCommand('CREATE PLANE', 'createPlane', state),
+    KernelFELCommand('CREATE CYLINDER', 'createCylinder', state),
     KernelFELCommand('IMPORT STEP', 'import', state),
     KernelFELCommand('IMPORT IGES', 'import', state),
     KernelFELCommand('EXPORT STEP', 'export', state),

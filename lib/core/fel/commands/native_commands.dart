@@ -21,6 +21,9 @@ import '../../engineering_reconstruction/commands/fel_reconstruction_intelligenc
 import '../../cad_kernel/commands/fel_kernel_commands.dart';
 import '../../cad_builder/commands/fel_cad_builder_commands.dart';
 import '../../cad_features/commands/fel_feature_commands.dart';
+import '../../surface_intelligence/commands/fel_surface_intelligence_commands.dart';
+import '../../surface_generation/commands/fel_surface_generation_commands.dart';
+import '../../hybrid_surface_engine/commands/fel_hybrid_surface_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -240,6 +243,15 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createFeatureFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createSurfaceIntelligenceFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createSurfaceGenerationFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createHybridSurfaceFELCommands()) {
     r.register(command);
   }
   for (final name in [

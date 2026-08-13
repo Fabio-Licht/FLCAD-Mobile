@@ -25,6 +25,8 @@ enum StudioPanelType {
   decision,
   console,
   output,
+  surfaceGeneration,
+  kernelStatus,
 }
 
 enum StudioEntityType {
@@ -47,6 +49,13 @@ enum StudioEntityType {
   solid,
   body,
   cadFeature,
+  surfacePlan,
+  surfaceCandidate,
+  generatedSurfaces,
+  generatedSurface,
+  hybridSurfaceNetwork,
+  hybridSurface,
+  kernelStatus,
 }
 
 enum SelectionMode { single, multiple, box, lasso }

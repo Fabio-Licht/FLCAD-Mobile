@@ -23,6 +23,9 @@ import '../../core/cad_kernel/manager/kernel_manager.dart';
 import '../../core/cad_kernel/opencascade/open_cascade_kernel_plugin.dart';
 import '../../core/cad_builder/integration/cad_builder_factory.dart';
 import '../../core/cad_features/integration/feature_factory.dart';
+import '../../core/surface_intelligence/integration/surface_factory.dart';
+import '../../core/surface_generation/integration/surface_generation_factory.dart';
+import '../../core/hybrid_surface_engine/integration/hybrid_surface_factory.dart';
 import '../../core/engineering_knowledge/api/engineering_knowledge_api.dart';
 import '../../core/geometric_kernel/api/geometric_kernel_api.dart';
 import '../../core/geometric_recognition/api/recognition_api.dart';
@@ -89,6 +92,13 @@ class EngineeringBootstrap {
     services.register<KernelManager>(kernelManager);
     services.register<CadBuilderFactory>(CadBuilderFactory(kernelManager));
     services.register<FeatureFactory>(FeatureFactory(kernelManager));
+    services.register<SurfaceIntelligenceFactory>(
+      const SurfaceIntelligenceFactory(),
+    );
+    services.register<SurfaceGenerationFactory>(
+      SurfaceGenerationFactory(kernelManager),
+    );
+    services.register<HybridSurfaceFactory>(const HybridSurfaceFactory());
     _initialized = true;
   }
 

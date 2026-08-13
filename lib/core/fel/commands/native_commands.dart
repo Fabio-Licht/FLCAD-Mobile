@@ -10,6 +10,7 @@ import '../../adaptive_surface/commands/fel_surface_commands.dart';
 import '../../hybrid_topology/commands/fel_topology_commands.dart';
 import '../../parametric_engineering/commands/fel_parametric_commands.dart';
 import 'fel_geometry_commands.dart';
+import '../../reverse_intelligence/commands/fel_reverse_intelligence_commands.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -196,6 +197,9 @@ FELCommandRegistry createNativeCommandRegistry() {
     r.register(command);
   }
   for (final command in createGeometryFELCommands()) {
+    r.register(command);
+  }
+  for (final command in createReverseIntelligenceFELCommands()) {
     r.register(command);
   }
   for (final name in [

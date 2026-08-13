@@ -10,6 +10,7 @@ import '../queries/engineering_query_bus.dart';
 import '../runtime/engineering_runtime.dart';
 import '../services/engineering_service_registry.dart';
 import '../../geometric_kernel/api/geometric_kernel_api.dart';
+import '../../reverse_intelligence/api/reverse_intelligence_api.dart';
 
 class EngineeringSession {
   const EngineeringSession(
@@ -52,7 +53,8 @@ class EngineeringContext {
   final EngineeringSession session;
   factory EngineeringContext.standard(String projectId) {
     final services = EngineeringServiceRegistry()
-      ..register<GeometricKernelApi>(const GeometricKernelApi());
+      ..register<GeometricKernelApi>(const GeometricKernelApi())
+      ..register<ReverseIntelligenceApi>(ReverseIntelligenceApi());
     return EngineeringContext(
       projectId: projectId,
       runtime: EngineeringRuntime(),

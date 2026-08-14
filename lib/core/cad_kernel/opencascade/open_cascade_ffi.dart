@@ -248,8 +248,39 @@ typedef _MeshDart =
       Pointer<Utf8>,
       int,
     );
+typedef _ImportStlNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Double>,
+      Pointer<Int32>,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _ImportStlDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Double>,
+      Pointer<Int32>,
+      Pointer<Utf8>,
+      int,
+    );
 
-class OpenCascadeFFI implements OpenCascadeNativeBridge {
+class OpenCascadeFFI
+    implements OpenCascadeNativeBridge, OpenCascadeMeshNativeBridge {
   OpenCascadeFFI._(this.library)
     : _initialize = library.lookupFunction<_InitNative, _InitDart>(
         'flcad_occ_initialize',
@@ -600,6 +631,96 @@ class OpenCascadeFFI implements OpenCascadeNativeBridge {
       calloc.free(p);
       calloc.free(f);
       b.dispose();
+    }
+  }
+
+  @override
+  Future<OpenCascadeNativeMesh> importStl(
+    String path,
+    KernelImportFormat format, {
+    required KernelCancellationToken cancellation,
+    void Function(KernelProgress progress)? onProgress,
+  }) async {
+    if (cancellation.isCancelled) {
+      throw StateError('Kernel operation cancelled');
+    }
+    final b = _buffers(),
+        p = path.toNativeUtf8(),
+        vertices = calloc<Int32>(),
+        triangles = calloc<Int32>(),
+        degenerates = calloc<Int32>(),
+        bounds = calloc<Double>(6),
+        normals = calloc<Int32>(),
+        fn = library.lookupFunction<_ImportStlNative, _ImportStlDart>(
+          'flcad_occ_import_stl',
+        );
+    try {
+      onProgress?.call(
+        const KernelProgress(
+          'import-stl',
+          0,
+          'Reading STL with OpenCascade RWStl',
+        ),
+      );
+      if (fn(
+            p,
+            b.token,
+            256,
+            b.fingerprint,
+            256,
+            vertices,
+            triangles,
+            degenerates,
+            bounds,
+            normals,
+            b.error,
+            4096,
+          ) !=
+          1) {
+        throw StateError(b.error.toDartString());
+      }
+      onProgress?.call(
+        const KernelProgress('import-stl', 1, 'STL triangulation loaded'),
+      );
+      return OpenCascadeNativeMesh(
+        token: b.token.toDartString(),
+        fingerprint: b.fingerprint.toDartString(),
+        vertexCount: vertices.value,
+        triangleCount: triangles.value,
+        degenerateTriangleCount: degenerates.value,
+        bounds: KernelBounds(
+          bounds[0],
+          bounds[1],
+          bounds[2],
+          bounds[3],
+          bounds[4],
+          bounds[5],
+        ),
+        hasNormals: normals.value == 1,
+      );
+    } finally {
+      calloc.free(p);
+      calloc.free(vertices);
+      calloc.free(triangles);
+      calloc.free(degenerates);
+      calloc.free(bounds);
+      calloc.free(normals);
+      b.dispose();
+    }
+  }
+
+  @override
+  Future<void> destroyMesh(String nativeToken) async {
+    final token = nativeToken.toNativeUtf8(),
+        error = calloc<Uint8>(4096).cast<Utf8>(),
+        fn = library.lookupFunction<_DestroyNative, _DestroyDart>(
+          'flcad_occ_destroy_mesh',
+        );
+    try {
+      if (fn(token, error, 4096) != 1) throw StateError(error.toDartString());
+    } finally {
+      calloc.free(token);
+      calloc.free(error);
     }
   }
 

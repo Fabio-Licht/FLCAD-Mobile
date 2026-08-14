@@ -2,6 +2,55 @@ import '../models/kernel_models.dart';
 
 enum KernelExchangeFormat { step, iges, brep }
 
+enum KernelImportFormat { stl, asciiStl, binaryStl, autoDetect }
+
+class KernelBounds {
+  const KernelBounds(
+    this.minX,
+    this.minY,
+    this.minZ,
+    this.maxX,
+    this.maxY,
+    this.maxZ,
+  );
+  final double minX, minY, minZ, maxX, maxY, maxZ;
+  Map<String, dynamic> toJson() => {
+    'min': [minX, minY, minZ],
+    'max': [maxX, maxY, maxZ],
+  };
+}
+
+class KernelMeshHandle {
+  const KernelMeshHandle({
+    required this.persistentId,
+    required this.kernelId,
+    required this.fingerprint,
+    required this.vertexCount,
+    required this.triangleCount,
+    required this.bounds,
+    required this.hasNormals,
+    required this.metadata,
+    this.degenerateTriangleCount = 0,
+  });
+  final String persistentId, kernelId, fingerprint;
+  final int vertexCount, triangleCount;
+  final KernelBounds bounds;
+  final bool hasNormals;
+  final int degenerateTriangleCount;
+  final Map<String, dynamic> metadata;
+}
+
+abstract interface class MeshGeometryKernelAPI {
+  Future<KernelMeshHandle> importStl(
+    String path, {
+    required String projectId,
+    KernelImportFormat format = KernelImportFormat.autoDetect,
+    KernelCancellationToken cancellation = const NoKernelCancellation(),
+    void Function(KernelProgress progress)? onProgress,
+  });
+  Future<void> closeMesh(KernelMeshHandle handle);
+}
+
 class KernelProgress {
   const KernelProgress(this.operation, this.fraction, this.message);
   final String operation, message;

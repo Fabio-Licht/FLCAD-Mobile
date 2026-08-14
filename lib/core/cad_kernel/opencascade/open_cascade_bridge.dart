@@ -40,6 +40,33 @@ abstract interface class OpenCascadeNativeBridge {
   );
 }
 
+abstract interface class OpenCascadeMeshNativeBridge {
+  Future<OpenCascadeNativeMesh> importStl(
+    String path,
+    KernelImportFormat format, {
+    required KernelCancellationToken cancellation,
+    void Function(KernelProgress progress)? onProgress,
+  });
+  Future<void> destroyMesh(String nativeToken);
+}
+
+class OpenCascadeNativeMesh {
+  const OpenCascadeNativeMesh({
+    required this.token,
+    required this.fingerprint,
+    required this.vertexCount,
+    required this.triangleCount,
+    required this.bounds,
+    required this.hasNormals,
+    this.degenerateTriangleCount = 0,
+  });
+  final String token, fingerprint;
+  final int vertexCount, triangleCount;
+  final KernelBounds bounds;
+  final bool hasNormals;
+  final int degenerateTriangleCount;
+}
+
 class OpenCascadeNativeShape {
   const OpenCascadeNativeShape({
     required this.token,

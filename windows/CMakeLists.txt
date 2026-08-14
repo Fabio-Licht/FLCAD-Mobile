@@ -53,11 +53,12 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/opencascade" "${CMAKE_CURRENT_BINARY_DIR}/opencascade")
 add_dependencies(${BINARY_NAME} flcad_opencascade)
-add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+add_custom_target(flcad_copy_opencascade_runtime ALL
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_FILE:flcad_opencascade> $<TARGET_FILE_DIR:${BINARY_NAME}>)
-if(OpenCASCADE_BINARY_DIR)
-  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    $<TARGET_FILE:flcad_opencascade> $<TARGET_FILE_DIR:${BINARY_NAME}>
+  DEPENDS ${BINARY_NAME} flcad_opencascade)
+if(FLCAD_OCCT_RUNTIME_DLLS)
+  add_custom_command(TARGET flcad_copy_opencascade_runtime POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       ${FLCAD_OCCT_RUNTIME_DLLS} $<TARGET_FILE_DIR:${BINARY_NAME}>
     COMMAND_EXPAND_LISTS)

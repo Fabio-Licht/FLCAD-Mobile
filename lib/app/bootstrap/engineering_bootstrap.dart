@@ -96,6 +96,38 @@ import '../../core/engineering_intelligence/history/intelligence_history.dart';
 import '../../core/engineering_intelligence/integration/intelligence_factory.dart';
 import '../../core/engineering_intelligence/repository/intelligence_repository.dart';
 import '../../core/engineering_intelligence/runtime/intelligence_runtime.dart';
+import '../../core/reverse_workflow/analytics/workflow_analytics.dart';
+import '../../core/reverse_workflow/history/workflow_history.dart';
+import '../../core/reverse_workflow/history/workflow_timeline.dart';
+import '../../core/reverse_workflow/integration/workflow_factory.dart';
+import '../../core/reverse_workflow/repository/workflow_repository.dart';
+import '../../core/reverse_workflow/runtime/reverse_workflow_runtime.dart';
+import '../../core/adaptive_studio/analytics/workspace_analytics.dart';
+import '../../core/adaptive_studio/history/workspace_history.dart';
+import '../../core/adaptive_studio/integration/adaptive_studio_factory.dart';
+import '../../core/adaptive_studio/repository/adaptive_studio_repository.dart';
+import '../../core/adaptive_studio/runtime/adaptive_studio_runtime.dart';
+import '../../core/interactive_reverse/analytics/interactive_analytics.dart';
+import '../../core/interactive_reverse/history/interactive_history.dart';
+import '../../core/interactive_reverse/integration/interactive_reverse_factory.dart';
+import '../../core/interactive_reverse/repository/interactive_reverse_repository.dart';
+import '../../core/interactive_reverse/runtime/interactive_reverse_runtime.dart';
+import '../../core/reverse_session/analytics/session_analytics.dart';
+import '../../core/reverse_session/history/session_history.dart';
+import '../../core/reverse_session/integration/reverse_session_factory.dart';
+import '../../core/reverse_session/journal/reverse_journal.dart';
+import '../../core/reverse_session/repository/reverse_session_repository.dart';
+import '../../core/reverse_session/runtime/reverse_session_runtime.dart';
+import '../../core/reverse_session/timeline/session_timeline.dart';
+import '../../core/platform_certification/analytics/certification_analytics.dart';
+import '../../core/platform_certification/history/certification_history.dart';
+import '../../core/platform_certification/integration/platform_certification_factory.dart';
+import '../../core/platform_certification/repository/platform_certification_repository.dart';
+import '../../core/platform_certification/runtime/platform_certification_runtime.dart';
+import '../../core/mesh_foundation/analytics/mesh_analytics.dart';
+import '../../core/mesh_foundation/integration/mesh_factory.dart';
+import '../../core/mesh_foundation/repository/mesh_repository.dart';
+import '../../core/mesh_foundation/runtime/mesh_runtime.dart';
 
 /// Application composition root. Concrete engines are wired here, outside the
 /// engineering core, so the core depends only on its contracts.
@@ -265,6 +297,68 @@ class EngineeringBootstrap {
       ..register<IntelligenceRepositoryFactory>(
         const IntelligenceRepositoryFactory(),
       );
+    services
+      ..register<ReverseWorkflowRuntime>(ReverseWorkflowRuntime())
+      ..register<ReverseWorkflowFactory>(const ReverseWorkflowFactory())
+      ..register<WorkflowAnalytics>(WorkflowAnalytics())
+      ..register<WorkflowHistory>(WorkflowHistory())
+      ..register<WorkflowTimeline>(WorkflowTimeline())
+      ..register<WorkflowRepository>(WorkflowRepository(Directory.current))
+      ..register<WorkflowRepositoryFactory>(const WorkflowRepositoryFactory());
+    services
+      ..register<AdaptiveStudioRuntime>(AdaptiveStudioRuntime())
+      ..register<AdaptiveStudioFactory>(const AdaptiveStudioFactory())
+      ..register<WorkspaceAnalytics>(WorkspaceAnalytics())
+      ..register<WorkspaceHistory>(WorkspaceHistory())
+      ..register<AdaptiveStudioRepository>(
+        AdaptiveStudioRepository(Directory.current),
+      )
+      ..register<AdaptiveStudioRepositoryFactory>(
+        const AdaptiveStudioRepositoryFactory(),
+      );
+    services
+      ..register<InteractiveReverseRuntime>(InteractiveReverseRuntime())
+      ..register<InteractiveReverseFactory>(const InteractiveReverseFactory())
+      ..register<InteractiveAnalytics>(InteractiveAnalytics())
+      ..register<InteractiveHistory>(InteractiveHistory())
+      ..register<InteractiveTimeline>(InteractiveTimeline())
+      ..register<InteractiveReverseRepository>(
+        InteractiveReverseRepository(Directory.current),
+      )
+      ..register<InteractiveReverseRepositoryFactory>(
+        const InteractiveReverseRepositoryFactory(),
+      );
+    services
+      ..register<ReverseSessionRuntime>(ReverseSessionRuntime())
+      ..register<ReverseSessionFactory>(const ReverseSessionFactory())
+      ..register<SessionAnalytics>(SessionAnalytics())
+      ..register<SessionHistory>(SessionHistory())
+      ..register<SessionTimeline>(SessionTimeline())
+      ..register<ReverseJournal>(ReverseJournal())
+      ..register<ReverseSessionRepository>(
+        ReverseSessionRepository(Directory.current),
+      )
+      ..register<ReverseSessionRepositoryFactory>(
+        const ReverseSessionRepositoryFactory(),
+      );
+    services
+      ..register<PlatformCertificationRuntime>(PlatformCertificationRuntime())
+      ..register<PlatformCertificationFactory>(
+        const PlatformCertificationFactory(),
+      )
+      ..register<CertificationAnalytics>(CertificationAnalytics())
+      ..register<CertificationHistory>(CertificationHistory())
+      ..register<PlatformCertificationRepository>(
+        PlatformCertificationRepository(Directory.current),
+      )
+      ..register<PlatformCertificationRepositoryFactory>(
+        const PlatformCertificationRepositoryFactory(),
+      );
+    services
+      ..register<MeshRuntime>(MeshRuntime())
+      ..register<MeshFactory>(const MeshFactory())
+      ..register<MeshAnalytics>(MeshAnalytics())
+      ..register<MeshRepository>(MeshRepository(Directory.current));
     _initialized = true;
   }
 

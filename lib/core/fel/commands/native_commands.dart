@@ -51,6 +51,18 @@ import '../../live_validation/commands/fel_validation_commands.dart';
 import '../../live_validation/integration/validation_factory.dart';
 import '../../engineering_intelligence/commands/fel_intelligence_commands.dart';
 import '../../engineering_intelligence/integration/intelligence_factory.dart';
+import '../../reverse_workflow/commands/fel_workflow_commands.dart';
+import '../../reverse_workflow/integration/workflow_factory.dart';
+import '../../adaptive_studio/commands/fel_adaptive_studio_commands.dart';
+import '../../adaptive_studio/integration/adaptive_studio_factory.dart';
+import '../../interactive_reverse/commands/fel_interactive_reverse_commands.dart';
+import '../../interactive_reverse/integration/interactive_reverse_factory.dart';
+import '../../reverse_session/commands/fel_reverse_session_commands.dart';
+import '../../reverse_session/integration/reverse_session_factory.dart';
+import '../../platform_certification/commands/fel_platform_certification_commands.dart';
+import '../../platform_certification/integration/platform_certification_factory.dart';
+import '../../mesh_foundation/commands/fel_mesh_commands.dart';
+import '../../mesh_foundation/integration/mesh_factory.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -394,6 +406,99 @@ FELCommandRegistry createNativeCommandRegistry() {
   for (final command in createEngineeringIntelligenceFelCommands(
     intelligenceApi,
   )) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final reverseWorkflowApi = const ReverseWorkflowFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    intelligence: intelligenceApi,
+    sketches: sketchEngineApi,
+    constraints: constraintApi,
+    profiles: profileApi,
+    features: featureModelingApi,
+  );
+  for (final command in createReverseWorkflowFelCommands(reverseWorkflowApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final adaptiveStudioApi = const AdaptiveStudioFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    workflows: reverseWorkflowApi,
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    intelligence: intelligenceApi,
+    sketches: sketchEngineApi,
+    constraints: constraintApi,
+    profiles: profileApi,
+    features: featureModelingApi,
+  );
+  for (final command in createAdaptiveStudioFelCommands(adaptiveStudioApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final interactiveReverseApi = const InteractiveReverseFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    workflows: reverseWorkflowApi,
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    intelligence: intelligenceApi,
+    sketches: sketchEngineApi,
+    constraints: constraintApi,
+    features: featureModelingApi,
+  );
+  for (final command in createInteractiveReverseFelCommands(
+    interactiveReverseApi,
+  )) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final reverseSessionApi = const ReverseSessionFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    workflows: reverseWorkflowApi,
+    studio: adaptiveStudioApi,
+    interactive: interactiveReverseApi,
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    intelligence: intelligenceApi,
+    sketches: sketchEngineApi,
+    constraints: constraintApi,
+    features: featureModelingApi,
+  );
+  for (final command in createReverseSessionFelCommands(reverseSessionApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final certificationApi = const PlatformCertificationFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    recognition: null,
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    workflows: reverseWorkflowApi,
+    studio: adaptiveStudioApi,
+    interactive: interactiveReverseApi,
+    sketches: sketchEngineApi,
+    constraints: constraintApi,
+    features: featureModelingApi,
+    intelligence: intelligenceApi,
+    sessions: reverseSessionApi,
+  );
+  for (final command in createPlatformCertificationFelCommands(
+    certificationApi,
+  )) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final meshApi = const MeshFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+  );
+  for (final command in createMeshFelCommands(meshApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   for (final name in [

@@ -7,7 +7,8 @@ import '../runtime/kernel_runtime.dart';
 import 'open_cascade_bridge.dart';
 import 'open_cascade_ffi.dart';
 
-class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
+class OpenCascadeKernelAdapter
+    implements InterchangeGeometryKernelAPI, MeshGeometryKernelAPI {
   OpenCascadeKernelAdapter({
     OpenCascadeNativeBridge? bridge,
     OpenCascadeNativeBridge Function()? bridgeFactory,
@@ -23,6 +24,7 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   final PersistentIdService _ids;
   final KernelRuntime runtime;
   final Map<String, String> _nativeTokens = {};
+  final Map<String, String> _nativeMeshTokens = {};
   String _version = 'uninitialized';
   Set<KernelCapability> _capabilities = {};
   bool _initialized = false;
@@ -133,6 +135,71 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     entityCount: 1,
     runInIsolate: false,
   );
+
+  @override
+  Future<KernelMeshHandle> importStl(
+    String path, {
+    required String projectId,
+    KernelImportFormat format = KernelImportFormat.autoDetect,
+    KernelCancellationToken cancellation = const NoKernelCancellation(),
+    void Function(KernelProgress progress)? onProgress,
+  }) => runtime.run(
+    'occ-import-stl',
+    () async {
+      await initialize();
+      final bridge = _nativeBridge;
+      if (bridge is! OpenCascadeMeshNativeBridge) {
+        throw StateError('OpenCascade bridge does not support STL mesh import');
+      }
+      final meshBridge = bridge as OpenCascadeMeshNativeBridge;
+      final native = await meshBridge.importStl(
+        path,
+        format,
+        cancellation: cancellation,
+        onProgress: onProgress,
+      );
+      final id = _ids.create(projectId, 'mesh');
+      _nativeMeshTokens[id] = native.token;
+      return KernelMeshHandle(
+        persistentId: id,
+        kernelId: descriptor.id,
+        fingerprint: native.fingerprint,
+        vertexCount: native.vertexCount,
+        triangleCount: native.triangleCount,
+        bounds: native.bounds,
+        hasNormals: native.hasNormals,
+        degenerateTriangleCount: native.degenerateTriangleCount,
+        metadata: {
+          'source': path,
+          'format': format.name,
+          'backend': 'OpenCascade',
+          'nativeType': 'Poly_Triangulation',
+        },
+      );
+    },
+    entityCount: 1,
+    runInIsolate: false,
+  );
+
+  @override
+  Future<void> closeMesh(KernelMeshHandle handle) async {
+    if (handle.kernelId != descriptor.id) {
+      throw ArgumentError(
+        'Mesh belongs to ${handle.kernelId}, not OpenCascade',
+      );
+    }
+    final token =
+        _nativeMeshTokens.remove(handle.persistentId) ??
+        (throw StateError(
+          'Native mesh is not loaded for ${handle.persistentId}',
+        ));
+    final bridge = _nativeBridge;
+    if (bridge is! OpenCascadeMeshNativeBridge) {
+      throw StateError('OpenCascade bridge does not support mesh lifetime');
+    }
+    await (bridge as OpenCascadeMeshNativeBridge).destroyMesh(token);
+  }
+
   @override
   Future<void> exportFile(
     ShapeHandle handle,
@@ -256,6 +323,7 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   Future<void> unload() async {
     if (_bridge != null) await _nativeBridge.shutdown();
     _nativeTokens.clear();
+    _nativeMeshTokens.clear();
     _initialized = false;
     _initialization = null;
   }

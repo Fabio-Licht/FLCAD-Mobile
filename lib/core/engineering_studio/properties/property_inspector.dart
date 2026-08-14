@@ -212,6 +212,61 @@ class PropertyInspector {
         'expectedImprovement': node.context['expectedImprovement'],
         'impact': node.context['impact'],
       }),
+    if (node.context['reverseWorkflow'] == true)
+      PropertySection('Reverse Workflow', {
+        'workflowState': node.context['workflowState'],
+        'progress': node.context['progress'],
+        'currentStep': node.context['currentStep'],
+        'engineeringScore': node.context['engineeringScore'],
+        'projectHealth': node.context['projectHealth'],
+        'recommendations': node.context['recommendations'],
+      }),
+    if (node.context['adaptiveStudio'] == true)
+      PropertySection('Adaptive Studio', {
+        'currentWorkspace': node.context['currentWorkspace'],
+        'currentMode': node.context['currentMode'],
+        'currentFeature': node.context['currentFeature'],
+        'workflowStep': node.context['workflowStep'],
+        'quickAction': node.context['quickAction'],
+        'engineeringRecommendation': node.context['engineeringRecommendation'],
+      }),
+    if (node.context['interactiveReverse'] == true)
+      PropertySection('Interactive Reverse', {
+        'selectedObject': node.context['selectedObject'],
+        'recognizedType': node.context['recognizedType'],
+        'confidence': node.context['confidence'],
+        'relatedFeature': node.context['relatedFeature'],
+        'error': node.context['localError'],
+        'recommendation': node.context['recommendation'],
+      }),
+    if (node.context['reverseSession'] == true)
+      PropertySection('Reverse Session', {
+        'sessionId': node.context['sessionId'],
+        'currentMilestone': node.context['currentMilestone'],
+        'currentSnapshot': node.context['currentSnapshot'],
+        'sessionHealth': node.context['sessionHealth'],
+        'sessionDuration': node.context['sessionDuration'],
+        'sessionProgress': node.context['sessionProgress'],
+      }),
+    if (node.context['platformCertification'] == true)
+      PropertySection('Platform Certification', {
+        'platformStatus': node.context['platformStatus'],
+        'certification': node.context['certification'],
+        'architectureScore': node.context['architectureScore'],
+        'workflowHealth': node.context['workflowHealth'],
+      }),
+    if (node.context['meshFoundation'] == true)
+      PropertySection('Mesh', {
+        'meshFile': node.context['meshFile'],
+        'meshSize': node.context['meshSize'],
+        'triangles': node.context['triangles'],
+        'vertices': node.context['vertices'],
+        'boundingBox': node.context['boundingBox'],
+        'units': node.context['units'],
+        'importTime': node.context['importTime'],
+        'kernelStatus': node.context['kernelStatus'],
+        'meshHealth': node.context['meshHealth'],
+      }),
     PropertySection(
       'Analytics',
       (node.context['analytics'] as Map?)?.cast<String, dynamic>() ?? const {},

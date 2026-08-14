@@ -14,6 +14,7 @@
 #include <IGESControl_Writer.hxx>
 #include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
+#include <RWStl.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
@@ -34,6 +35,7 @@
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Sphere.hxx>
+#include <gp_Vec.hxx>
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -46,6 +48,7 @@
 
 namespace {
 std::unordered_map<std::string, TopoDS_Shape> shapes;
+std::unordered_map<std::string, Handle(Poly_Triangulation)> meshes;
 std::mutex registry_mutex;
 std::atomic<unsigned long long> sequence{1};
 thread_local std::string response;
@@ -63,10 +66,10 @@ const char* shape_type(const TopoDS_Shape& s){switch(s.ShapeType()){case TopAbs_
 
 extern "C" {
 int flcad_occ_initialize(char* error,size_t error_size){try{Interface_Static::SetCVal("write.step.schema","AP242DIS");return 1;}catch(const Standard_Failure& e){return fail(e.GetMessageString(),error,error_size);}}
-void flcad_occ_shutdown(){std::lock_guard<std::mutex> lock(registry_mutex);shapes.clear();}
+void flcad_occ_shutdown(){std::lock_guard<std::mutex> lock(registry_mutex);shapes.clear();meshes.clear();}
 const char* flcad_occ_version(){return OCC_VERSION_COMPLETE;}
-const char* flcad_occ_capabilities(){return "STEP,IGES,BREP,Surface,Solid,Meshing,Healing,NURBS,Boolean";}
-const char* flcad_occ_diagnostics(){response="{\"healthy\":true,\"backend\":\"OpenCascade\",\"shapeCount\":"+std::to_string(flcad_occ_shape_count())+"}";return response.c_str();}
+const char* flcad_occ_capabilities(){return "STEP,IGES,BREP,STL,Surface,Solid,Meshing,Healing,NURBS,Boolean";}
+const char* flcad_occ_diagnostics(){std::lock_guard<std::mutex> lock(registry_mutex);response="{\"healthy\":true,\"backend\":\"OpenCascade\",\"shapeCount\":"+std::to_string(shapes.size())+",\"meshCount\":"+std::to_string(meshes.size())+"}";return response.c_str();}
 int flcad_occ_create_vertex(double x,double y,double z,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeVertex(gp_Pnt(x,y,z)),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_destroy_shape(const char* id,char* e,size_t es){std::lock_guard<std::mutex> lock(registry_mutex);auto it=shapes.find(id?id:"");if(it==shapes.end())return fail("Unknown native shape token",e,es);shapes.erase(it);return 1;}
 int flcad_occ_create_edge(const char*a,const char*b,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeEdge(TopoDS::Vertex(get(a)),TopoDS::Vertex(get(b))),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
@@ -79,6 +82,8 @@ int flcad_occ_create_cylinder(const double*o,const double*d,double r,double l,do
 int flcad_occ_create_cone(const double*o,const double*d,double a,double l,double u,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeFace(gp_Cone(gp_Ax2(point(o),direction(d)),a,0),0,6.283185307179586,l,u),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_create_sphere(const double*o,double r,double l,double u,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeFace(gp_Sphere(gp_Ax2(point(o),gp::DZ()),r),0,6.283185307179586,l,u),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_import_shape(const char*p,const char*fmt,char*t,size_t ts,char*f,size_t fs,char*ty,size_t tys,char*e,size_t es){try{TopoDS_Shape s;std::string format=fmt?fmt:"";if(format=="step"){STEPControl_Reader r;if(r.ReadFile(p)!=IFSelect_RetDone)return fail("STEP read failed",e,es);r.TransferRoots();s=r.OneShape();}else if(format=="iges"){IGESControl_Reader r;if(r.ReadFile(p)!=IFSelect_RetDone)return fail("IGES read failed",e,es);r.TransferRoots();s=r.OneShape();}else{BRep_Builder b;if(!BRepTools::Read(s,p,b))return fail("BREP read failed",e,es);}copy(shape_type(s),ty,tys);return output(s,t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
+int flcad_occ_import_stl(const char*p,char*t,size_t ts,char*f,size_t fs,int*v,int*tr,int*deg,double*b,int*n,char*e,size_t es){try{if(!p||!std::ifstream(p,std::ios::binary).good())return fail("STL file is unavailable",e,es);Handle(Poly_Triangulation) mesh=RWStl::ReadFile(p);if(mesh.IsNull()||mesh->NbTriangles()<=0||mesh->NbNodes()<=0)return fail("STL contains no triangulation",e,es);double minx=0,miny=0,minz=0,maxx=0,maxy=0,maxz=0;for(int i=1;i<=mesh->NbNodes();++i){const gp_Pnt& q=mesh->Node(i);if(i==1){minx=maxx=q.X();miny=maxy=q.Y();minz=maxz=q.Z();}else{minx=std::min(minx,q.X());miny=std::min(miny,q.Y());minz=std::min(minz,q.Z());maxx=std::max(maxx,q.X());maxy=std::max(maxy,q.Y());maxz=std::max(maxz,q.Z());}}int degenerates=0;for(int i=1;i<=mesh->NbTriangles();++i){int a,c,d;mesh->Triangle(i).Get(a,c,d);const gp_Pnt&p1=mesh->Node(a),&p2=mesh->Node(c),&p3=mesh->Node(d);if(a==c||c==d||a==d||gp_Vec(p1,p2).Crossed(gp_Vec(p1,p3)).SquareMagnitude()<=1e-24)++degenerates;}auto id="occ-mesh-"+std::to_string(sequence++);{std::lock_guard<std::mutex> lock(registry_mutex);meshes[id]=mesh;}copy(id,t,ts);copy("stl-"+std::to_string(mesh->NbNodes())+"-"+std::to_string(mesh->NbTriangles()),f,fs);*v=mesh->NbNodes();*tr=mesh->NbTriangles();*deg=degenerates;b[0]=minx;b[1]=miny;b[2]=minz;b[3]=maxx;b[4]=maxy;b[5]=maxz;*n=mesh->HasNormals()?1:0;return 1;}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
+int flcad_occ_destroy_mesh(const char*id,char*e,size_t es){std::lock_guard<std::mutex> lock(registry_mutex);auto it=meshes.find(id?id:"");if(it==meshes.end())return fail("Unknown native mesh token",e,es);meshes.erase(it);return 1;}
 int flcad_occ_export_shape(const char*id,const char*p,const char*fmt,char*e,size_t es){try{auto s=get(id);std::string format=fmt?fmt:"";if(format=="step"){STEPControl_Writer w;w.Transfer(s,STEPControl_AsIs);if(w.Write(p)!=IFSelect_RetDone)return fail("STEP write failed",e,es);}else if(format=="iges"){IGESControl_Writer w;w.AddShape(s);if(!w.Write(p))return fail("IGES write failed",e,es);}else if(!BRepTools::Write(s,p))return fail("BREP write failed",e,es);return 1;}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_validate(const char*id,char*out,size_t os,char*e,size_t es){try{auto s=get(id);BRepCheck_Analyzer a(s,true);copy(a.IsValid()?"[]":"[{\"code\":\"brep-invalid\",\"severity\":\"error\",\"message\":\"BRepCheck rejected shape\"}]",out,os);return 1;}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_healing_proposals(const char*id,char*out,size_t os,char*e,size_t es){try{auto s=get(id);Handle(ShapeFix_Shape) fix=new ShapeFix_Shape(s);fix->Perform();copy(fix->Status(ShapeExtend_DONE)?"[{\"id\":\"shape-fix\",\"operation\":\"fix-shape\",\"reason\":\"ShapeFix reports available corrections\"}]":"[]",out,os);return 1;}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}

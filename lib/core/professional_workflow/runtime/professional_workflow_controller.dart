@@ -25,8 +25,11 @@ class ProfessionalWorkflowController {
   final GuidedWorkflowEngine _engine;
   final WorkflowAdvisor _advisor;
   final WorkflowSessionRepository _sessionRepository;
+  final Set<Future<void>> _pendingSaves = {};
   final EngineeringWorkflowSession session;
-  final _changes = StreamController<ProfessionalWorkflowState>.broadcast();
+  final _changes = StreamController<ProfessionalWorkflowState>.broadcast(
+    sync: true,
+  );
   late ProfessionalWorkflowState _state;
   ProfessionalWorkflowState get state => _state;
   Stream<ProfessionalWorkflowState> get changes => _changes.stream;
@@ -34,7 +37,7 @@ class ProfessionalWorkflowController {
   void start(ProfessionalWorkflowStage stage) {
     _emit(_engine.start(_state, stage));
     session.record(SessionEventType.command, 'start:${stage.name}');
-    unawaited(_sessionRepository.save(session));
+    _saveSession();
   }
 
   void complete(
@@ -48,7 +51,7 @@ class ProfessionalWorkflowController {
       'complete:${stage.name}',
       accepted: true,
     );
-    unawaited(_sessionRepository.save(session));
+    _saveSession();
   }
 
   void accept(WorkflowRecommendation recommendation) {
@@ -58,7 +61,7 @@ class ProfessionalWorkflowController {
       accepted: true,
       metadata: {'confidence': recommendation.decision.confidence},
     );
-    unawaited(_sessionRepository.save(session));
+    _saveSession();
     start(recommendation.stage);
   }
 
@@ -68,7 +71,7 @@ class ProfessionalWorkflowController {
       recommendation.id,
       accepted: false,
     );
-    unawaited(_sessionRepository.save(session));
+    _saveSession();
     final timeline = [
       ..._state.timeline,
       EngineeringTimelineEntry(
@@ -107,5 +110,20 @@ class ProfessionalWorkflowController {
     _changes.add(_state);
   }
 
-  Future<void> dispose() => _changes.close();
+  void _saveSession() {
+    late final Future<void> save;
+    save = _sessionRepository
+        .save(session)
+        .whenComplete(() => _pendingSaves.remove(save));
+    _pendingSaves.add(save);
+  }
+
+  Future<void> dispose() async {
+    if (_pendingSaves.isNotEmpty) {
+      await Future.wait(
+        _pendingSaves.toList(),
+      ).timeout(const Duration(seconds: 5));
+    }
+    await _changes.close();
+  }
 }

@@ -7,27 +7,44 @@ class DecisionGraph {
   final EngineeringGraph engineeringGraph;
   final Map<String, EngineeringDecision> _decisions = {};
   void add(EngineeringDecision decision) {
+    if (_decisions.containsKey(decision.id) ||
+        engineeringGraph.nodes.containsKey(decision.id)) {
+      throw StateError('Duplicate decision id: ${decision.id}');
+    }
     for (final dependency in decision.dependencies) {
       if (!_decisions.containsKey(dependency)) {
         throw StateError('Missing decision dependency $dependency');
       }
     }
-    _decisions[decision.id] = decision;
-    engineeringGraph.addNode(
-      EngineeringGraphNode(
-        decision.id,
-        EngineeringNodeType.ai,
-        metadata: {
-          'domain': 'decision',
-          'type': decision.type.name,
-          'confidence': decision.confidence,
-        },
-      ),
-    );
-    for (final dependency in decision.dependencies) {
-      engineeringGraph.connect(
-        EngineeringGraphEdge(dependency, decision.id, 'decision-dependency'),
+    final initialEdgeCount = engineeringGraph.edges.length;
+    try {
+      _decisions[decision.id] = decision;
+      engineeringGraph.addNode(
+        EngineeringGraphNode(
+          decision.id,
+          EngineeringNodeType.ai,
+          metadata: {
+            'domain': 'decision',
+            'type': decision.type.name,
+            'confidence': decision.confidence,
+          },
+        ),
       );
+      for (final dependency in decision.dependencies) {
+        engineeringGraph.connect(
+          EngineeringGraphEdge(dependency, decision.id, 'decision-dependency'),
+        );
+      }
+    } catch (_) {
+      if (engineeringGraph.edges.length > initialEdgeCount) {
+        engineeringGraph.edges.removeRange(
+          initialEdgeCount,
+          engineeringGraph.edges.length,
+        );
+      }
+      engineeringGraph.nodes.remove(decision.id);
+      _decisions.remove(decision.id);
+      rethrow;
     }
   }
 

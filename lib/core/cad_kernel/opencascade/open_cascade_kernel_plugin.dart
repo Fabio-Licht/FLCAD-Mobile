@@ -5,12 +5,8 @@ import 'open_cascade_ffi.dart';
 import 'open_cascade_kernel_adapter.dart';
 
 class OpenCascadeKernelPlugin implements KernelPlugin {
-  OpenCascadeKernelPlugin({OpenCascadeNativeBridge? bridge})
-    : bridge =
-          bridge ??
-          OpenCascadeFFI.tryLoad() ??
-          const UnavailableOpenCascadeBridge();
-  final OpenCascadeNativeBridge bridge;
+  OpenCascadeKernelPlugin({this.bridge});
+  final OpenCascadeNativeBridge? bridge;
   @override
   String get pluginId => 'opencascade-plugin';
   @override
@@ -18,10 +14,12 @@ class OpenCascadeKernelPlugin implements KernelPlugin {
   @override
   bool get compatible => true;
   @override
-  OpenCascadeKernelAdapter createKernel() =>
-      OpenCascadeKernelAdapter(bridge: bridge);
+  OpenCascadeKernelAdapter createKernel() => OpenCascadeKernelAdapter(
+    bridge: bridge,
+    bridgeFactory: OpenCascadeFFI.loadOrUnavailable,
+  );
   void register(KernelManager manager) {
     manager.plugins.register(this);
-    manager.loadPlugin(pluginId);
+    manager.loadPlugin(pluginId, makeDefault: true);
   }
 }

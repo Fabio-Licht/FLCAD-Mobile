@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flcad_mobile/core/engineering_decision/api/decision_api.dart';
 import 'package:flcad_mobile/core/engineering_decision/commands/fel_decision_commands.dart';
 import 'package:flcad_mobile/core/engineering_decision/engine/engineering_decision_engine.dart';
+import 'package:flcad_mobile/core/engineering_decision/graph/decision_graph.dart';
 import 'package:flcad_mobile/core/engineering_decision/goals/goal_engine.dart';
 import 'package:flcad_mobile/core/engineering_decision/integration/professional_workflow_decision_adapter.dart';
 import 'package:flcad_mobile/core/engineering_decision/models/decision_models.dart';
@@ -13,6 +14,8 @@ import 'package:flcad_mobile/core/engineering_decision/scoring/multi_criteria_de
 import 'package:flcad_mobile/core/fel/commands/native_commands.dart';
 import 'package:flcad_mobile/core/professional_workflow/models/workflow_models.dart';
 import 'package:flcad_mobile/core/storage/local_storage_service.dart';
+import 'package:flcad_mobile/core/engineering/graph/engineering_graph.dart';
+import 'package:flcad_mobile/core/utils/id_generator.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _criteria = DecisionCriteria(
@@ -106,6 +109,74 @@ void main() {
       );
     },
   );
+
+  test('decision engine always assigns different identities', () async {
+    final engine = EngineeringDecisionEngine();
+    final first = await engine.decide(request());
+    final second = await engine.decide(request(dependencies: [first.id]));
+    expect(second.id, isNot(first.id));
+    expect(engine.graph.engineeringGraph.dependencies(second.id), {first.id});
+    expect(engine.graph.impact(first.id), contains(second.id));
+  });
+
+  test('ten thousand sequential decisions preserve identity and impact', () {
+    final graph = DecisionGraph();
+    final ids = <String>{};
+    String? previous;
+    for (var index = 0; index < 10000; index++) {
+      final id = 'ede:${IdGenerator.generate()}';
+      expect(ids.add(id), isTrue, reason: 'collision at decision $index');
+      graph.add(
+        _decision(id, dependencies: previous == null ? [] : [previous]),
+      );
+      if (previous != null) {
+        expect(graph.engineeringGraph.dependencies(id), {previous});
+      }
+      previous = id;
+    }
+    expect(graph.decisions, hasLength(10000));
+    expect(graph.impact(graph.decisions[9998].id), {previous});
+  });
+
+  test('duplicate decision ID is rejected before graph mutation', () {
+    final graph = DecisionGraph();
+    final decision = _decision('ede:duplicate');
+    graph.add(decision);
+    final nodeCount = graph.engineeringGraph.nodes.length;
+    final edgeCount = graph.engineeringGraph.edges.length;
+
+    expect(
+      () => graph.add(decision),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'Duplicate decision id: ede:duplicate',
+        ),
+      ),
+    );
+    expect(graph.decisions, [same(decision)]);
+    expect(graph.engineeringGraph.nodes, hasLength(nodeCount));
+    expect(graph.engineeringGraph.edges, hasLength(edgeCount));
+  });
+
+  test('decision graph add rolls back every mutation when connect fails', () {
+    final engineeringGraph = _FailingEngineeringGraph();
+    final graph = DecisionGraph(engineeringGraph: engineeringGraph);
+    graph.add(_decision('ede:a'));
+    graph.add(_decision('ede:b'));
+    engineeringGraph.failOnConnect = 2;
+
+    expect(
+      () =>
+          graph.add(_decision('ede:c', dependencies: const ['ede:a', 'ede:b'])),
+      throwsA(isA<StateError>()),
+    );
+    expect(graph.find('ede:c'), isNull);
+    expect(engineeringGraph.nodes, isNot(contains('ede:c')));
+    expect(engineeringGraph.edges, isEmpty);
+    expect(graph.decisions.map((decision) => decision.id), ['ede:a', 'ede:b']);
+  });
 
   test('human override feeds memory, timeline and analytics', () async {
     final engine = EngineeringDecisionEngine();
@@ -213,6 +284,58 @@ void main() {
       expect(names, contains(command.name));
     }
   });
+}
+
+EngineeringDecision _decision(
+  String id, {
+  List<String> dependencies = const [],
+}) => EngineeringDecision(
+  id: id,
+  projectId: 'p',
+  type: EngineeringDecisionType.reference,
+  origin: DecisionOrigin.cognition,
+  title: 'Decision $id',
+  evidence: const [],
+  confidence: .9,
+  priority: DecisionPriority.high,
+  impact: 'test',
+  dependencies: dependencies,
+  alternatives: const [
+    DecisionAlternative(
+      id: 'primary',
+      name: 'Primary',
+      kind: 'primary',
+      estimatedTime: Duration.zero,
+      confidence: .9,
+      complexity: .1,
+      risk: DecisionRisk.low,
+      score: .9,
+    ),
+  ],
+  estimatedCost: .1,
+  expectedBenefit: .9,
+  risk: DecisionRisk.low,
+  justification: 'test',
+  timestamp: DateTime.utc(2026),
+  responsible: 'test',
+  score: const DecisionScore(.9, {
+    'impact': .9,
+    'cost': .9,
+  }, DecisionPolicy.precision),
+);
+
+class _FailingEngineeringGraph extends EngineeringGraph {
+  int? failOnConnect;
+  int _connectCount = 0;
+
+  @override
+  void connect(EngineeringGraphEdge edge) {
+    _connectCount++;
+    if (_connectCount == failOnConnect) {
+      throw StateError('Injected connect failure');
+    }
+    super.connect(edge);
+  }
 }
 
 class _Plugin implements DecisionPlugin {

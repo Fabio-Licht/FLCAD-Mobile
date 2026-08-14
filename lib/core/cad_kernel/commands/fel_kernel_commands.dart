@@ -2,6 +2,8 @@ import '../../fel/commands/fel_command.dart';
 import '../../fel/runtime/fel_context.dart';
 import '../../fel/types/fel_type.dart';
 import '../manager/kernel_manager.dart';
+import '../graph/geometry_graph.dart';
+import '../history/geometry_history.dart';
 import '../api/geometry_kernel_api.dart';
 import '../io/kernel_io_models.dart';
 import '../models/kernel_models.dart';
@@ -13,6 +15,8 @@ class KernelFELState {
   final KernelManager manager;
   KernelTransactionManager? transactions;
   dynamic current;
+  final GeometryGraph graph = GeometryGraph();
+  final GeometryHistory history = GeometryHistory();
 }
 
 class KernelFELCommand implements FELCommand {
@@ -26,6 +30,7 @@ class KernelFELCommand implements FELCommand {
     'load' || 'unload' => const [FELType.string],
     'import' || 'export' => const [FELType.string],
     'createPlane' || 'createCylinder' => List.filled(8, FELType.number),
+    'createVertex' => List.filled(3, FELType.number),
     _ => const [],
   };
   @override
@@ -63,8 +68,64 @@ class KernelFELCommand implements FELCommand {
         value = state.manager.active.descriptor.capabilities.values
             .map((e) => e.name)
             .toList();
-      case 'topology' || 'graph':
-        value = 'Geometry graph is empty: no geometry has been created';
+      case 'initialize':
+        value = await state.manager.select('opencascade');
+      case 'shutdown':
+        await state.manager.active.unload();
+        value = true;
+      case 'createVertex':
+        final kernel = state.manager.active;
+        if (kernel.descriptor.id == 'none') {
+          throw StateError('OpenCascade kernel is not initialized');
+        }
+        final coordinates = args
+            .map((value) => (value.value as num).toDouble())
+            .toList();
+        final now = DateTime.now();
+        final transaction = KernelTransaction(
+          'fel-${now.microsecondsSinceEpoch}',
+          context.projectId,
+          kernel.descriptor.id,
+          now,
+          TransactionStatus.active,
+          const [],
+        );
+        final handle = await kernel.create(
+          'CREATE VERTEX',
+          {'x': coordinates[0], 'y': coordinates[1], 'z': coordinates[2]},
+          persistentId:
+              '${context.projectId}-vertex-${now.microsecondsSinceEpoch}',
+          expectedType: CADShapeType.vertex,
+          transaction: transaction,
+        );
+        state.graph.add(
+          GeometryGraphNode(handle, {
+            'operation': 'CREATE VERTEX',
+            'coordinates': coordinates,
+          }),
+        );
+        state.history.record(
+          projectId: context.projectId,
+          action: GeometryHistoryAction.create,
+          shapes: [handle],
+          transactionId: transaction.id,
+          actor: 'FEL',
+          metadata: {'command': 'CREATE VERTEX'},
+        );
+        value = state.current = handle;
+      case 'topology':
+        value = state.current is ShapeHandle
+            ? (state.current as ShapeHandle).toJson()
+            : 'No geometry has been created';
+      case 'graph':
+        value = state.graph.nodes.values
+            .map(
+              (node) => {
+                'shape': node.handle.toJson(),
+                'metadata': node.metadata,
+              },
+            )
+            .toList();
       case 'validate':
         final handle = state.current;
         if (handle is! ShapeHandle) throw StateError('No ShapeHandle selected');
@@ -169,7 +230,11 @@ List<FELCommand> createKernelFELCommands({KernelManager? manager}) {
     KernelFELCommand('SHOW KERNEL', 'show', state),
     KernelFELCommand('SHOW KERNEL VERSION', 'version', state),
     KernelFELCommand('SHOW KERNEL STATUS', 'status', state),
+    KernelFELCommand('SHOW KERNEL CAPABILITIES', 'capabilities', state),
     KernelFELCommand('SHOW CAPABILITIES', 'capabilities', state),
+    KernelFELCommand('INITIALIZE KERNEL', 'initialize', state),
+    KernelFELCommand('SHUTDOWN KERNEL', 'shutdown', state),
+    KernelFELCommand('CREATE VERTEX', 'createVertex', state),
     KernelFELCommand('SHOW TOPOLOGY', 'topology', state),
     KernelFELCommand('SHOW GEOMETRY GRAPH', 'graph', state),
     KernelFELCommand('VALIDATE GEOMETRY', 'validate', state),

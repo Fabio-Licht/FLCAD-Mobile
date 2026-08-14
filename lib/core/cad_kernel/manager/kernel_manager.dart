@@ -11,18 +11,19 @@ class KernelManager {
   GeometryKernelAPI get active => activeId == null
       ? const UnavailableGeometryKernel()
       : _kernels[activeId] ?? const UnavailableGeometryKernel();
-  void register(GeometryKernelAPI kernel) {
+  void register(GeometryKernelAPI kernel, {bool makeDefault = false}) {
     if (_kernels.containsKey(kernel.descriptor.id)) {
       throw StateError('Kernel ${kernel.descriptor.id} already registered');
     }
     _kernels[kernel.descriptor.id] = kernel;
+    if (makeDefault && activeId == null) activeId = kernel.descriptor.id;
   }
 
-  void loadPlugin(String pluginId) {
+  void loadPlugin(String pluginId, {bool makeDefault = false}) {
     final plugin =
         plugins.plugins.where((p) => p.pluginId == pluginId).firstOrNull ??
         (throw StateError('Plugin $pluginId not found'));
-    register(plugin.createKernel());
+    register(plugin.createKernel(), makeDefault: makeDefault);
   }
 
   Future<KernelHealth> select(String id) async {

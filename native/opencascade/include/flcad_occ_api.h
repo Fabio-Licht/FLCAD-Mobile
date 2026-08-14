@@ -14,6 +14,7 @@ FLCAD_OCC_EXPORT const char* flcad_occ_version();
 FLCAD_OCC_EXPORT const char* flcad_occ_capabilities();
 FLCAD_OCC_EXPORT const char* flcad_occ_diagnostics();
 FLCAD_OCC_EXPORT int flcad_occ_create_vertex(double x,double y,double z,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_destroy_shape(const char* token,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_edge(const char* start,const char* end,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_wire(const char* edge_tokens,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_face(const char* wire_token,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);

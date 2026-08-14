@@ -2,11 +2,95 @@ cmake_minimum_required(VERSION 3.18)
 project(flcad_opencascade LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-find_package(OpenCASCADE REQUIRED)
+set(FLCAD_OCCT_ROOT "" CACHE PATH "OpenCascade SDK root (contains inc, lib and bin)")
+if(NOT FLCAD_OCCT_ROOT AND DEFINED ENV{FLCAD_OCCT_ROOT})
+  file(TO_CMAKE_PATH "$ENV{FLCAD_OCCT_ROOT}" FLCAD_OCCT_ROOT)
+endif()
+if(NOT FLCAD_OCCT_ROOT AND DEFINED ENV{OCCT_ROOT})
+  file(TO_CMAKE_PATH "$ENV{OCCT_ROOT}" FLCAD_OCCT_ROOT)
+endif()
+if(NOT FLCAD_OCCT_ROOT)
+  set(_occt_search_roots ${CMAKE_PREFIX_PATH})
+  if(WIN32)
+    list(APPEND _occt_search_roots
+      "$ENV{ProgramFiles}/OpenCASCADE"
+      "$ENV{ProgramFiles}/OCCT"
+      "C:/FLCAD/SDKs/OCCT")
+  endif()
+  foreach(_search_root IN LISTS _occt_search_roots)
+    if(IS_DIRECTORY "${_search_root}")
+      file(GLOB_RECURSE _occt_configs LIST_DIRECTORIES FALSE
+        "${_search_root}/OpenCASCADEConfig.cmake")
+      list(LENGTH _occt_configs _occt_config_count)
+      if(_occt_config_count GREATER 0)
+        list(GET _occt_configs 0 _detected_config)
+        get_filename_component(_detected_cmake_dir "${_detected_config}" DIRECTORY)
+        get_filename_component(FLCAD_OCCT_ROOT "${_detected_cmake_dir}" DIRECTORY)
+        set(FLCAD_OCCT_ROOT "${FLCAD_OCCT_ROOT}" CACHE PATH
+          "Auto-detected OpenCascade SDK root" FORCE)
+        message(STATUS "Auto-detected OpenCascade SDK: ${FLCAD_OCCT_ROOT}")
+        break()
+      endif()
+    endif()
+  endforeach()
+endif()
+if(FLCAD_OCCT_ROOT)
+  if(NOT IS_DIRECTORY "${FLCAD_OCCT_ROOT}/inc")
+    message(FATAL_ERROR "Invalid OpenCascade SDK: ${FLCAD_OCCT_ROOT}/inc is missing")
+  endif()
+  list(PREPEND CMAKE_PREFIX_PATH "${FLCAD_OCCT_ROOT}")
+  find_path(_occt_cmake_dir OpenCASCADEConfig.cmake
+    PATHS
+      "${FLCAD_OCCT_ROOT}/cmake"
+      "${FLCAD_OCCT_ROOT}/lib/cmake/opencascade"
+      "${FLCAD_OCCT_ROOT}/lib/cmake/OpenCASCADE"
+    NO_DEFAULT_PATH)
+  if(NOT _occt_cmake_dir)
+    message(FATAL_ERROR "Invalid OpenCascade SDK: OpenCASCADEConfig.cmake was not found under ${FLCAD_OCCT_ROOT}")
+  endif()
+  set(OpenCASCADE_DIR "${_occt_cmake_dir}" CACHE PATH "OpenCascade CMake package" FORCE)
+endif()
+find_package(OpenCASCADE CONFIG REQUIRED COMPONENTS
+  FoundationClasses ModelingData ModelingAlgorithms)
+foreach(_occt_dir OpenCASCADE_INCLUDE_DIR OpenCASCADE_LIBRARY_DIR OpenCASCADE_BINARY_DIR)
+  if(NOT IS_DIRECTORY "${${_occt_dir}}")
+    message(FATAL_ERROR "Invalid OpenCascade SDK: ${_occt_dir}=${${_occt_dir}} is missing")
+  endif()
+endforeach()
 add_library(flcad_opencascade SHARED src/flcad_occ_api.cpp)
-target_include_directories(flcad_opencascade PUBLIC include ${OpenCASCADE_INCLUDE_DIR})
-target_link_libraries(flcad_opencascade PRIVATE ${OpenCASCADE_LIBRARIES})
+target_include_directories(flcad_opencascade PUBLIC include ${OpenCASCADE_INCLUDE_DIR} ${OpenCASCADE_INCLUDE_DIRS})
+target_link_directories(flcad_opencascade PRIVATE ${OpenCASCADE_LIBRARY_DIR})
+set(_flcad_occt_exchange_libraries TKDE TKXSBase TKDESTEP TKDEIGES)
+foreach(_library IN LISTS _flcad_occt_exchange_libraries)
+  find_library(_path_${_library} NAMES ${_library}
+    PATHS "${OpenCASCADE_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+endforeach()
+target_link_libraries(flcad_opencascade PRIVATE
+  ${OpenCASCADE_LIBRARIES}
+  ${_path_TKDE} ${_path_TKXSBase} ${_path_TKDESTEP} ${_path_TKDEIGES})
 target_compile_definitions(flcad_opencascade PRIVATE FLCAD_OCC_BUILD)
+if(WIN32)
+  file(GLOB _occt_runtime_dlls CONFIGURE_DEPENDS "${OpenCASCADE_BINARY_DIR}/*.dll")
+  if(NOT _occt_runtime_dlls)
+    message(FATAL_ERROR "Invalid OpenCascade SDK: ${OpenCASCADE_BINARY_DIR} contains no runtime DLLs")
+  endif()
+  get_filename_component(_occt_bundle_root "${FLCAD_OCCT_ROOT}" DIRECTORY)
+  file(GLOB_RECURSE _occt_third_party_candidates CONFIGURE_DEPENDS
+    "${_occt_bundle_root}/3rdparty*/*.dll")
+  foreach(_candidate IN LISTS _occt_third_party_candidates)
+    get_filename_component(_candidate_name "${_candidate}" NAME)
+    if(_candidate_name MATCHES "^(tbb12|jemalloc)\\.dll$")
+      list(APPEND _occt_runtime_dlls "${_candidate}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _occt_runtime_dlls)
+  set(FLCAD_OCCT_RUNTIME_DLLS "${_occt_runtime_dlls}" CACHE INTERNAL
+    "OpenCascade runtime DLLs including required third-party libraries")
+  add_custom_command(TARGET flcad_opencascade POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${_occt_runtime_dlls} $<TARGET_FILE_DIR:flcad_opencascade>
+    COMMAND_EXPAND_LISTS)
+endif()
 install(TARGETS flcad_opencascade RUNTIME DESTINATION . LIBRARY DESTINATION .)
 include(CTest)
 if(BUILD_TESTING)

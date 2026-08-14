@@ -52,7 +52,7 @@ thread_local std::string response;
 void copy(const std::string& value,char* out,size_t size){if(!out||size==0)return;std::strncpy(out,value.c_str(),size-1);out[size-1]='\0';}
 int fail(const std::string& message,char* error,size_t size){copy(message,error,size);return 0;}
 std::string token(){return "occ-shape-"+std::to_string(sequence++);}
-std::string fingerprint(const TopoDS_Shape& shape){return "occ-"+std::to_string(shape.HashCode(2147483647));}
+std::string fingerprint(const TopoDS_Shape& shape){return "occ-"+std::to_string(std::hash<TopoDS_Shape>{}(shape));}
 std::string store(const TopoDS_Shape& shape){std::lock_guard<std::mutex> lock(registry_mutex);auto id=token();shapes[id]=shape;return id;}
 TopoDS_Shape get(const char* id){std::lock_guard<std::mutex> lock(registry_mutex);auto it=shapes.find(id?id:"");if(it==shapes.end())throw Standard_Failure("Unknown native shape token");return it->second;}
 std::vector<std::string> split(const char* value){std::vector<std::string> result;std::stringstream stream(value?value:"");std::string item;while(std::getline(stream,item,',')){if(!item.empty())result.push_back(item);}return result;}
@@ -68,6 +68,7 @@ const char* flcad_occ_version(){return OCC_VERSION_COMPLETE;}
 const char* flcad_occ_capabilities(){return "STEP,IGES,BREP,Surface,Solid,Meshing,Healing,NURBS,Boolean";}
 const char* flcad_occ_diagnostics(){response="{\"healthy\":true,\"backend\":\"OpenCascade\",\"shapeCount\":"+std::to_string(flcad_occ_shape_count())+"}";return response.c_str();}
 int flcad_occ_create_vertex(double x,double y,double z,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeVertex(gp_Pnt(x,y,z)),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
+int flcad_occ_destroy_shape(const char* id,char* e,size_t es){std::lock_guard<std::mutex> lock(registry_mutex);auto it=shapes.find(id?id:"");if(it==shapes.end())return fail("Unknown native shape token",e,es);shapes.erase(it);return 1;}
 int flcad_occ_create_edge(const char*a,const char*b,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{return output(BRepBuilderAPI_MakeEdge(TopoDS::Vertex(get(a)),TopoDS::Vertex(get(b))),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_create_wire(const char*ids,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{BRepBuilderAPI_MakeWire maker;for(auto&id:split(ids))maker.Add(TopoDS::Edge(get(id.c_str())));if(!maker.IsDone())return fail("Wire builder did not complete",e,es);return output(maker.Wire(),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}
 int flcad_occ_create_face(const char*id,char*t,size_t ts,char*f,size_t fs,char*e,size_t es){try{BRepBuilderAPI_MakeFace maker(TopoDS::Wire(get(id)),true);if(!maker.IsDone())return fail("Face builder did not complete",e,es);return output(maker.Face(),t,ts,f,fs,e,es);}catch(const Standard_Failure& x){return fail(x.GetMessageString(),e,es);}}

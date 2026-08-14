@@ -13,6 +13,7 @@ abstract interface class OpenCascadeNativeBridge {
     Map<String, dynamic> parameters,
     CADShapeType expectedType,
   );
+  Future<void> destroyShape(String nativeToken);
   Future<OpenCascadeNativeShape> importShape(
     String path,
     KernelExchangeFormat format, {
@@ -82,6 +83,8 @@ class UnavailableOpenCascadeBridge implements OpenCascadeNativeBridge {
     Map<String, dynamic> parameters,
     CADShapeType expectedType,
   ) async => _fail();
+  @override
+  Future<void> destroyShape(String nativeToken) async => _fail();
   @override
   Future<OpenCascadeNativeShape> importShape(
     String path,

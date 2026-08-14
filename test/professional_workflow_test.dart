@@ -98,7 +98,6 @@ void main() {
       final subscription = controller.changes.listen(states.add);
       controller.start(ProfessionalWorkflowStage.importStl);
       controller.complete(ProfessionalWorkflowStage.importStl);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(states, hasLength(2));
       expect(
         controller.state.currentStage,
@@ -107,10 +106,10 @@ void main() {
       final sessions = Directory(
         '${root.path}${Platform.pathSeparator}Jobs${Platform.pathSeparator}project${Platform.pathSeparator}Sessions',
       );
-      expect(await sessions.exists(), isTrue);
-      expect(await sessions.list().where((entry) => entry is File).length, 1);
       await subscription.cancel();
       await controller.dispose();
+      expect(await sessions.exists(), isTrue);
+      expect(await sessions.list().where((entry) => entry is File).length, 1);
     },
   );
 

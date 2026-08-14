@@ -5,27 +5,35 @@ import '../io/kernel_io_models.dart';
 import '../models/kernel_models.dart';
 import '../runtime/kernel_runtime.dart';
 import 'open_cascade_bridge.dart';
+import 'open_cascade_ffi.dart';
 
 class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   OpenCascadeKernelAdapter({
-    required OpenCascadeNativeBridge bridge,
+    OpenCascadeNativeBridge? bridge,
+    OpenCascadeNativeBridge Function()? bridgeFactory,
     KernelAnalytics? analytics,
     PersistentIdService? ids,
   }) : _bridge = bridge,
+       _bridgeFactory = bridgeFactory ?? OpenCascadeFFI.loadOrUnavailable,
        _ids = ids ?? const PersistentIdService(),
        runtime = KernelRuntime(analytics: analytics ?? KernelAnalytics());
-  final OpenCascadeNativeBridge _bridge;
+  OpenCascadeNativeBridge? _bridge;
+  final OpenCascadeNativeBridge Function() _bridgeFactory;
+  OpenCascadeNativeBridge get _nativeBridge => _bridge ??= _bridgeFactory();
   final PersistentIdService _ids;
   final KernelRuntime runtime;
   final Map<String, String> _nativeTokens = {};
   String _version = 'uninitialized';
   Set<KernelCapability> _capabilities = {};
   bool _initialized = false;
+  Future<void>? _initialization;
 
-  Future<void> initialize() async {
-    await _bridge.initialize();
-    _version = await _bridge.version();
-    _capabilities = _mapCapabilities(await _bridge.capabilities());
+  Future<void> initialize() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
+    await _nativeBridge.initialize();
+    _version = await _nativeBridge.version();
+    _capabilities = _mapCapabilities(await _nativeBridge.capabilities());
     _initialized = true;
   }
 
@@ -60,7 +68,7 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   Future<KernelHealth> healthCheck() async {
     try {
       if (!_initialized) await initialize();
-      final data = await _bridge.diagnostics();
+      final data = await _nativeBridge.diagnostics();
       return KernelHealth(
         data['healthy'] == false
             ? KernelHealthStatus.degraded
@@ -110,15 +118,18 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     void Function(KernelProgress progress)? onProgress,
   }) => runtime.run(
     'occ-import-${format.name}',
-    () async => _handle(
-      await _bridge.importShape(
-        path,
-        format,
-        cancellation: cancellation,
-        onProgress: onProgress,
-      ),
-      projectId,
-    ),
+    () async {
+      await initialize();
+      return _handle(
+        await _nativeBridge.importShape(
+          path,
+          format,
+          cancellation: cancellation,
+          onProgress: onProgress,
+        ),
+        projectId,
+      );
+    },
     entityCount: 1,
     runInIsolate: false,
   );
@@ -129,23 +140,22 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     KernelExchangeFormat format, {
     KernelCancellationToken cancellation = const NoKernelCancellation(),
     void Function(KernelProgress progress)? onProgress,
-  }) => runtime.run(
-    'occ-export-${format.name}',
-    () => _bridge.exportShape(
+  }) => runtime.run('occ-export-${format.name}', () async {
+    await initialize();
+    await _nativeBridge.exportShape(
       _resolve(handle),
       path,
       format,
       cancellation: cancellation,
       onProgress: onProgress,
-    ),
-    runInIsolate: false,
-  );
+    );
+  }, runInIsolate: false);
   @override
-  Future<List<GeometryDiagnostic>> diagnose(ShapeHandle handle) => runtime.run(
-    'occ-validate',
-    () => _bridge.validate(_resolve(handle)),
-    runInIsolate: false,
-  );
+  Future<List<GeometryDiagnostic>> diagnose(ShapeHandle handle) =>
+      runtime.run('occ-validate', () async {
+        await initialize();
+        return _nativeBridge.validate(_resolve(handle));
+      }, runInIsolate: false);
   @override
   Future<List<String>> validate(ShapeHandle handle, Set<String> checks) async =>
       (await diagnose(
@@ -153,11 +163,10 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
       )).map((e) => '${e.severity}:${e.code}:${e.message}').toList();
   @override
   Future<List<HealingProposal>> proposeHealing(ShapeHandle handle) =>
-      runtime.run(
-        'occ-healing-proposals',
-        () => _bridge.proposeHealing(_resolve(handle)),
-        runInIsolate: false,
-      );
+      runtime.run('occ-healing-proposals', () async {
+        await initialize();
+        return _nativeBridge.proposeHealing(_resolve(handle));
+      }, runInIsolate: false);
   @override
   Future<ShapeHandle> sew(
     List<ShapeHandle> faces, {
@@ -165,10 +174,13 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     required double tolerance,
   }) => runtime.run(
     'occ-sewing',
-    () async => _handle(
-      await _bridge.sew(faces.map(_resolve).toList(), tolerance),
-      projectId,
-    ),
+    () async {
+      await initialize();
+      return _handle(
+        await _nativeBridge.sew(faces.map(_resolve).toList(), tolerance),
+        projectId,
+      );
+    },
     entityCount: 1,
     runInIsolate: false,
   );
@@ -178,7 +190,12 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
     required String outputPath,
     required double deflection,
   }) => runtime.run('occ-meshing', () async {
-    final result = await _bridge.mesh(_resolve(handle), outputPath, deflection);
+    await initialize();
+    final result = await _nativeBridge.mesh(
+      _resolve(handle),
+      outputPath,
+      deflection,
+    );
     return KernelMeshResult(
       source: handle,
       vertexCount: result.vertexCount,
@@ -196,6 +213,7 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   }) => runtime.run(
     'occ-${operation.toLowerCase().replaceAll(' ', '-')}',
     () async {
+      await initialize();
       final nativeParameters = Map<String, dynamic>.from(parameters);
       for (final entry in parameters.entries) {
         final value = entry.value;
@@ -204,7 +222,7 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
           nativeParameters[entry.key] = value.map(_resolve).toList();
         }
       }
-      final shape = await _bridge.createShape(
+      final shape = await _nativeBridge.createShape(
         operation,
         nativeParameters,
         expectedType,
@@ -227,10 +245,18 @@ class OpenCascadeKernelAdapter implements InterchangeGeometryKernelAPI {
   Future<void> commit(KernelTransaction transaction) async {}
   @override
   Future<void> rollback(KernelTransaction transaction) async {}
+  Future<void> destroy(ShapeHandle handle) async {
+    final token = _resolve(handle);
+    await initialize();
+    await _nativeBridge.destroyShape(token);
+    _nativeTokens.remove(handle.persistentId);
+  }
+
   @override
   Future<void> unload() async {
-    await _bridge.shutdown();
+    if (_bridge != null) await _nativeBridge.shutdown();
     _nativeTokens.clear();
     _initialized = false;
+    _initialization = null;
   }
 }

@@ -37,9 +37,46 @@ void main() {
       final manager = KernelManager();
       OpenCascadeKernelPlugin().register(manager);
       await expectLater(manager.select('opencascade'), throwsStateError);
-      expect(manager.active.descriptor.id, 'none');
+      expect(manager.active.descriptor.id, 'opencascade');
+      expect(
+        (await manager.healthCheck()).status,
+        KernelHealthStatus.unavailable,
+      );
     },
   );
+
+  test('registration does not load or initialize the native bridge', () async {
+    final bridge = _RecordingBridge();
+    var loads = 0;
+    final adapter = OpenCascadeKernelAdapter(
+      bridgeFactory: () {
+        loads++;
+        return bridge;
+      },
+    );
+    final manager = KernelManager()..register(adapter, makeDefault: true);
+
+    expect(loads, 0);
+    expect(bridge.initializeCalled, isFalse);
+    expect(manager.active.descriptor.version, 'uninitialized');
+
+    await adapter.create(
+      'CREATE VERTEX',
+      const {'x': 0.0, 'y': 0.0, 'z': 0.0},
+      persistentId: 'lazy-vertex',
+      expectedType: CADShapeType.vertex,
+      transaction: KernelTransaction(
+        'lazy-tx',
+        'project',
+        'opencascade',
+        DateTime(2026),
+        TransactionStatus.active,
+        const [],
+      ),
+    );
+    expect(loads, 1);
+    expect(bridge.initializeCalled, isTrue);
+  });
 
   test(
     'STEP and IGES import return opaque handles with no native token',
@@ -118,6 +155,40 @@ void main() {
 
   test('FFI loader reports a missing native library without fabrication', () {
     expect(OpenCascadeFFI.tryLoad(path: 'definitely-missing-occt.dll'), isNull);
+    expect(
+      () => OpenCascadeFFI.load(path: 'definitely-missing-occt.dll'),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('OpenCascade DLL is unavailable'),
+        ),
+      ),
+    );
+  });
+
+  test('vertex gets a persistent ID and releases its native shape', () async {
+    final bridge = _RecordingBridge();
+    final adapter = OpenCascadeKernelAdapter(bridge: bridge);
+    await adapter.initialize();
+    final handle = await adapter.create(
+      'CREATE VERTEX',
+      const {'x': 0.0, 'y': 0.0, 'z': 0.0},
+      persistentId: 'project-vertex-1',
+      expectedType: CADShapeType.vertex,
+      transaction: KernelTransaction(
+        'tx-1',
+        'project',
+        'opencascade',
+        DateTime(2026),
+        TransactionStatus.active,
+        const [],
+      ),
+    );
+    expect(handle.persistentId, 'project-vertex-1');
+    expect(handle.type, CADShapeType.vertex);
+    await adapter.destroy(handle);
+    expect(bridge.destroyed, ['created-vertex']);
   });
 
   test('native metadata repository creates project-first structure', () async {
@@ -165,8 +236,10 @@ class _RecordingBridge implements OpenCascadeNativeBridge {
   final imports = <String>[];
   final exports = <String>[];
   bool shutdownCalled = false;
+  bool initializeCalled = false;
+  final destroyed = <String>[];
   @override
-  Future<void> initialize() async {}
+  Future<void> initialize() async => initializeCalled = true;
   @override
   Future<void> shutdown() async => shutdownCalled = true;
   @override
@@ -192,6 +265,9 @@ class _RecordingBridge implements OpenCascadeNativeBridge {
     type: expectedType,
     fingerprint: 'sha256:${expectedType.name}',
   );
+  @override
+  Future<void> destroyShape(String nativeToken) async =>
+      destroyed.add(nativeToken);
   @override
   Future<OpenCascadeNativeShape> importShape(
     String path,

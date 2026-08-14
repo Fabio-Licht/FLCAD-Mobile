@@ -1,4 +1,5 @@
 import '../../engineering/runtime/engineering_runtime.dart';
+import '../../utils/id_generator.dart';
 import '../graph/decision_graph.dart';
 import '../memory/decision_memory.dart';
 import '../models/decision_models.dart';
@@ -48,7 +49,7 @@ class EngineeringDecisionEngine {
             );
             final alternatives = _planner.plan(score), now = DateTime.now();
             return EngineeringDecision(
-              id: 'ede:${now.microsecondsSinceEpoch}',
+              id: 'ede:${IdGenerator.generate()}',
               projectId: request.projectId,
               type: request.type,
               origin: request.origin,

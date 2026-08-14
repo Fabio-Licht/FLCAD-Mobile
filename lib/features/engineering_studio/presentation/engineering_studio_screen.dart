@@ -6,6 +6,10 @@ import '../../../core/engineering_studio/selection/selection_manager.dart';
 import '../../../core/engineering_studio/tree/engineering_tree_manager.dart';
 import '../../../core/engineering_studio/workspace/studio_managers.dart';
 import '../../projects/models/project.dart';
+import '../../../app/bootstrap/engineering_bootstrap.dart';
+import '../../../core/cad_kernel/manager/kernel_manager.dart';
+import '../../../core/cad_kernel/models/kernel_models.dart';
+import '../../../core/cad_kernel/opencascade/open_cascade_studio_integration.dart';
 
 class EngineeringStudioScreen extends StatefulWidget {
   const EngineeringStudioScreen({super.key, required this.project});
@@ -97,7 +101,21 @@ class _EngineeringStudioScreenState extends State<EngineeringStudioScreen> {
                   const VerticalDivider(width: 1),
                   Expanded(child: _ViewportArea(layout: layout)),
                   const VerticalDivider(width: 1),
-                  SizedBox(width: 300, child: _Properties(node: selected)),
+                  SizedBox(
+                    width: 300,
+                    child: Column(
+                      children: [
+                        KernelStatusPanel(
+                          snapshot: const OpenCascadeStudioIntegration()
+                              .inspect(
+                                EngineeringBootstrap.instance.services
+                                    .get<KernelManager>(),
+                              ),
+                        ),
+                        Expanded(child: _Properties(node: selected)),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -114,6 +132,64 @@ class _EngineeringStudioScreenState extends State<EngineeringStudioScreen> {
       delegate: _PaletteDelegate(commands),
     );
   }
+}
+
+class KernelStatusPanel extends StatelessWidget {
+  const KernelStatusPanel({super.key, required this.snapshot});
+  final Future<KernelStatusSnapshot> snapshot;
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<KernelStatusSnapshot>(
+    future: snapshot,
+    builder: (context, state) {
+      final value = state.data;
+      final ready = value?.status == KernelHealthStatus.healthy.name;
+      final capabilities = value?.capabilities ?? const <KernelCapability>{};
+      String readiness(KernelCapability capability) =>
+          capabilities.contains(capability) ? 'Ready' : 'Unavailable';
+      final rows = <(String, String)>[
+        ('Kernel', value?.kernel ?? 'OpenCascade'),
+        ('Version', value?.version ?? '—'),
+        ('Status', ready ? 'Connected' : 'Disconnected'),
+        ('Geometry Engine', ready ? 'Ready' : 'Unavailable'),
+        ('STEP', readiness(KernelCapability.step)),
+        ('IGES', readiness(KernelCapability.iges)),
+        ('Healing', readiness(KernelCapability.healing)),
+        ('Meshing', readiness(KernelCapability.meshing)),
+      ];
+      return Container(
+        color: const Color(0xff141b24),
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'KERNEL STATUS',
+              style: TextStyle(fontSize: 11, color: Colors.blueGrey),
+            ),
+            const SizedBox(height: 8),
+            for (final row in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(row.$1)),
+                    Text(
+                      row.$2,
+                      style: TextStyle(
+                        color: row.$2 == 'Ready' || row.$2 == 'Connected'
+                            ? Colors.lightGreenAccent
+                            : null,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 class _Toolbar extends StatelessWidget {

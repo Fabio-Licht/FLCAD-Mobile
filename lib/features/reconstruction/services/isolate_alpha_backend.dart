@@ -75,15 +75,22 @@ class IsolateAlphaReconstructionBackend implements ReconstructionBackend {
       'reply': receive.sendPort,
       'context': context.toJson(),
     }, onError: errors.sendPort);
-    final result = await completer.future;
-    await subscription.cancel();
-    await errorSubscription.cancel();
-    receive.close();
-    errors.close();
-    _isolate?.kill(priority: Isolate.immediate);
-    _isolate = null;
-    _control = null;
-    return result;
+    try {
+      return await completer.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException(
+          'Reconstruction isolate did not respond within 30 seconds',
+        ),
+      );
+    } finally {
+      await subscription.cancel();
+      await errorSubscription.cancel();
+      receive.close();
+      errors.close();
+      _isolate?.kill(priority: Isolate.immediate);
+      _isolate = null;
+      _control = null;
+    }
   }
 
   @override

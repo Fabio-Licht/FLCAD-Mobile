@@ -10,6 +10,8 @@ typedef _InitNative = Int32 Function(Pointer<Utf8>, IntPtr);
 typedef _InitDart = int Function(Pointer<Utf8>, int);
 typedef _VoidNative = Void Function();
 typedef _VoidDart = void Function();
+typedef _DestroyNative = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, IntPtr);
+typedef _DestroyDart = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
 typedef _StringNative = Pointer<Utf8> Function();
 typedef _StringDart = Pointer<Utf8> Function();
 typedef _VertexNative =
@@ -273,13 +275,32 @@ class OpenCascadeFFI implements OpenCascadeNativeBridge {
       : Platform.isMacOS
       ? 'libflcad_opencascade.dylib'
       : 'libflcad_opencascade.so';
-  static OpenCascadeFFI load({String? path}) =>
-      OpenCascadeFFI._(DynamicLibrary.open(path ?? defaultLibraryName()));
+  static OpenCascadeFFI load({String? path}) {
+    final resolved = path ?? defaultLibraryName();
+    try {
+      return OpenCascadeFFI._(DynamicLibrary.open(resolved));
+    } catch (error) {
+      throw StateError(
+        'OpenCascade DLL is unavailable ($resolved). Build the native target '
+        'and ensure the OCCT runtime DLLs are beside the Flutter executable. '
+        'Loader error: $error',
+      );
+    }
+  }
+
   static OpenCascadeFFI? tryLoad({String? path}) {
     try {
       return load(path: path);
     } catch (_) {
       return null;
+    }
+  }
+
+  static OpenCascadeNativeBridge loadOrUnavailable({String? path}) {
+    try {
+      return load(path: path);
+    } catch (error) {
+      return UnavailableOpenCascadeBridge(error.toString());
     }
   }
 
@@ -424,6 +445,23 @@ class OpenCascadeFFI implements OpenCascadeNativeBridge {
       return _shape(b, expectedType);
     } finally {
       b.dispose();
+    }
+  }
+
+  @override
+  Future<void> destroyShape(String nativeToken) async {
+    final token = nativeToken.toNativeUtf8();
+    final error = calloc<Uint8>(4096).cast<Utf8>();
+    final fn = library.lookupFunction<_DestroyNative, _DestroyDart>(
+      'flcad_occ_destroy_shape',
+    );
+    try {
+      if (fn(token, error, 4096) != 1) {
+        throw StateError(error.toDartString());
+      }
+    } finally {
+      calloc.free(token);
+      calloc.free(error);
     }
   }
 

@@ -42,8 +42,22 @@ class OpenCascadeStudioIntegration {
   const OpenCascadeStudioIntegration();
   Future<KernelStatusSnapshot> inspect(KernelManager manager) async {
     final kernel = manager.active;
-    final health = await kernel.healthCheck();
     final descriptor = kernel.descriptor;
+    if (descriptor.version == 'uninitialized') {
+      return KernelStatusSnapshot(
+        kernel: descriptor.name,
+        kernelId: descriptor.id,
+        version: descriptor.version,
+        status: 'uninitialized',
+        capabilities: descriptor.capabilities.values,
+        loaded: false,
+        backend: descriptor.vendor,
+        diagnostics: const {
+          'message': 'Kernel registered; lazy loading pending',
+        },
+      );
+    }
+    final health = await kernel.healthCheck();
     return KernelStatusSnapshot(
       kernel: descriptor.name,
       kernelId: descriptor.id,

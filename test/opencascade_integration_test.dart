@@ -329,4 +329,39 @@ class _RecordingBridge implements OpenCascadeNativeBridge {
     String outputPath,
     double deflection,
   ) async => KernelMeshData(3, 1, outputPath);
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceTopology(
+    String nativeToken,
+  ) async => const {'boundaries': [], 'loops': []};
+  @override
+  Future<Map<String, dynamic>> intersectSurfaces(
+    String firstToken,
+    String secondToken,
+  ) async => const {'edgeCount': 0, 'length': 0.0};
+
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    String nativeToken, {
+    required List<double> draftDirection,
+    required int samples,
+  }) async => const {
+    'minimumCurvature': 0.0,
+    'maximumCurvature': 0.0,
+    'averageMinimumCurvature': 0.0,
+    'averageMaximumCurvature': 0.0,
+    'meanCurvature': 0.0,
+    'gaussianCurvature': 0.0,
+    'curvatureGradient': 0.0,
+    'curvatureStability': 1.0,
+    'averageNormal': [0.0, 0.0, 1.0],
+    'reflectionScore': 1.0,
+    'zebra': {'horizontal': 1.0, 'vertical': 1.0, 'radial': 1.0, 'free': 1.0},
+    'draft': {
+      'minimumAngle': 90.0,
+      'maximumAngle': 90.0,
+      'negative': 0,
+      'critical': 0,
+      'approved': 1,
+    },
+  };
 }

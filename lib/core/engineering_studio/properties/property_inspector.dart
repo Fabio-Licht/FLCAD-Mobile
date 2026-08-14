@@ -110,6 +110,97 @@ class PropertyInspector {
         'confidence': node.context['confidence'],
         'persistentId': node.context['persistentId'],
       }),
+    if (node.context['surfaceRecognition'] == true)
+      PropertySection('Surface Recognition', {
+        'Recognition Type': node.context['recognitionType'],
+        'Confidence': node.context['confidence'],
+        'Area': node.context['area'],
+        'Triangle Count': node.context['triangleCount'],
+        'Average Normal': node.context['normal'],
+        'Estimated Radius': node.context['estimatedRadius'],
+        'Estimated Axis': node.context['estimatedAxis'],
+        'Estimated Angle': node.context['estimatedAngle'],
+        'Recognition Health': node.context['recognitionHealth'],
+      }),
+    if (node.context['surfaceFitting'] == true)
+      PropertySection('Surface Fitting', {
+        'Surface Type': node.context['surfaceType'],
+        'Radius': node.context['radius'],
+        'Axis': node.context['axis'],
+        'Origin': node.context['origin'],
+        'Direction': node.context['direction'],
+        'Residual RMS': node.context['residualRms'],
+        'Residual Max': node.context['residualMax'],
+        'Residual Mean': node.context['residualMean'],
+        'Confidence': node.context['confidence'],
+        'Health': node.context['surfaceHealth'],
+        'Recognition Region': node.context['recognitionRegion'],
+      }),
+    if (node.context['surfaceTopology'] == true)
+      PropertySection('Surface Topology', {
+        'Patch ID': node.context['patchId'],
+        'Boundary Count': node.context['boundaryCount'],
+        'Loop Count': node.context['loopCount'],
+        'Neighbour Count': node.context['neighbourCount'],
+        'Intersection Count': node.context['intersectionCount'],
+        'Topology Health': node.context['topologyHealth'],
+        'Boundary Length': node.context['boundaryLength'],
+        'Patch Area': node.context['patchArea'],
+        'Surface Links': node.context['surfaceLinks'],
+      }),
+    if (node.context['surfaceContinuity'] == true)
+      PropertySection('Surface Quality', {
+        'Continuity': node.context['continuity'],
+        'Curvature': node.context['curvature'],
+        'Reflection': node.context['reflection'],
+        'Draft': node.context['draft'],
+        'Surface Health': node.context['surfaceHealth'],
+        'Neighbour Count': node.context['neighbourCount'],
+        'Quality Score': node.context['qualityScore'],
+      }),
+    if (node.context['surfaceOperation'] == true)
+      PropertySection('Surface Operation', {
+        'Operation Type': node.context['operationType'],
+        'Execution Status': node.context['executionStatus'],
+        'Constraint Count': node.context['constraintCount'],
+        'Validation Result': node.context['validationResult'],
+        'Affected Patches': node.context['affectedPatches'],
+        'Affected Boundaries': node.context['affectedBoundaries'],
+        'Affected Continuity': node.context['affectedContinuity'],
+      }),
+    if (node.context['liveReconstruction'] == true)
+      PropertySection('Live Reconstruction', {
+        'Pipeline State': node.context['pipelineState'],
+        'Dirty Objects': node.context['dirtyObjects'],
+        'Affected Patches': node.context['affectedPatches'],
+        'Affected Boundaries': node.context['affectedBoundaries'],
+        'Affected Continuity': node.context['affectedContinuity'],
+        'Affected Validation': node.context['affectedValidation'],
+        'Update Time': node.context['updateTime'],
+      }),
+    if (node.context['surfaceMorph'] == true)
+      PropertySection('Surface Morph', {
+        'Morph Tool': node.context['morphTool'],
+        'Anchor Count': node.context['anchorCount'],
+        'Influence Radius': node.context['influenceRadius'],
+        'Falloff Type': node.context['falloffType'],
+        'Constraint Groups': node.context['constraintGroups'],
+        'Validation Status': node.context['validationStatus'],
+        'Preview Status': node.context['previewStatus'],
+      }),
+    if (node.context['surfaceExtend'] == true)
+      PropertySection('Surface Extend', {
+        'Extend Type': node.context['extendType'],
+        'Distance': node.context['distance'],
+        'Angle': node.context['angle'],
+        'Vector': node.context['vector'],
+        'Draft Direction': node.context['draftDirection'],
+        'Manufacturing Intent': node.context['manufacturingIntent'],
+        'Predicted Quality': node.context['predictedQuality'],
+        'Predicted Reflection': node.context['predictedReflection'],
+        'Predicted Zebra': node.context['predictedZebra'],
+        'Predicted Twist': node.context['predictedTwist'],
+      }),
     if (node.context['featurePlatform'] == true)
       PropertySection('Feature Platform', {
         'featureType': node.context['featureType'],

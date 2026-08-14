@@ -38,6 +38,16 @@ abstract interface class OpenCascadeNativeBridge {
     String outputPath,
     double deflection,
   );
+  Future<Map<String, dynamic>> inspectSurfaceTopology(String nativeToken);
+  Future<Map<String, dynamic>> intersectSurfaces(
+    String firstToken,
+    String secondToken,
+  );
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    String nativeToken, {
+    required List<double> draftDirection,
+    required int samples,
+  });
 }
 
 abstract interface class OpenCascadeMeshNativeBridge {
@@ -48,6 +58,11 @@ abstract interface class OpenCascadeMeshNativeBridge {
     void Function(KernelProgress progress)? onProgress,
   });
   Future<void> destroyMesh(String nativeToken);
+  Future<KernelMeshGeometry> inspectMesh(
+    String nativeToken, {
+    required int vertexCount,
+    required int triangleCount,
+  });
 }
 
 class OpenCascadeNativeMesh {
@@ -144,4 +159,19 @@ class UnavailableOpenCascadeBridge implements OpenCascadeNativeBridge {
     String outputPath,
     double deflection,
   ) async => _fail();
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceTopology(
+    String nativeToken,
+  ) async => _fail();
+  @override
+  Future<Map<String, dynamic>> intersectSurfaces(
+    String firstToken,
+    String secondToken,
+  ) async => _fail();
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    String nativeToken, {
+    required List<double> draftDirection,
+    required int samples,
+  }) async => _fail();
 }

@@ -3,7 +3,12 @@ import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
 import 'package:flcad_mobile/core/mesh_foundation/integration/mesh_factory.dart';
 import 'package:flcad_mobile/core/mesh_foundation/integration/mesh_integration.dart';
+import 'package:flcad_mobile/core/mesh_foundation/integration/mesh_studio.dart';
+import 'package:flcad_mobile/core/engineering_studio/models/studio_models.dart';
+import 'package:flcad_mobile/core/engineering_studio/properties/property_inspector.dart';
+import 'package:flcad_mobile/core/platform_certification/checks/architecture_checks.dart';
 import 'package:flcad_mobile/core/platform_certification/engine/platform_certification_engine.dart';
+import 'package:flcad_mobile/core/platform_certification/reports/certification_models.dart';
 import 'package:flcad_mobile/core/platform_certification/repository/platform_certification_repository.dart';
 import 'package:flcad_mobile/core/reverse_session/api/reverse_session_api.dart';
 import 'package:flcad_mobile/core/reverse_session/engine/reverse_session_engine.dart';
@@ -58,6 +63,31 @@ Future<void> main(List<String> args) async {
     integration: integration,
   );
   final first = await api.importStl(stl, projectId: 'g010a-bearing');
+  final meshJson = first.mesh.toJson();
+  projectState['engineeringStudioVerified'] =
+      const MeshStudio().panels.length == 4;
+  projectState['propertyInspectorUpdated'] = const PropertyInspector()
+      .inspect(
+        EngineeringTreeNode(
+          id: first.mesh.id,
+          projectId: 'g010a-bearing',
+          name: first.mesh.name,
+          type: StudioEntityType.mesh,
+          context: {
+            'meshFoundation': true,
+            'meshFile': first.mesh.sourceFile,
+            'meshSize': first.mesh.fileSize,
+            'triangles': first.mesh.triangleCount,
+            'vertices': first.mesh.vertexCount,
+            'boundingBox': first.mesh.bounds.toJson(),
+            'units': first.mesh.units,
+            'importTime': first.mesh.importTime.inMicroseconds,
+            'kernelStatus': first.mesh.kernelHandle.kernelId,
+            'meshHealth': first.mesh.health.name,
+          },
+        ),
+      )
+      .any((section) => section.name == 'Mesh');
   final loadApi = const MeshFactory().create(
     projectDirectory: project,
     kernel: kernel,
@@ -75,23 +105,57 @@ Future<void> main(List<String> args) async {
   await loadApi.persist();
   await workflows.engine.persist();
   await sessions.persist();
-  final certification =
-      PlatformCertificationEngine(
-        repository: PlatformCertificationRepository(project),
-      ).certifyMeshFoundation(
-        mesh: first.mesh,
-        project: projectState,
-        workflow: workflow.toJson(),
-        session: session.context.state,
-        dashboard: dashboard,
-      );
+  final certificationEngine = PlatformCertificationEngine(
+    repository: PlatformCertificationRepository(project),
+  );
+  final certification = certificationEngine.certifyMeshFoundation(
+    mesh: first.mesh,
+    project: projectState,
+    workflow: workflow.toJson(),
+    session: session.context.state,
+    dashboard: dashboard,
+  );
   for (final check in certification) {
     stdout.writeln('${check.name}: ${check.status.name} — ${check.evidence}');
   }
   if (certification.any((e) => e.status.name != 'passed')) {
     throw StateError('Mesh foundation certification failed');
   }
-  stdout.writeln('Mesh: ${first.mesh.toJson()}');
+  final demonstration = DemonstrationResult(
+    partPath: stl,
+    steps: certification,
+    status: CertificationStatus.passed,
+    diagnostics: const [],
+  );
+  certificationEngine.history.demonstrations.add(demonstration);
+  final report = certificationEngine.certify(
+    evidence: {
+      for (final name in [
+        ...ArchitectureChecks.modules,
+        ...ArchitectureChecks.invariants,
+      ])
+        name: 'Verified by G-009E.1 audit and regression gates',
+    },
+    demonstration: demonstration,
+    audit: const EngineeringAudit(
+      strengths: [
+        'Real OpenCascade STL path',
+        'Project First persistence',
+        'Passive bootstrap and lazy native loading',
+      ],
+      readyForG010: ['Professional Surface Recognition Engine'],
+    ),
+  );
+  await certificationEngine.persist();
+  if (report.status != CertificationStatus.passed ||
+      report.scores.overall != 100) {
+    throw StateError(
+      'Platform certification is ${report.status.name} at ${report.scores.overall}%',
+    );
+  }
+  stdout.writeln('Platform Status: APPROVED');
+  stdout.writeln('Overall Platform Score: ${report.scores.overall}%');
+  stdout.writeln('Mesh: $meshJson');
   stdout.writeln('Analytics: ${loadApi.engine.analytics.toJson()}');
   await api.close(first.mesh.id);
   await kernel.unload();

@@ -40,6 +40,92 @@ class KernelMeshHandle {
   final Map<String, dynamic> metadata;
 }
 
+class KernelMeshGeometry {
+  const KernelMeshGeometry({required this.nodes, required this.triangles});
+  final List<double> nodes;
+  final List<int> triangles;
+}
+
+class KernelBoundaryData {
+  const KernelBoundaryData({
+    required this.index,
+    required this.length,
+    required this.closed,
+  });
+  final int index;
+  final double length;
+  final bool closed;
+}
+
+class KernelLoopData {
+  const KernelLoopData({
+    required this.index,
+    required this.closed,
+    required this.boundaryIndices,
+  });
+  final int index;
+  final bool closed;
+  final List<int> boundaryIndices;
+}
+
+class KernelSurfaceTopology {
+  const KernelSurfaceTopology({required this.boundaries, required this.loops});
+  final List<KernelBoundaryData> boundaries;
+  final List<KernelLoopData> loops;
+}
+
+class KernelSurfaceIntersection {
+  const KernelSurfaceIntersection({
+    required this.edgeCount,
+    required this.length,
+    this.handle,
+  });
+  final int edgeCount;
+  final double length;
+  final ShapeHandle? handle;
+}
+
+abstract interface class SurfaceTopologyKernelAPI {
+  Future<KernelSurfaceTopology> inspectSurfaceTopology(ShapeHandle surface);
+  Future<KernelSurfaceIntersection> intersectSurfaces(
+    ShapeHandle first,
+    ShapeHandle second, {
+    required String projectId,
+  });
+}
+
+abstract interface class SurfaceQualityKernelAPI {
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    ShapeHandle surface, {
+    required List<double> draftDirection,
+    int samples = 100,
+  });
+}
+
+class KernelSurfaceOperationResult {
+  const KernelSurfaceOperationResult({
+    required this.supported,
+    required this.diagnostic,
+    this.result,
+    this.undoToken,
+    this.redoToken,
+  });
+  final bool supported;
+  final String diagnostic;
+  final ShapeHandle? result;
+  final String? undoToken, redoToken;
+}
+
+abstract interface class SurfaceOperationKernelAPI {
+  Future<KernelSurfaceOperationResult> executeSurfaceOperation(
+    ShapeHandle surface,
+    String operation,
+    Map<String, dynamic> parameters, {
+    required String projectId,
+  });
+  Future<void> rollbackSurfaceOperation(String undoToken);
+}
+
 abstract interface class MeshGeometryKernelAPI {
   Future<KernelMeshHandle> importStl(
     String path, {
@@ -49,6 +135,7 @@ abstract interface class MeshGeometryKernelAPI {
     void Function(KernelProgress progress)? onProgress,
   });
   Future<void> closeMesh(KernelMeshHandle handle);
+  Future<KernelMeshGeometry> inspectMesh(KernelMeshHandle handle);
 }
 
 class KernelProgress {

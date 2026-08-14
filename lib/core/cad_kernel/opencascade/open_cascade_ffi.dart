@@ -182,6 +182,32 @@ typedef _SphereDart =
       Pointer<Utf8>,
       int,
     );
+typedef _TorusNative =
+    Int32 Function(
+      Pointer<Double>,
+      Pointer<Double>,
+      Double,
+      Double,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _TorusDart =
+    int Function(
+      Pointer<Double>,
+      Pointer<Double>,
+      double,
+      double,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _ImportNative =
     Int32 Function(
       Pointer<Utf8>,
@@ -228,6 +254,44 @@ typedef _InspectNative =
     Int32 Function(Pointer<Utf8>, Pointer<Utf8>, IntPtr, Pointer<Utf8>, IntPtr);
 typedef _InspectDart =
     int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Utf8>, int);
+typedef _IntersectNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _IntersectDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
+typedef _SurfaceQualityNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Int32,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _SurfaceQualityDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _MeshNative =
     Int32 Function(
       Pointer<Utf8>,
@@ -275,6 +339,26 @@ typedef _ImportStlDart =
       Pointer<Int32>,
       Pointer<Double>,
       Pointer<Int32>,
+      Pointer<Utf8>,
+      int,
+    );
+typedef _MeshGeometryNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      IntPtr,
+      Pointer<Int32>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _MeshGeometryDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      Pointer<Int32>,
+      int,
       Pointer<Utf8>,
       int,
     );
@@ -467,6 +551,8 @@ class OpenCascadeFFI
           );
         case 'GENERATE SPHERE':
           ok = _sphere(p, b);
+        case 'GENERATE TORUS':
+          ok = _torus(p, b);
         default:
           throw UnsupportedError(
             '$operation is not exported by OCCT native bridge',
@@ -594,6 +680,31 @@ class OpenCascadeFFI
       );
     } finally {
       calloc.free(c);
+    }
+  }
+
+  int _torus(Map<String, dynamic> p, _Buffers b) {
+    final c = _nativeVector(_vector(p['center'], 'center')),
+        d = _nativeVector(_vector(p['axisDirection'], 'axisDirection')),
+        fn = library.lookupFunction<_TorusNative, _TorusDart>(
+          'flcad_occ_create_torus',
+        );
+    try {
+      return fn(
+        c,
+        d,
+        (p['majorRadius'] as num).toDouble(),
+        (p['minorRadius'] as num).toDouble(),
+        b.token,
+        256,
+        b.fingerprint,
+        256,
+        b.error,
+        4096,
+      );
+    } finally {
+      calloc.free(c);
+      calloc.free(d);
     }
   }
 
@@ -725,6 +836,44 @@ class OpenCascadeFFI
   }
 
   @override
+  Future<KernelMeshGeometry> inspectMesh(
+    String nativeToken, {
+    required int vertexCount,
+    required int triangleCount,
+  }) async {
+    final token = nativeToken.toNativeUtf8();
+    final nodes = calloc<Double>(vertexCount * 3);
+    final triangles = calloc<Int32>(triangleCount * 3);
+    final error = calloc<Uint8>(4096).cast<Utf8>();
+    try {
+      final fn = library.lookupFunction<_MeshGeometryNative, _MeshGeometryDart>(
+        'flcad_occ_mesh_geometry',
+      );
+      if (fn(
+            token,
+            nodes,
+            vertexCount * 3,
+            triangles,
+            triangleCount * 3,
+            error,
+            4096,
+          ) !=
+          1) {
+        throw StateError(error.toDartString());
+      }
+      return KernelMeshGeometry(
+        nodes: List<double>.generate(vertexCount * 3, (i) => nodes[i]),
+        triangles: List<int>.generate(triangleCount * 3, (i) => triangles[i]),
+      );
+    } finally {
+      calloc.free(token);
+      calloc.free(nodes);
+      calloc.free(triangles);
+      calloc.free(error);
+    }
+  }
+
+  @override
   Future<void> exportShape(
     String token,
     String path,
@@ -780,6 +929,71 @@ class OpenCascadeFFI
           severity: m['severity'] as String,
         );
       }).toList();
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceTopology(
+    String nativeToken,
+  ) async => Map<String, dynamic>.from(
+    jsonDecode(await _inspect('flcad_occ_surface_topology', nativeToken))
+        as Map,
+  );
+
+  @override
+  Future<Map<String, dynamic>> intersectSurfaces(
+    String firstToken,
+    String secondToken,
+  ) async {
+    final first = firstToken.toNativeUtf8(),
+        second = secondToken.toNativeUtf8(),
+        out = calloc<Uint8>(16384).cast<Utf8>(),
+        error = calloc<Uint8>(4096).cast<Utf8>(),
+        fn = library.lookupFunction<_IntersectNative, _IntersectDart>(
+          'flcad_occ_intersect_surfaces',
+        );
+    try {
+      if (fn(first, second, out, 16384, error, 4096) != 1) {
+        throw StateError(error.toDartString());
+      }
+      return Map<String, dynamic>.from(jsonDecode(out.toDartString()) as Map);
+    } finally {
+      calloc.free(first);
+      calloc.free(second);
+      calloc.free(out);
+      calloc.free(error);
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    String nativeToken, {
+    required List<double> draftDirection,
+    required int samples,
+  }) async {
+    if (draftDirection.length != 3) {
+      throw ArgumentError('Draft direction requires three coordinates');
+    }
+    final token = nativeToken.toNativeUtf8(),
+        direction = calloc<Double>(3),
+        out = calloc<Uint8>(16384).cast<Utf8>(),
+        error = calloc<Uint8>(4096).cast<Utf8>(),
+        fn = library.lookupFunction<_SurfaceQualityNative, _SurfaceQualityDart>(
+          'flcad_occ_surface_quality',
+        );
+    for (var i = 0; i < 3; i++) {
+      direction[i] = draftDirection[i];
+    }
+    try {
+      if (fn(token, direction, samples, out, 16384, error, 4096) != 1) {
+        throw StateError(error.toDartString());
+      }
+      return Map<String, dynamic>.from(jsonDecode(out.toDartString()) as Map);
+    } finally {
+      calloc.free(token);
+      calloc.free(direction);
+      calloc.free(out);
+      calloc.free(error);
+    }
+  }
+
   @override
   Future<List<HealingProposal>> proposeHealing(String token) async =>
       (jsonDecode(await _inspect('flcad_occ_healing_proposals', token)) as List)

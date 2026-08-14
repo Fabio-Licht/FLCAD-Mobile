@@ -128,6 +128,30 @@ import '../../core/mesh_foundation/analytics/mesh_analytics.dart';
 import '../../core/mesh_foundation/integration/mesh_factory.dart';
 import '../../core/mesh_foundation/repository/mesh_repository.dart';
 import '../../core/mesh_foundation/runtime/mesh_runtime.dart';
+import '../../core/surface_recognition/integration/surface_recognition_factory.dart';
+import '../../core/surface_recognition/repository/surface_recognition_repository.dart';
+import '../../core/surface_recognition/runtime/surface_recognition_runtime.dart';
+import '../../core/surface_fitting/integration/surface_fitting_factory.dart';
+import '../../core/surface_fitting/repository/surface_fitting_repository.dart';
+import '../../core/surface_fitting/runtime/surface_fitting_runtime.dart';
+import '../../core/surface_topology/integration/surface_topology_factory.dart';
+import '../../core/surface_topology/repository/surface_topology_repository.dart';
+import '../../core/surface_topology/runtime/surface_topology_runtime.dart';
+import '../../core/surface_continuity/integration/surface_continuity_factory.dart';
+import '../../core/surface_continuity/repository/surface_continuity_repository.dart';
+import '../../core/surface_continuity/runtime/surface_continuity_runtime.dart';
+import '../../core/surface_operations/integration/surface_operations_factory.dart';
+import '../../core/surface_operations/repository/surface_operation_repository.dart';
+import '../../core/surface_operations/runtime/surface_operations_runtime.dart';
+import '../../core/live_reconstruction/integration/live_reconstruction_factory.dart';
+import '../../core/live_reconstruction/repository/live_reconstruction_repository.dart';
+import '../../core/live_reconstruction/runtime/live_reconstruction_runtime.dart';
+import '../../core/surface_morph/integration/surface_morph_factory.dart';
+import '../../core/surface_morph/repository/surface_morph_repository.dart';
+import '../../core/surface_morph/runtime/surface_morph_runtime.dart';
+import '../../core/surface_extend/integration/surface_extend_factory.dart';
+import '../../core/surface_extend/repository/surface_extend_repository.dart';
+import '../../core/surface_extend/runtime/surface_extend_runtime.dart';
 
 /// Application composition root. Concrete engines are wired here, outside the
 /// engineering core, so the core depends only on its contracts.
@@ -359,6 +383,54 @@ class EngineeringBootstrap {
       ..register<MeshFactory>(const MeshFactory())
       ..register<MeshAnalytics>(MeshAnalytics())
       ..register<MeshRepository>(MeshRepository(Directory.current));
+    services
+      ..register<SurfaceRecognitionRuntime>(SurfaceRecognitionRuntime.instance)
+      ..register<SurfaceRecognitionFactory>(const SurfaceRecognitionFactory())
+      ..register<SurfaceRecognitionRepository>(
+        SurfaceRecognitionRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceFittingRuntime>(SurfaceFittingRuntime.instance)
+      ..register<SurfaceFittingFactory>(const SurfaceFittingFactory())
+      ..register<SurfaceFittingRepository>(
+        SurfaceFittingRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceTopologyRuntime>(SurfaceTopologyRuntime.instance)
+      ..register<SurfaceTopologyFactory>(const SurfaceTopologyFactory())
+      ..register<SurfaceTopologyRepository>(
+        SurfaceTopologyRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceContinuityRuntime>(SurfaceContinuityRuntime.instance)
+      ..register<SurfaceContinuityFactory>(const SurfaceContinuityFactory())
+      ..register<SurfaceContinuityRepository>(
+        SurfaceContinuityRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceOperationsRuntime>(SurfaceOperationsRuntime.instance)
+      ..register<SurfaceOperationsFactory>(const SurfaceOperationsFactory())
+      ..register<SurfaceOperationRepository>(
+        SurfaceOperationRepository(Directory.current),
+      );
+    services
+      ..register<LiveReconstructionRuntime>(LiveReconstructionRuntime.instance)
+      ..register<LiveReconstructionFactory>(const LiveReconstructionFactory())
+      ..register<LiveReconstructionRepository>(
+        LiveReconstructionRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceMorphRuntime>(SurfaceMorphRuntime.instance)
+      ..register<SurfaceMorphFactory>(const SurfaceMorphFactory())
+      ..register<SurfaceMorphRepository>(
+        SurfaceMorphRepository(Directory.current),
+      );
+    services
+      ..register<SurfaceExtendRuntime>(SurfaceExtendRuntime.instance)
+      ..register<SurfaceExtendFactory>(const SurfaceExtendFactory())
+      ..register<SurfaceExtendRepository>(
+        SurfaceExtendRepository(Directory.current),
+      );
     _initialized = true;
   }
 

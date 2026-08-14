@@ -24,9 +24,14 @@ FLCAD_OCC_EXPORT int flcad_occ_create_plane(const double* origin,const double* n
 FLCAD_OCC_EXPORT int flcad_occ_create_cylinder(const double* origin,const double* direction,double radius,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_cone(const double* apex,const double* direction,double angle,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_sphere(const double* center,double radius,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_create_torus(const double* center,const double* direction,double major_radius,double minor_radius,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_import_shape(const char* path,const char* format,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* type,size_t type_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_import_stl(const char* path,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,int* vertices,int* triangles,int* degenerate_triangles,double* bounds,int* has_normals,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_destroy_mesh(const char* token,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_mesh_geometry(const char* token,double* nodes,size_t node_values,int* triangles,size_t triangle_values,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_surface_topology(const char* token,char* topology,size_t topology_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_intersect_surfaces(const char* first,const char* second,char* result,size_t result_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_surface_quality(const char* token,const double* draft_direction,int samples,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_export_shape(const char* token,const char* path,const char* format,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_validate(const char* token,char* diagnostics,size_t diagnostics_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_healing_proposals(const char* token,char* proposals,size_t proposals_size,char* error,size_t error_size);

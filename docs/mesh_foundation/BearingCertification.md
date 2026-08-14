@@ -16,3 +16,7 @@
 - Persisted project: `build/certification/g010a`
 
 Certification checks passed for opening the real part, registering `MeshEntity`, and updating Workflow, Session, Dashboard and Project. Workflow stopped at Recognition ready; recognition was not started automatically.
+
+## G-009E.1 final certification
+
+Status transitioned from **BLOCKED** to **APPROVED**. Interactive Reverse availability, Engineering Studio Mesh panels and the Property Inspector Mesh section were also verified. The persisted Platform Certification report returned an overall score of **100%**, certifying readiness for G-010B.

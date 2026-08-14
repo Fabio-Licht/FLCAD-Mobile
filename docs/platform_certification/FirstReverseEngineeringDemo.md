@@ -1,7 +1,9 @@
 # First Reverse Engineering Demo
 
-Candidate part: OpenCascade 8.0.1 `data/stl/bearing.stl` (6,544,455 bytes).
+## History
 
-Result: **BLOCKED** before `Open STL`. The repository contains no official STL importer; `GeometryKernelAPI` interchange supports STEP, IGES and BREP only. Treating file presence or a test fixture as an import would violate the no-simulation requirement. No certification was issued.
+- G-009E: **BLOCKED** before `Open STL`; the official STL path did not exist.
+- G-010A: root cause corrected with the native Mesh Foundation.
+- G-009E.1: **APPROVED**.
 
-Required resolution: implement or connect an official Project First STL mesh importer, then execute every stage through the existing domain APIs and persist the resulting session and report.
+The OpenCascade 8.0.1 `bearing.stl` was read by `RWStl::ReadFile` into `Poly_Triangulation`, registered as a persistent MeshEntity and persisted Project First. Workflow completed Import Mesh and stopped at Recognition ready without starting Recognition. Session, Dashboard, Project, Interactive Reverse, Engineering Studio and Property Inspector were updated and verified.

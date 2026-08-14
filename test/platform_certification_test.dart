@@ -47,7 +47,7 @@ void main() {
         name: 'verified by automated check',
     };
     final report = api.certify(evidence: evidence, demonstration: null);
-    expect(report.checks, hasLength(29));
+    expect(report.checks, hasLength(37));
     expect(
       report.checks.every((e) => e.status == CertificationStatus.passed),
       isTrue,

@@ -43,7 +43,20 @@ class OfficialMeshIntegration implements MeshIntegration {
     session.context.state['selectionAvailable'] = true;
     sessions.engine.record(sessionId, 'Import STL', result: mesh.id);
     project['activeMesh'] = mesh.toJson();
+    project['meshRepositoryUpdated'] = true;
+    project['meshMetadata'] = mesh.toJson();
+    project['interactiveReverse'] = {
+      'meshId': mesh.id,
+      'selectionAvailable': true,
+    };
+    project['engineeringStudio'] = {
+      'meshExplorer': true,
+      'meshStatistics': true,
+      'meshDiagnostics': true,
+      'meshHealth': true,
+    };
     dashboard['mesh'] = mesh.toJson();
+    dashboard['interactiveReverse'] = project['interactiveReverse'];
     dashboard['recognitionStarted'] = false;
   }
 

@@ -22,6 +22,7 @@ enum KernelCapability {
   cylinderSurface,
   coneSurface,
   sphereSurface,
+  torusSurface,
 }
 
 enum CADShapeType { vertex, edge, wire, face, shell, solid, compound }

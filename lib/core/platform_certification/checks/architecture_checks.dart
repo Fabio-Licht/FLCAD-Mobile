@@ -3,6 +3,14 @@ import '../reports/certification_models.dart';
 class ArchitectureChecks {
   static const modules = [
     'Recognition',
+    'Surface Recognition',
+    'Surface Fitting',
+    'Surface Topology',
+    'Surface Continuity',
+    'Surface Operations',
+    'Live Reconstruction',
+    'Surface Morph Studio',
+    'Professional Extend',
     'Reference',
     'Alignment',
     'Validation',

@@ -44,6 +44,13 @@ class PlatformCertificationEngine {
     required Map<String, dynamic> dashboard,
   }) => [
     CertificationCheck(
+      name: 'OpenCascade loaded',
+      status: mesh.kernelHandle.kernelId == 'opencascade'
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: mesh.kernelHandle.kernelId,
+    ),
+    CertificationCheck(
       name: 'Open bearing.stl',
       status:
           mesh.sourceFile.toLowerCase().endsWith('bearing.stl') &&
@@ -60,11 +67,70 @@ class PlatformCertificationEngine {
       evidence: mesh.id,
     ),
     CertificationCheck(
+      name: 'Mesh Repository updated',
+      status: project['meshRepositoryUpdated'] == true
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: 'repositoryUpdated=${project['meshRepositoryUpdated']}',
+    ),
+    CertificationCheck(
+      name: 'Mesh Metadata created',
+      status: project['meshMetadata'] != null
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: 'metadata=${project['meshMetadata'] != null}',
+    ),
+    CertificationCheck(
+      name: 'Bounding Box valid',
+      status:
+          mesh.bounds.minX <= mesh.bounds.maxX &&
+              mesh.bounds.minY <= mesh.bounds.maxY &&
+              mesh.bounds.minZ <= mesh.bounds.maxZ
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: mesh.bounds.toJson().toString(),
+    ),
+    CertificationCheck(
+      name: 'Triangle Count valid',
+      status: mesh.triangleCount > 0
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: '${mesh.triangleCount}',
+    ),
+    CertificationCheck(
+      name: 'Vertex Count valid',
+      status: mesh.vertexCount > 0
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: '${mesh.vertexCount}',
+    ),
+    CertificationCheck(
+      name: 'Checksum valid',
+      status: mesh.checksum.isNotEmpty
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: mesh.checksum,
+    ),
+    CertificationCheck(
       name: 'Update Workflow',
       status: workflow['currentIndex'] == 1
           ? CertificationStatus.passed
           : CertificationStatus.failed,
       evidence: workflow.toString(),
+    ),
+    CertificationCheck(
+      name: 'Workflow stopped at Recognition',
+      status: workflow['currentIndex'] == 1
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: 'currentIndex=${workflow['currentIndex']}',
+    ),
+    CertificationCheck(
+      name: 'Recognition not automatically started',
+      status: dashboard['recognitionStarted'] == false
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: 'recognitionStarted=${dashboard['recognitionStarted']}',
     ),
     CertificationCheck(
       name: 'Update Session',
@@ -81,6 +147,32 @@ class PlatformCertificationEngine {
           : CertificationStatus.failed,
       evidence:
           'mesh visible; recognitionStarted=${dashboard['recognitionStarted']}',
+    ),
+    CertificationCheck(
+      name: 'Interactive Reverse updated',
+      status:
+          (project['interactiveReverse'] as Map?)?['selectionAvailable'] == true
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence: '${project['interactiveReverse']}',
+    ),
+    CertificationCheck(
+      name: 'Engineering Studio updated',
+      status:
+          (project['engineeringStudio'] as Map?)?['meshExplorer'] == true &&
+              project['engineeringStudioVerified'] == true
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence:
+          '${project['engineeringStudio']}; verified=${project['engineeringStudioVerified']}',
+    ),
+    CertificationCheck(
+      name: 'Property Inspector updated',
+      status: project['propertyInspectorUpdated'] == true
+          ? CertificationStatus.passed
+          : CertificationStatus.failed,
+      evidence:
+          'propertyInspectorUpdated=${project['propertyInspectorUpdated']}',
     ),
     CertificationCheck(
       name: 'Update Project',

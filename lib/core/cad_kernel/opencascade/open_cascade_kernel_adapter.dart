@@ -8,7 +8,12 @@ import 'open_cascade_bridge.dart';
 import 'open_cascade_ffi.dart';
 
 class OpenCascadeKernelAdapter
-    implements InterchangeGeometryKernelAPI, MeshGeometryKernelAPI {
+    implements
+        InterchangeGeometryKernelAPI,
+        MeshGeometryKernelAPI,
+        SurfaceTopologyKernelAPI,
+        SurfaceQualityKernelAPI,
+        SurfaceOperationKernelAPI {
   OpenCascadeKernelAdapter({
     OpenCascadeNativeBridge? bridge,
     OpenCascadeNativeBridge Function()? bridgeFactory,
@@ -62,6 +67,7 @@ class OpenCascadeKernelAdapter
         KernelCapability.cylinderSurface,
         KernelCapability.coneSurface,
         KernelCapability.sphereSurface,
+        KernelCapability.torusSurface,
       },
     };
   }
@@ -201,6 +207,29 @@ class OpenCascadeKernelAdapter
   }
 
   @override
+  Future<KernelMeshGeometry> inspectMesh(KernelMeshHandle handle) async {
+    if (handle.kernelId != descriptor.id) {
+      throw ArgumentError(
+        'Mesh belongs to ${handle.kernelId}, not OpenCascade',
+      );
+    }
+    final token =
+        _nativeMeshTokens[handle.persistentId] ??
+        (throw StateError(
+          'Native mesh is not loaded for ${handle.persistentId}',
+        ));
+    final bridge = _nativeBridge;
+    if (bridge is! OpenCascadeMeshNativeBridge) {
+      throw StateError('OpenCascade bridge does not support mesh inspection');
+    }
+    return (bridge as OpenCascadeMeshNativeBridge).inspectMesh(
+      token,
+      vertexCount: handle.vertexCount,
+      triangleCount: handle.triangleCount,
+    );
+  }
+
+  @override
   Future<void> exportFile(
     ShapeHandle handle,
     String path,
@@ -317,6 +346,95 @@ class OpenCascadeKernelAdapter
     await initialize();
     await _nativeBridge.destroyShape(token);
     _nativeTokens.remove(handle.persistentId);
+  }
+
+  @override
+  Future<KernelSurfaceTopology> inspectSurfaceTopology(
+    ShapeHandle surface,
+  ) async {
+    await initialize();
+    final value = await _nativeBridge.inspectSurfaceTopology(_resolve(surface));
+    return KernelSurfaceTopology(
+      boundaries: [
+        for (final item in (value['boundaries'] as List))
+          KernelBoundaryData(
+            index: item['index'] as int,
+            length: (item['length'] as num).toDouble(),
+            closed: item['closed'] as bool,
+          ),
+      ],
+      loops: [
+        for (final item in (value['loops'] as List))
+          KernelLoopData(
+            index: item['index'] as int,
+            closed: item['closed'] as bool,
+            boundaryIndices: (item['boundaries'] as List).cast<int>(),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Future<KernelSurfaceIntersection> intersectSurfaces(
+    ShapeHandle first,
+    ShapeHandle second, {
+    required String projectId,
+  }) async {
+    await initialize();
+    final value = await _nativeBridge.intersectSurfaces(
+      _resolve(first),
+      _resolve(second),
+    );
+    ShapeHandle? handle;
+    final token = value['token'] as String?;
+    if (token != null) {
+      final id = _ids.create(projectId, 'intersection');
+      _nativeTokens[id] = token;
+      handle = ShapeHandle.reference(
+        persistentId: id,
+        kernelId: descriptor.id,
+        type: CADShapeType.compound,
+        fingerprint: 'intersection:${first.fingerprint}:${second.fingerprint}',
+      );
+    }
+    return KernelSurfaceIntersection(
+      edgeCount: value['edgeCount'] as int,
+      length: (value['length'] as num).toDouble(),
+      handle: handle,
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> inspectSurfaceQuality(
+    ShapeHandle surface, {
+    required List<double> draftDirection,
+    int samples = 100,
+  }) async {
+    await initialize();
+    return _nativeBridge.inspectSurfaceQuality(
+      _resolve(surface),
+      draftDirection: draftDirection,
+      samples: samples,
+    );
+  }
+
+  @override
+  Future<KernelSurfaceOperationResult> executeSurfaceOperation(
+    ShapeHandle surface,
+    String operation,
+    Map<String, dynamic> parameters, {
+    required String projectId,
+  }) async {
+    await initialize();
+    return KernelSurfaceOperationResult(
+      supported: false,
+      diagnostic: 'UnsupportedOperation: $operation',
+    );
+  }
+
+  @override
+  Future<void> rollbackSurfaceOperation(String undoToken) async {
+    throw StateError('UnsupportedOperation: SURFACE_OPERATION_ROLLBACK');
   }
 
   @override

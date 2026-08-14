@@ -55,6 +55,26 @@ import '../../core/profile_recognition/history/profile_history.dart';
 import '../../core/profile_recognition/integration/profile_factory.dart';
 import '../../core/profile_recognition/repository/profile_repository.dart';
 import '../../core/profile_recognition/runtime/profile_runtime.dart';
+import '../../core/feature_modeling/analytics/feature_analytics.dart';
+import '../../core/feature_modeling/history/feature_history.dart';
+import '../../core/feature_modeling/integration/feature_modeling_factory.dart';
+import '../../core/feature_modeling/repository/feature_repository.dart';
+import '../../core/feature_modeling/runtime/feature_runtime.dart';
+import '../../core/extrude_feature/analytics/extrude_analytics.dart';
+import '../../core/extrude_feature/history/extrude_history.dart';
+import '../../core/extrude_feature/integration/extrude_factory.dart';
+import '../../core/extrude_feature/repository/extrude_repository.dart';
+import '../../core/extrude_feature/runtime/extrude_runtime.dart';
+import '../../core/revolve_feature/analytics/revolve_analytics.dart';
+import '../../core/revolve_feature/history/revolve_history.dart';
+import '../../core/revolve_feature/integration/revolve_factory.dart';
+import '../../core/revolve_feature/repository/revolve_repository.dart';
+import '../../core/revolve_feature/runtime/revolve_runtime.dart';
+import '../../core/transition_features/analytics/transition_analytics.dart';
+import '../../core/transition_features/history/transition_history.dart';
+import '../../core/transition_features/integration/transition_factory.dart';
+import '../../core/transition_features/repository/transition_repository.dart';
+import '../../core/transition_features/runtime/transition_runtime.dart';
 
 /// Application composition root. Concrete engines are wired here, outside the
 /// engineering core, so the core depends only on its contracts.
@@ -151,6 +171,36 @@ class EngineeringBootstrap {
       ..register<ProfileHistory>(ProfileHistory())
       ..register<ProfileRepository>(ProfileRepository(Directory.current))
       ..register<ProfileRepositoryFactory>(const ProfileRepositoryFactory());
+    services
+      ..register<FeatureModelingRuntime>(FeatureModelingRuntime())
+      ..register<FeatureModelingFactory>(const FeatureModelingFactory())
+      ..register<FeatureAnalytics>(FeatureAnalytics())
+      ..register<FeatureHistory>(FeatureHistory())
+      ..register<FeatureRepository>(FeatureRepository(Directory.current))
+      ..register<FeatureRepositoryFactory>(const FeatureRepositoryFactory());
+    services
+      ..register<ExtrudeRuntime>(ExtrudeRuntime())
+      ..register<ExtrudeFactory>(const ExtrudeFactory())
+      ..register<ExtrudeAnalytics>(ExtrudeAnalytics())
+      ..register<ExtrudeHistory>(ExtrudeHistory())
+      ..register<ExtrudeRepository>(ExtrudeRepository(Directory.current))
+      ..register<ExtrudeRepositoryFactory>(const ExtrudeRepositoryFactory());
+    services
+      ..register<RevolveRuntime>(RevolveRuntime())
+      ..register<RevolveFactory>(const RevolveFactory())
+      ..register<RevolveAnalytics>(RevolveAnalytics())
+      ..register<RevolveHistory>(RevolveHistory())
+      ..register<RevolveRepository>(RevolveRepository(Directory.current))
+      ..register<RevolveRepositoryFactory>(const RevolveRepositoryFactory());
+    services
+      ..register<TransitionRuntime>(TransitionRuntime())
+      ..register<TransitionFactory>(const TransitionFactory())
+      ..register<TransitionAnalytics>(TransitionAnalytics())
+      ..register<TransitionHistory>(TransitionHistory())
+      ..register<TransitionRepository>(TransitionRepository(Directory.current))
+      ..register<TransitionRepositoryFactory>(
+        const TransitionRepositoryFactory(),
+      );
     _initialized = true;
   }
 

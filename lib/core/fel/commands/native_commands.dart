@@ -34,6 +34,15 @@ import '../../sketch_editor/commands/fel_editor_commands.dart';
 import '../../sketch_editor/integration/editor_factory.dart';
 import '../../profile_recognition/commands/fel_profile_commands.dart';
 import '../../profile_recognition/integration/profile_factory.dart';
+import '../../feature_modeling/commands/fel_feature_modeling_commands.dart';
+import '../../feature_modeling/integration/feature_modeling_factory.dart';
+import '../../extrude_feature/commands/fel_extrude_commands.dart';
+import '../../extrude_feature/integration/extrude_factory.dart';
+import '../../cad_kernel/api/geometry_kernel_api.dart';
+import '../../revolve_feature/commands/fel_revolve_commands.dart';
+import '../../revolve_feature/integration/revolve_factory.dart';
+import '../../transition_features/commands/fel_transition_commands.dart';
+import '../../transition_features/integration/transition_factory.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -288,6 +297,46 @@ FELCommandRegistry createNativeCommandRegistry() {
     sketch: sketchEngineApi,
   );
   for (final command in createProfileFelCommands(profileApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final featureModelingApi = const FeatureModelingFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+  );
+  for (final command in createFeatureModelingFelCommands(featureModelingApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final extrudeApi = const ExtrudeFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+    kernel: const UnavailableGeometryKernel(),
+    profiles: profileApi,
+    featurePlatform: featureModelingApi,
+  );
+  for (final command in createExtrudeFelCommands(extrudeApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final revolveApi = const RevolveFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+    kernel: const UnavailableGeometryKernel(),
+    profiles: profileApi,
+    featurePlatform: featureModelingApi,
+    extrudes: extrudeApi,
+  );
+  for (final command in createRevolveFelCommands(revolveApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final transitionApi = const TransitionFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+    kernel: const UnavailableGeometryKernel(),
+    profiles: profileApi,
+    featurePlatform: featureModelingApi,
+    extrudes: extrudeApi,
+    revolves: revolveApi,
+  );
+  for (final command in createTransitionFelCommands(transitionApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   for (final name in [

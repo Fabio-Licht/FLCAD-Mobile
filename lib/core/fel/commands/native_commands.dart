@@ -43,6 +43,14 @@ import '../../revolve_feature/commands/fel_revolve_commands.dart';
 import '../../revolve_feature/integration/revolve_factory.dart';
 import '../../transition_features/commands/fel_transition_commands.dart';
 import '../../transition_features/integration/transition_factory.dart';
+import '../../reference_geometry/commands/fel_reference_commands.dart';
+import '../../reference_geometry/integration/reference_factory.dart';
+import '../../alignment_engine/commands/fel_alignment_commands.dart';
+import '../../alignment_engine/integration/alignment_factory.dart';
+import '../../live_validation/commands/fel_validation_commands.dart';
+import '../../live_validation/integration/validation_factory.dart';
+import '../../engineering_intelligence/commands/fel_intelligence_commands.dart';
+import '../../engineering_intelligence/integration/intelligence_factory.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -337,6 +345,55 @@ FELCommandRegistry createNativeCommandRegistry() {
     revolves: revolveApi,
   );
   for (final command in createTransitionFelCommands(transitionApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final referenceApi = const ReferenceFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+    kernel: const UnavailableGeometryKernel(),
+    sketch: sketchEngineApi,
+    profiles: profileApi,
+    features: featureModelingApi,
+    transitions: transitionApi,
+  );
+  for (final command in createReferenceFelCommands(referenceApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final alignmentApi = const AlignmentFactory().create(
+    projectDirectory: Directory.current,
+    projectId: 'local',
+    kernel: const UnavailableGeometryKernel(),
+    references: referenceApi,
+    features: featureModelingApi,
+    transitions: transitionApi,
+  );
+  for (final command in createAlignmentFelCommands(alignmentApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final validationApi = const LiveValidationFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    references: referenceApi,
+    alignments: alignmentApi,
+    sketches: sketchEngineApi,
+    features: featureModelingApi,
+    transitions: transitionApi,
+  );
+  for (final command in createLiveValidationFelCommands(validationApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final intelligenceApi = const EngineeringIntelligenceFactory().create(
+    projectDirectory: Directory.current,
+    kernel: const UnavailableGeometryKernel(),
+    references: referenceApi,
+    alignments: alignmentApi,
+    validation: validationApi,
+    sketches: sketchEngineApi,
+    features: featureModelingApi,
+  );
+  for (final command in createEngineeringIntelligenceFelCommands(
+    intelligenceApi,
+  )) {
     if (r.find(command.name) == null) r.register(command);
   }
   for (final name in [

@@ -166,6 +166,52 @@ class PropertyInspector {
         'history': node.context['history'],
         'quality': node.context['quality'],
       }),
+    if (node.context['referenceGeometry'] == true)
+      PropertySection('Reference Geometry', {
+        'type': node.context['referenceType'],
+        'constructionMethod': node.context['constructionMethod'],
+        'dependencies': node.context['dependencies'],
+        'persistentId': node.context['persistentId'],
+        'history': node.context['history'],
+        'quality': node.context['quality'],
+        'visibility': node.context['visibility'],
+        'state': node.context['state'],
+      }),
+    if (node.context['alignmentFeature'] == true)
+      PropertySection('Alignment', {
+        'type': node.context['alignmentType'],
+        'references': node.context['references'],
+        'transformation': node.context['transformation'],
+        'matrix': node.context['matrix'],
+        'rotation': node.context['rotation'],
+        'translation': node.context['translation'],
+        'quality': node.context['quality'],
+        'accuracy': node.context['accuracy'],
+        'history': node.context['history'],
+        'persistentId': node.context['persistentId'],
+      }),
+    if (node.context['liveValidation'] == true)
+      PropertySection('Live Validation', {
+        'maximumError': node.context['maximumError'],
+        'averageError': node.context['averageError'],
+        'rms': node.context['rms'],
+        'tolerance': node.context['tolerance'],
+        'quality': node.context['quality'],
+        'confidence': node.context['confidence'],
+        'lastUpdate': node.context['lastUpdate'],
+        'affectedRegions': node.context['affectedRegions'],
+        'responsibleFeature': node.context['responsibleFeature'],
+      }),
+    if (node.context['engineeringIntelligence'] == true)
+      PropertySection('Engineering Intelligence', {
+        'engineeringScore': node.context['engineeringScore'],
+        'projectHealth': node.context['projectHealth'],
+        'lastRecommendation': node.context['lastRecommendation'],
+        'confidence': node.context['confidence'],
+        'reason': node.context['reason'],
+        'expectedImprovement': node.context['expectedImprovement'],
+        'impact': node.context['impact'],
+      }),
     PropertySection(
       'Analytics',
       (node.context['analytics'] as Map?)?.cast<String, dynamic>() ?? const {},

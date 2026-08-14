@@ -75,6 +75,27 @@ import '../../core/transition_features/history/transition_history.dart';
 import '../../core/transition_features/integration/transition_factory.dart';
 import '../../core/transition_features/repository/transition_repository.dart';
 import '../../core/transition_features/runtime/transition_runtime.dart';
+import '../../core/reference_geometry/analytics/reference_analytics.dart';
+import '../../core/reference_geometry/history/reference_history.dart';
+import '../../core/reference_geometry/integration/reference_factory.dart';
+import '../../core/reference_geometry/repository/reference_repository.dart';
+import '../../core/reference_geometry/runtime/reference_runtime.dart';
+import '../../core/alignment_engine/analytics/alignment_analytics.dart';
+import '../../core/alignment_engine/history/alignment_history.dart';
+import '../../core/alignment_engine/integration/alignment_factory.dart';
+import '../../core/alignment_engine/repository/alignment_repository.dart';
+import '../../core/alignment_engine/runtime/alignment_runtime.dart';
+import '../../core/live_validation/analytics/validation_analytics.dart';
+import '../../core/live_validation/history/validation_history.dart';
+import '../../core/live_validation/history/validation_timeline.dart';
+import '../../core/live_validation/integration/validation_factory.dart';
+import '../../core/live_validation/repository/validation_repository.dart';
+import '../../core/live_validation/runtime/live_validation_runtime.dart';
+import '../../core/engineering_intelligence/analytics/intelligence_analytics.dart';
+import '../../core/engineering_intelligence/history/intelligence_history.dart';
+import '../../core/engineering_intelligence/integration/intelligence_factory.dart';
+import '../../core/engineering_intelligence/repository/intelligence_repository.dart';
+import '../../core/engineering_intelligence/runtime/intelligence_runtime.dart';
 
 /// Application composition root. Concrete engines are wired here, outside the
 /// engineering core, so the core depends only on its contracts.
@@ -200,6 +221,49 @@ class EngineeringBootstrap {
       ..register<TransitionRepository>(TransitionRepository(Directory.current))
       ..register<TransitionRepositoryFactory>(
         const TransitionRepositoryFactory(),
+      );
+    services
+      ..register<ReferenceRuntime>(ReferenceRuntime())
+      ..register<ReferenceFactory>(const ReferenceFactory())
+      ..register<ReferenceAnalytics>(ReferenceAnalytics())
+      ..register<ReferenceHistory>(ReferenceHistory())
+      ..register<ReferenceRepository>(ReferenceRepository(Directory.current))
+      ..register<ReferenceRepositoryFactory>(
+        const ReferenceRepositoryFactory(),
+      );
+    services
+      ..register<AlignmentRuntime>(AlignmentRuntime())
+      ..register<AlignmentFactory>(const AlignmentFactory())
+      ..register<AlignmentAnalytics>(AlignmentAnalytics())
+      ..register<AlignmentHistory>(AlignmentHistory())
+      ..register<AlignmentRepository>(AlignmentRepository(Directory.current))
+      ..register<AlignmentRepositoryFactory>(
+        const AlignmentRepositoryFactory(),
+      );
+    services
+      ..register<LiveValidationRuntime>(LiveValidationRuntime())
+      ..register<LiveValidationFactory>(const LiveValidationFactory())
+      ..register<ValidationAnalytics>(ValidationAnalytics())
+      ..register<ValidationHistory>(ValidationHistory())
+      ..register<ValidationTimeline>(ValidationTimeline())
+      ..register<ValidationRepository>(ValidationRepository(Directory.current))
+      ..register<ValidationRepositoryFactory>(
+        const ValidationRepositoryFactory(),
+      );
+    services
+      ..register<EngineeringIntelligenceRuntime>(
+        EngineeringIntelligenceRuntime(),
+      )
+      ..register<EngineeringIntelligenceFactory>(
+        const EngineeringIntelligenceFactory(),
+      )
+      ..register<IntelligenceAnalytics>(IntelligenceAnalytics())
+      ..register<IntelligenceHistory>(IntelligenceHistory())
+      ..register<IntelligenceRepository>(
+        IntelligenceRepository(Directory.current),
+      )
+      ..register<IntelligenceRepositoryFactory>(
+        const IntelligenceRepositoryFactory(),
       );
     _initialized = true;
   }

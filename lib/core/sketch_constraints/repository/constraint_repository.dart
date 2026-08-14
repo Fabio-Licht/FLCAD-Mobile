@@ -1,0 +1,96 @@
+import 'dart:convert';
+import 'dart:io';
+import '../analytics/constraint_analytics.dart';
+import '../graph/constraint_graph.dart';
+import '../history/constraint_history.dart';
+import '../models/constraint_models.dart';
+
+class ConstraintRepository {
+  ConstraintRepository(this.projectDirectory);
+  final Directory projectDirectory;
+  static const paths = [
+    'CAD/Constraints',
+    'CAD/ConstraintGraph',
+    'CAD/ConstraintHistory',
+    'CAD/ConstraintAnalytics',
+    'CAD/Dimensions',
+  ];
+  Directory _dir(String p) => Directory(
+    '${projectDirectory.path}${Platform.pathSeparator}${p.replaceAll('/', Platform.pathSeparator)}',
+  );
+  String _safe(String id) => id.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+  Future<void> initialize() async {
+    for (final p in paths) {
+      await _dir(p).create(recursive: true);
+    }
+  }
+
+  Future<void> save({
+    required Iterable<SketchConstraint> constraints,
+    required Iterable<SketchDimension> dimensions,
+    required ConstraintGraphSet graphs,
+    required ConstraintHistory history,
+    required ConstraintAnalytics analytics,
+  }) async {
+    await initialize();
+    for (final c in constraints) {
+      await File(
+        '${_dir(paths[0]).path}${Platform.pathSeparator}${_safe(c.id)}.json',
+      ).writeAsString(jsonEncode(c.toJson()));
+    }
+    for (final d in dimensions) {
+      await File(
+        '${_dir(paths[4]).path}${Platform.pathSeparator}${_safe(d.id)}.json',
+      ).writeAsString(jsonEncode(d.toJson()));
+    }
+    await File(
+      '${_dir(paths[1]).path}${Platform.pathSeparator}graph.json',
+    ).writeAsString(jsonEncode(graphs.toJson()));
+    await File(
+      '${_dir(paths[2]).path}${Platform.pathSeparator}history.json',
+    ).writeAsString(
+      jsonEncode(history.entries.map((e) => e.toJson()).toList()),
+    );
+    await File(
+      '${_dir(paths[3]).path}${Platform.pathSeparator}analytics.json',
+    ).writeAsString(jsonEncode(analytics.toJson()));
+  }
+
+  Future<List<SketchConstraint>> loadConstraints() async {
+    final d = _dir(paths[0]);
+    if (!await d.exists()) return [];
+    final result = <SketchConstraint>[];
+    await for (final f in d.list()) {
+      if (f is File && f.path.endsWith('.json')) {
+        result.add(
+          SketchConstraint.fromJson(
+            (jsonDecode(await f.readAsString()) as Map).cast<String, dynamic>(),
+          ),
+        );
+      }
+    }
+    return result;
+  }
+
+  Future<List<SketchDimension>> loadDimensions() async {
+    final d = _dir(paths[4]);
+    if (!await d.exists()) return [];
+    final result = <SketchDimension>[];
+    await for (final f in d.list()) {
+      if (f is File && f.path.endsWith('.json')) {
+        result.add(
+          SketchDimension.fromJson(
+            (jsonDecode(await f.readAsString()) as Map).cast<String, dynamic>(),
+          ),
+        );
+      }
+    }
+    return result;
+  }
+}
+
+class ConstraintRepositoryFactory {
+  const ConstraintRepositoryFactory();
+  ConstraintRepository create(Directory project) =>
+      ConstraintRepository(project);
+}

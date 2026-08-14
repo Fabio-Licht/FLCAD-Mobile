@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import '../../smart_regions/engine/smart_border_engine.dart';
 import '../../smart_regions/models/smart_region.dart';
 import '../../smart_regions/selection/triangle_selection.dart';
@@ -24,6 +26,14 @@ import '../../cad_features/commands/fel_feature_commands.dart';
 import '../../surface_intelligence/commands/fel_surface_intelligence_commands.dart';
 import '../../surface_generation/commands/fel_surface_generation_commands.dart';
 import '../../hybrid_surface_engine/commands/fel_hybrid_surface_commands.dart';
+import '../../sketch_engine/commands/fel_sketch_engine_commands.dart';
+import '../../sketch_engine/integration/sketch_factory.dart';
+import '../../sketch_constraints/commands/fel_constraint_commands.dart';
+import '../../sketch_constraints/integration/constraint_factory.dart';
+import '../../sketch_editor/commands/fel_editor_commands.dart';
+import '../../sketch_editor/integration/editor_factory.dart';
+import '../../profile_recognition/commands/fel_profile_commands.dart';
+import '../../profile_recognition/integration/profile_factory.dart';
 
 class SelectRegionCommand implements FELCommand {
   @override
@@ -253,6 +263,32 @@ FELCommandRegistry createNativeCommandRegistry() {
   }
   for (final command in createHybridSurfaceFELCommands()) {
     r.register(command);
+  }
+  final sketchEngineApi = const SketchEngineFactory().create(Directory.current);
+  for (final command in createSketchEngineFelCommands(sketchEngineApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final constraintApi = const ConstraintFactory().create(
+    projectDirectory: Directory.current,
+    sketch: sketchEngineApi,
+  );
+  for (final command in createConstraintFelCommands(constraintApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final editorApi = const SketchEditorFactory().create(
+    projectDirectory: Directory.current,
+    sketch: sketchEngineApi,
+    constraints: constraintApi,
+  );
+  for (final command in createSketchEditorFelCommands(editorApi)) {
+    if (r.find(command.name) == null) r.register(command);
+  }
+  final profileApi = const ProfileRecognitionFactory().create(
+    projectDirectory: Directory.current,
+    sketch: sketchEngineApi,
+  );
+  for (final command in createProfileFelCommands(profileApi)) {
+    if (r.find(command.name) == null) r.register(command);
   }
   for (final name in [
     'INTERSECTION',

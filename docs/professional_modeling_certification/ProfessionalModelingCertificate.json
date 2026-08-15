@@ -1,0 +1,12 @@
+{
+  "certificate": "Professional Surface Modeling Certification",
+  "sprint": "G-011H",
+  "status": "requiresNativeRun",
+  "fixture": "bearing.stl",
+  "requiredBackend": "OpenCascade 8.0.1 Release",
+  "requiredPipelines": 500,
+  "requiredArchitecturalCompliance": 100,
+  "geometryModified": false,
+  "fallbacks": 0,
+  "generator": "tool/professional_modeling_certification.dart"
+}

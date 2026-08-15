@@ -1,0 +1,11 @@
+{
+  "sprint": "G-011E",
+  "status": "REQUIRES_NATIVE_RUN",
+  "backend": "OpenCascade 8.0.1",
+  "fixture": "bearing.stl",
+  "expectedCommit": "UnsupportedOperation: editBoundary",
+  "geometryModified": false,
+  "fallbacks": 0,
+  "approximations": 0,
+  "generator": "tool/surface_boundary_certification.dart"
+}

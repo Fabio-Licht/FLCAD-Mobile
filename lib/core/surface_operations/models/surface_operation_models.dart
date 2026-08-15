@@ -13,6 +13,15 @@ enum SurfaceOperationType {
   projectBoundary,
   reparameterizeSurface,
   healingOperation,
+  reduceSurface,
+  fairSurface,
+  editBoundary,
+  manufacturingSurface,
+  rebuildSurface,
+  stitchSurface,
+  fillSurface,
+  gapClosure,
+  healSurface,
 }
 
 enum SurfaceOperationStatus {

@@ -1,0 +1,11 @@
+{
+  "sprint": "G-011G",
+  "status": "REQUIRES_NATIVE_RUN",
+  "backend": "OpenCascade 8.0.1",
+  "fixture": "bearing.stl",
+  "requiredOperations": ["matchSurface", "rebuildSurface", "healSurface", "stitchSurface", "fillSurface", "gapClosure"],
+  "geometryModified": false,
+  "fallbacks": 0,
+  "approximations": 0,
+  "generator": "tool/advanced_surface_certification.dart"
+}

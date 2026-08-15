@@ -1,0 +1,14 @@
+export 'advisor/reference_strategy_advisor.dart';
+export 'analytics/smart_reference_analytics.dart';
+export 'api/smart_reference_api.dart';
+export 'builder/reference_candidate_builder.dart';
+export 'canonical/canonical_reference_solver.dart';
+export 'engine/smart_reference_engine.dart';
+export 'graph/reference_dependency_graph_builder.dart';
+export 'integration/smart_reference_factory.dart';
+export 'integration/smart_reference_integration.dart';
+export 'intelligence/reference_intelligence_engines.dart';
+export 'models/smart_reference_models.dart';
+export 'ranking/reference_ranking_engine.dart';
+export 'repository/smart_reference_repository.dart';
+export 'workspace/smart_reference_workspace.dart';

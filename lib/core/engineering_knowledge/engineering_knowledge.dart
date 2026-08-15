@@ -1,4 +1,5 @@
 export 'advisors/engineering_advisor.dart';
+export 'certification/engineering_knowledge_certification.dart';
 export 'api/engineering_knowledge_api.dart';
 export 'datasets/knowledge_dataset.dart';
 export 'features/feature_library.dart';
@@ -11,6 +12,9 @@ export 'learning/knowledge_learning.dart';
 export 'manufacturing/manufacturing_library.dart';
 export 'materials/material_library.dart';
 export 'models/knowledge_models.dart';
+export 'professional/engineering_knowledge_engine.dart';
+export 'professional/engineering_knowledge_models.dart';
+export 'professional/engineering_knowledge_support.dart';
 export 'ontology/engineering_ontology.dart';
 export 'patterns/pattern_library.dart';
 export 'plugins/knowledge_plugin.dart';

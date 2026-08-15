@@ -1,0 +1,90 @@
+{
+  "modules": [
+    "AI Engineering Foundation",
+    "Primitive Intelligence",
+    "Engineering Features",
+    "Smart References",
+    "Reconstruction Strategy",
+    "Interactive Assistant",
+    "Engineering Knowledge"
+  ],
+  "dependencies": [
+    {
+      "from": "Primitive Intelligence",
+      "to": "AI Engineering Foundation"
+    },
+    {
+      "from": "Engineering Features",
+      "to": "Primitive Intelligence"
+    },
+    {
+      "from": "Smart References",
+      "to": "Engineering Features"
+    },
+    {
+      "from": "Reconstruction Strategy",
+      "to": "Smart References"
+    },
+    {
+      "from": "Interactive Assistant",
+      "to": "Reconstruction Strategy"
+    },
+    {
+      "from": "Engineering Knowledge",
+      "to": "Interactive Assistant"
+    }
+  ],
+  "cycles": false,
+  "orphanModules": [],
+  "invalidDependencies": [],
+  "workspaces": [
+    "AI Engineering Foundation Workspace",
+    "Primitive Intelligence Workspace",
+    "Engineering Features Workspace",
+    "Smart References Workspace",
+    "Reconstruction Strategy Workspace",
+    "Interactive Assistant Workspace",
+    "Engineering Knowledge Workspace"
+  ],
+  "propertyInspectors": [
+    "AI Engineering Foundation Property Inspector",
+    "Primitive Intelligence Property Inspector",
+    "Engineering Features Property Inspector",
+    "Smart References Property Inspector",
+    "Reconstruction Strategy Property Inspector",
+    "Interactive Assistant Property Inspector",
+    "Engineering Knowledge Property Inspector"
+  ],
+  "persistenceRoots": [
+    "CAD/AIEngineering",
+    "CAD/PrimitiveIntelligence",
+    "CAD/EngineeringFeatures",
+    "CAD/SmartReferences",
+    "CAD/ReconstructionStrategies",
+    "CAD/InteractiveAssistant",
+    "CAD/EngineeringKnowledge"
+  ],
+  "analytics": [
+    "AI Engineering Foundation Analytics",
+    "Primitive Intelligence Analytics",
+    "Engineering Features Analytics",
+    "Smart References Analytics",
+    "Reconstruction Strategy Analytics",
+    "Interactive Assistant Analytics",
+    "Engineering Knowledge Analytics"
+  ],
+  "adrs": [
+    "ADR-057",
+    "ADR-058",
+    "ADR-059",
+    "ADR-060",
+    "ADR-061",
+    "ADR-062",
+    "ADR-063"
+  ],
+  "coupling": "unidirectional layered integration",
+  "reuse": "immutable projections and shared audit vocabulary",
+  "maxSerializedPipelineBytes": 65536,
+  "timersUsed": false,
+  "approved": true
+}

@@ -1,0 +1,13 @@
+export 'advisor/ai_advisor.dart';
+export 'analytics/ai_engineering_analytics.dart';
+export 'api/ai_engineering_api.dart';
+export 'confidence/confidence_engine.dart';
+export 'context/engineering_context.dart';
+export 'engine/ai_engineering_engine.dart';
+export 'features/feature_vector_builder.dart';
+export 'integration/ai_engineering_factory.dart';
+export 'integration/ai_engineering_integration.dart';
+export 'intent/engineering_intent_engine.dart';
+export 'models/ai_engineering_models.dart';
+export 'repository/engineering_intent_repository.dart';
+export 'workspace/ai_engineering_workspace.dart';

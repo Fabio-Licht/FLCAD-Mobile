@@ -93,7 +93,7 @@ void main() {
     );
   });
   test('FEL exposes PED vocabulary', () {
-    final r = createNativeCommandRegistry();
+    final r = createNativeCommandRegistry(Directory.systemTemp);
     for (final n in [
       'CREATE FEATURE',
       'CREATE SOLID',

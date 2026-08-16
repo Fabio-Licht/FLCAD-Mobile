@@ -118,3 +118,17 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Official B-001B desktop release structure. These directories are intentionally
+# created empty when no optional runtime or plugin payload is installed.
+install(DIRECTORY DESTINATION "${CMAKE_INSTALL_PREFIX}/assets" COMPONENT Runtime)
+install(DIRECTORY DESTINATION "${CMAKE_INSTALL_PREFIX}/runtime" COMPONENT Runtime)
+install(DIRECTORY DESTINATION "${CMAKE_INSTALL_PREFIX}/config" COMPONENT Runtime)
+install(DIRECTORY DESTINATION "${CMAKE_INSTALL_PREFIX}/plugins" COMPONENT Runtime)
+install(DIRECTORY DESTINATION "${CMAKE_INSTALL_PREFIX}/OpenCascade" COMPONENT Runtime)
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/branding/flcad_reverse_ai_mark.png"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/flcad_reverse_ai_icon.png"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/splash/mesh_to_cad.png"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/assets"
+  COMPONENT Runtime)

@@ -27,6 +27,11 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
+  // The production shell must remain visible even when Dart fails before its
+  // first frame. Waiting exclusively for SetNextFrameCallback left a healthy
+  // Windows process with no window and no actionable diagnostic.
+  Show();
+
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });

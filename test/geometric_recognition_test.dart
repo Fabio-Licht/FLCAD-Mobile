@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/engineering_decision/api/decision_api.dart';
 import 'package:flcad_mobile/core/engineering_decision/engine/engineering_decision_engine.dart';
 import 'package:flcad_mobile/core/fel/commands/native_commands.dart';
@@ -204,7 +206,7 @@ void main() {
   });
 
   test('FEL exposes complete recognition vocabulary', () {
-    final names = createNativeCommandRegistry().names;
+    final names = createNativeCommandRegistry(Directory.systemTemp).names;
     for (final name in [
       'RECOGNIZE',
       'RECOGNIZE REGION',

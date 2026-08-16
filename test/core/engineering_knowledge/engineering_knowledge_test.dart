@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/engineering/context/engineering_context.dart';
 import 'package:flcad_mobile/core/engineering_knowledge/engineering_knowledge.dart';
 import 'package:flcad_mobile/core/fel/commands/native_commands.dart';
@@ -171,7 +173,7 @@ void main() {
   });
   test('Engineering Context and FEL expose Engineering DNA', () {
     final context = EngineeringContext.standard('p'),
-        registry = createNativeCommandRegistry();
+        registry = createNativeCommandRegistry(Directory.systemTemp);
     expect(
       context.services.get<EngineeringKnowledgeApi>(),
       isA<EngineeringKnowledgeApi>(),

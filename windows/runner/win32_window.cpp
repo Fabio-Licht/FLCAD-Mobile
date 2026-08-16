@@ -146,6 +146,12 @@ bool Win32Window::Create(const std::wstring& title,
 
   UpdateTheme(window);
 
+  // Make the native shell observable before Flutter engine initialization.
+  // OnCreate can block or fail while loading the Dart bundle or plugins; a
+  // production executable must not remain as an invisible background process.
+  ShowWindow(window, SW_SHOWNORMAL);
+  UpdateWindow(window);
+
   return OnCreate();
 }
 

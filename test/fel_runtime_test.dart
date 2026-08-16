@@ -60,7 +60,7 @@ void main() {
         regions: regions,
         meshes: {'mesh': mesh},
       );
-      final api = FELApi.standard();
+      final api = FELApi.standard(projectDirectory: Directory.systemTemp);
       final result = await api.executor.execute(
         'SELECT REGION "FLANGE" -> EXPAND REGION 1 -> SAVE PROJECT',
         context,
@@ -102,7 +102,7 @@ void main() {
       expect(undone, isTrue);
       expect(history.redoEntry()?.command, 'X');
       final runtime = FELRuntime(
-        commands: createNativeCommandRegistry(),
+        commands: createNativeCommandRegistry(Directory.systemTemp),
         functions: FELFunctionLibrary(),
       );
       final token = FELCancellationToken()..cancel();

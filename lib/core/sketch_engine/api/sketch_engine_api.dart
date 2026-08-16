@@ -46,4 +46,6 @@ class SketchEngineApi {
   );
   List<Sketch> get sketches => List.unmodifiable(engine.sketches.values);
   SketchEntity? entity(String id) => engine.entities[id];
+  Future<void> load() => engine.load();
+  Future<void> persist() => engine.persist();
 }

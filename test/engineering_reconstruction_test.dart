@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'dart:math' as math;
 import 'package:flcad_mobile/core/engineering_reconstruction/advisor/reconstruction_intelligence_advisor.dart';
 import 'package:flcad_mobile/core/engineering_reconstruction/api/engineering_reconstruction_api.dart';
@@ -166,7 +168,7 @@ void main() {
   });
 
   test('FEL exposes complete ERI planning vocabulary', () {
-    final names = createNativeCommandRegistry().names;
+    final names = createNativeCommandRegistry(Directory.systemTemp).names;
     for (final name in [
       'PLAN RECONSTRUCTION',
       'SHOW PLAN',

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'dart:math' as math;
 
 import 'package:flcad_mobile/core/fel/commands/native_commands.dart';
@@ -164,7 +166,7 @@ void main() {
   });
 
   test('FEL registers professional recognition vocabulary', () {
-    final names = createNativeCommandRegistry().names;
+    final names = createNativeCommandRegistry(Directory.systemTemp).names;
     for (final name in [
       'RECOGNIZE FEATURES',
       'RECOGNIZE PRIMITIVES',

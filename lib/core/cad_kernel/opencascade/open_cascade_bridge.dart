@@ -65,6 +65,16 @@ abstract interface class OpenCascadeMeshNativeBridge {
   });
 }
 
+/// Optional OCCT bridge extension for professional surface operators.
+abstract interface class OpenCascadeSurfaceNativeBridge {
+  Future<OpenCascadeNativeShape> executeSurfaceOperation(
+    String operation, {
+    String? sourceToken,
+    List<String> referenceTokens = const [],
+    List<double> values = const [],
+  });
+}
+
 class OpenCascadeNativeMesh {
   const OpenCascadeNativeMesh({
     required this.token,

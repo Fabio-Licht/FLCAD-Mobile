@@ -1,4 +1,5 @@
 import 'package:flcad_mobile/app/bootstrap/engineering_bootstrap.dart';
+import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/engineering/cache/engineering_cache.dart';
 import 'package:flcad_mobile/core/engineering/plugins/plugin_registry.dart';
 import 'package:flcad_mobile/core/engineering/runtime/engineering_runtime.dart';
@@ -87,9 +88,11 @@ void main() {
     expect(registry.get<String>(), 'service');
     expect(registry.get<String>(), 'service');
     expect(calls, 1);
-    final context = EngineeringBootstrap.instance.createContext('project');
-    expect(context.projectId, 'project');
-    expect(context.runtime, same(EngineeringBootstrap.instance.runtime));
+    EngineeringBootstrap.instance.initialize();
+    expect(
+      EngineeringBootstrap.instance.services.get<KernelManager>(),
+      isA<KernelManager>(),
+    );
   });
 
   test('Plugin registry enforces dependency lifecycle', () async {

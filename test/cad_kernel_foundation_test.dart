@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/cad_kernel/analytics/kernel_analytics.dart';
 import 'package:flcad_mobile/core/cad_kernel/api/geometry_kernel_api.dart';
 import 'package:flcad_mobile/core/cad_kernel/factories/geometry_factories.dart';
@@ -136,7 +138,7 @@ void main() {
     },
   );
   test('FEL exposes complete kernel foundation vocabulary', () {
-    final names = createNativeCommandRegistry().names;
+    final names = createNativeCommandRegistry(Directory.systemTemp).names;
     for (final name in [
       'LOAD KERNEL',
       'UNLOAD KERNEL',

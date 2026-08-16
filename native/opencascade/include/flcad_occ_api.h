@@ -32,6 +32,7 @@ FLCAD_OCC_EXPORT int flcad_occ_mesh_geometry(const char* token,double* nodes,siz
 FLCAD_OCC_EXPORT int flcad_occ_surface_topology(const char* token,char* topology,size_t topology_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_intersect_surfaces(const char* first,const char* second,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_quality(const char* token,const double* draft_direction,int samples,char* result,size_t result_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_surface_operation(const char* operation,const char* source_token,const char* reference_tokens,const double* values,size_t value_count,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* type,size_t type_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_export_shape(const char* token,const char* path,const char* format,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_validate(const char* token,char* diagnostics,size_t diagnostics_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_healing_proposals(const char* token,char* proposals,size_t proposals_size,char* error,size_t error_size);

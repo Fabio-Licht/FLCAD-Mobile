@@ -1,5 +1,5 @@
 name: flcad_mobile
-description: "A new Flutter project."
+description: "FLCAD Reverse AI — Engineering Intelligence Platform."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 0.9.1+1
 
 environment:
   sdk: ^3.12.2
@@ -42,6 +42,7 @@ dependencies:
   path: ^1.9.1
 
   ffi: ^2.1.4
+  file_picker: ^12.0.0
 
 dev_dependencies:
   flutter_test:
@@ -66,10 +67,9 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/images/
-    - assets/icons/
-    - assets/logos/
-    - assets/animations/
+    - assets/branding/flcad_reverse_ai_mark.png
+    - assets/icons/flcad_reverse_ai_icon.png
+    - assets/splash/mesh_to_cad.png
 
 
   # To add assets to your application, add an assets section, like this:

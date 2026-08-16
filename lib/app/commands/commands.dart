@@ -1,0 +1,9 @@
+export 'command_context.dart';
+export 'command_dispatcher.dart';
+export 'command_manager.dart';
+export 'command_registry.dart';
+export 'command_validation.dart';
+export 'desktop_command_coordinator.dart';
+export 'engineering_command_router.dart';
+export 'undo_command_adapter.dart';
+export 'workspace_command_adapter.dart';

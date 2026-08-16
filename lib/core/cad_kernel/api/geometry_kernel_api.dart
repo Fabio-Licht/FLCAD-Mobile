@@ -48,6 +48,16 @@ abstract interface class InterchangeGeometryKernelAPI
   });
 }
 
+/// Persists kernel-owned BREP payloads; ShapeHandle JSON is not geometry.
+abstract interface class PersistentGeometryKernelAPI
+    implements GeometryKernelAPI {
+  Future<void> persistShape(ShapeHandle handle, String payloadPath);
+  Future<ShapeHandle> restoreShape(
+    String payloadPath, {
+    required String persistentId,
+  });
+}
+
 class UnavailableGeometryKernel implements GeometryKernelAPI {
   const UnavailableGeometryKernel();
   @override

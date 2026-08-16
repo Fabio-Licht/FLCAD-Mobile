@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/autonomous_reconstruction/autonomous_reconstruction.dart';
 import 'package:flcad_mobile/core/engineering/context/engineering_context.dart';
 import 'package:flcad_mobile/core/engineering_cognition/orchestrator/cognition_orchestrator.dart';
@@ -178,7 +180,7 @@ void main() {
     },
   );
   test('FEL exposes autonomous reconstruction vocabulary', () {
-    final registry = createNativeCommandRegistry();
+    final registry = createNativeCommandRegistry(Directory.systemTemp);
     for (final name in [
       'BUILD RECONSTRUCTION',
       'PLAN RECONSTRUCTION',

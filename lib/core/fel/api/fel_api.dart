@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import '../../smart_regions/api/smart_regions_api.dart';
 import '../commands/native_commands.dart';
 import '../executor/fel_executor.dart';
@@ -8,8 +10,8 @@ import '../validators/semantic_analyzer.dart';
 
 class FELApi {
   FELApi._(this.runtime, this.executor);
-  factory FELApi.standard() {
-    final commands = createNativeCommandRegistry(),
+  factory FELApi.standard({required Directory projectDirectory}) {
+    final commands = createNativeCommandRegistry(projectDirectory),
         functions = FELFunctionLibrary(),
         runtime = FELRuntime(commands: commands, functions: functions);
     return FELApi._(

@@ -188,7 +188,7 @@ void main() {
     );
   });
   test('FEL exposes complete surface pipeline vocabulary', () {
-    final registry = createNativeCommandRegistry();
+    final registry = createNativeCommandRegistry(Directory.systemTemp);
     for (final name in [
       'CREATE SURFACE',
       'FIT SURFACE',

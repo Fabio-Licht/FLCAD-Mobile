@@ -1,0 +1,16 @@
+solid platform_002a_plane
+  facet normal 0 0 1
+    outer loop
+      vertex -20 -20 0
+      vertex 20 -20 0
+      vertex 20 20 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -20 -20 0
+      vertex 20 20 0
+      vertex -20 20 0
+    endloop
+  endfacet
+endsolid platform_002a_plane

@@ -165,7 +165,10 @@ void main() {
       final surface = result.surface!,
           advice = api.explain(surface.surfaceId, .92);
       expect(api.engine.graph.nodes, contains(surface.surfaceId));
-    expect(engineeringGraph.nodes.keys, containsAll(['r', surface.surfaceId]));
+      expect(
+        engineeringGraph.nodes.keys,
+        containsAll(['r', surface.surfaceId]),
+      );
       expect(
         engineeringHistory.query(domain: 'surface-generation'),
         hasLength(1),

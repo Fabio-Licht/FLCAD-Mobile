@@ -225,7 +225,7 @@ void main() {
     expect(result.converged, isTrue);
   });
   test('FEL exposes procedural Sketch commands', () {
-    final registry = createNativeCommandRegistry();
+    final registry = createNativeCommandRegistry(Directory.systemTemp);
     for (final name in [
       'CREATE SKETCH',
       'CREATE CENTER',

@@ -208,7 +208,7 @@ class UnsupportedEngineeringCommand implements FELCommand {
   );
 }
 
-FELCommandRegistry createNativeCommandRegistry() {
+FELCommandRegistry createNativeCommandRegistry(Directory projectDirectory) {
   final r = FELCommandRegistry()
     ..register(SelectRegionCommand())
     ..register(const ExpandRegionCommand())
@@ -293,19 +293,19 @@ FELCommandRegistry createNativeCommandRegistry() {
   for (final command in createHybridSurfaceFELCommands()) {
     r.register(command);
   }
-  final sketchEngineApi = const SketchEngineFactory().create(Directory.current);
+  final sketchEngineApi = const SketchEngineFactory().create(projectDirectory);
   for (final command in createSketchEngineFelCommands(sketchEngineApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   final constraintApi = const ConstraintFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     sketch: sketchEngineApi,
   );
   for (final command in createConstraintFelCommands(constraintApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   final editorApi = const SketchEditorFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     sketch: sketchEngineApi,
     constraints: constraintApi,
   );
@@ -313,21 +313,21 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final profileApi = const ProfileRecognitionFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     sketch: sketchEngineApi,
   );
   for (final command in createProfileFelCommands(profileApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   final featureModelingApi = const FeatureModelingFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
   );
   for (final command in createFeatureModelingFelCommands(featureModelingApi)) {
     if (r.find(command.name) == null) r.register(command);
   }
   final extrudeApi = const ExtrudeFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
     kernel: const UnavailableGeometryKernel(),
     profiles: profileApi,
@@ -337,7 +337,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final revolveApi = const RevolveFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
     kernel: const UnavailableGeometryKernel(),
     profiles: profileApi,
@@ -348,7 +348,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final transitionApi = const TransitionFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
     kernel: const UnavailableGeometryKernel(),
     profiles: profileApi,
@@ -360,7 +360,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final referenceApi = const ReferenceFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
     kernel: const UnavailableGeometryKernel(),
     sketch: sketchEngineApi,
@@ -372,7 +372,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final alignmentApi = const AlignmentFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     projectId: 'local',
     kernel: const UnavailableGeometryKernel(),
     references: referenceApi,
@@ -383,7 +383,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final validationApi = const LiveValidationFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     references: referenceApi,
     alignments: alignmentApi,
@@ -395,7 +395,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final intelligenceApi = const EngineeringIntelligenceFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     references: referenceApi,
     alignments: alignmentApi,
@@ -409,7 +409,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final reverseWorkflowApi = const ReverseWorkflowFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     references: referenceApi,
     alignments: alignmentApi,
@@ -424,7 +424,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final adaptiveStudioApi = const AdaptiveStudioFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     workflows: reverseWorkflowApi,
     references: referenceApi,
@@ -440,7 +440,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final interactiveReverseApi = const InteractiveReverseFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     workflows: reverseWorkflowApi,
     references: referenceApi,
@@ -457,7 +457,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final reverseSessionApi = const ReverseSessionFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     workflows: reverseWorkflowApi,
     studio: adaptiveStudioApi,
@@ -474,7 +474,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final certificationApi = const PlatformCertificationFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
     recognition: null,
     references: referenceApi,
@@ -495,7 +495,7 @@ FELCommandRegistry createNativeCommandRegistry() {
     if (r.find(command.name) == null) r.register(command);
   }
   final meshApi = const MeshFactory().create(
-    projectDirectory: Directory.current,
+    projectDirectory: projectDirectory,
     kernel: const UnavailableGeometryKernel(),
   );
   for (final command in createMeshFelCommands(meshApi)) {

@@ -191,6 +191,48 @@ void main() {
     expect(bridge.destroyed, ['created-vertex']);
   });
 
+  test(
+    'professional surface operation returns native handle and reversible tokens',
+    () async {
+      final bridge = _RecordingBridge();
+      final adapter = OpenCascadeKernelAdapter(bridge: bridge);
+      final source = await adapter.importFile(
+        'surface.brep',
+        KernelExchangeFormat.brep,
+        projectId: 'project',
+      );
+      final result = await adapter.executeSurfaceOperation(
+        source,
+        'healSurface',
+        const {},
+        projectId: 'project',
+      );
+      expect(result.supported, isTrue);
+      expect(result.result?.kernelId, 'opencascade');
+      await adapter.rollbackSurfaceOperation(result.undoToken!);
+      await adapter.redoSurfaceOperation(result.redoToken!);
+      expect(bridge.surfaceOperations, ['HEAL']);
+    },
+  );
+
+  test('native BREP persistence restores persistent identity', () async {
+    final bridge = _RecordingBridge();
+    final adapter = OpenCascadeKernelAdapter(bridge: bridge);
+    final source = await adapter.importFile(
+      'surface.brep',
+      KernelExchangeFormat.brep,
+      projectId: 'project',
+    );
+    await adapter.persistShape(source, 'cache/surface.brep');
+    final restored = await adapter.restoreShape(
+      'cache/surface.brep',
+      persistentId: source.persistentId,
+    );
+    expect(restored.persistentId, source.persistentId);
+    expect(restored.type, CADShapeType.solid);
+    expect(bridge.exports, contains('brep:cache/surface.brep'));
+  });
+
   test('native metadata repository creates project-first structure', () async {
     final root = await Directory.systemTemp.createTemp('flcad-occ-');
     addTearDown(() => root.delete(recursive: true));
@@ -232,12 +274,14 @@ void main() {
   });
 }
 
-class _RecordingBridge implements OpenCascadeNativeBridge {
+class _RecordingBridge
+    implements OpenCascadeNativeBridge, OpenCascadeSurfaceNativeBridge {
   final imports = <String>[];
   final exports = <String>[];
   bool shutdownCalled = false;
   bool initializeCalled = false;
   final destroyed = <String>[];
+  final surfaceOperations = <String>[];
   @override
   Future<void> initialize() async => initializeCalled = true;
   @override
@@ -364,4 +408,20 @@ class _RecordingBridge implements OpenCascadeNativeBridge {
       'approved': 1,
     },
   };
+
+  @override
+  Future<OpenCascadeNativeShape> executeSurfaceOperation(
+    String operation, {
+    String? sourceToken,
+    List<String> referenceTokens = const [],
+    List<double> values = const [],
+  }) async {
+    surfaceOperations.add(operation);
+    return OpenCascadeNativeShape(
+      token: 'surface-${surfaceOperations.length}',
+      type: CADShapeType.face,
+      fingerprint: 'surface-$operation',
+      metadata: {'operator': operation},
+    );
+  }
 }

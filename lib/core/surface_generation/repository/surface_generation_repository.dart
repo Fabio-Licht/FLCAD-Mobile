@@ -81,4 +81,24 @@ class SurfaceGenerationRepository {
     final file = File(path.join(generated.path, '$id.json'));
     if (await file.exists()) await file.delete();
   }
+
+  Future<List<GeneratedSurface>> loadAll() async {
+    if (!await generated.exists()) return const [];
+    final files = await generated
+        .list()
+        .where((entry) => entry is File && entry.path.endsWith('.json'))
+        .cast<File>()
+        .toList();
+    files.sort((first, second) => first.path.compareTo(second.path));
+    final surfaces = <GeneratedSurface>[];
+    for (final file in files) {
+      surfaces.add(
+        GeneratedSurface.fromJson(
+          (jsonDecode(await file.readAsString()) as Map)
+              .cast<String, dynamic>(),
+        ),
+      );
+    }
+    return surfaces;
+  }
 }

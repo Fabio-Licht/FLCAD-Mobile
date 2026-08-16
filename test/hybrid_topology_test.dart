@@ -137,7 +137,7 @@ void main() {
     expect(copy.toJson(), isNot(contains('triangles')));
   });
   test('FEL registers topology vocabulary', () {
-    final r = createNativeCommandRegistry();
+    final r = createNativeCommandRegistry(Directory.systemTemp);
     for (final n in [
       'CREATE LOCAL WORKSPACE',
       'COPY REGION',

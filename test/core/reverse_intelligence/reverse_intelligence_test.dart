@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'dart:math' as math;
 import 'package:flcad_mobile/core/engineering/context/engineering_context.dart';
 import 'package:flcad_mobile/core/engineering/learning/engineering_learning.dart';
@@ -87,7 +89,7 @@ void main() {
   });
   test('Engineering Context and FEL expose AREI integration', () {
     final context = EngineeringContext.standard('p'),
-        registry = createNativeCommandRegistry();
+        registry = createNativeCommandRegistry(Directory.systemTemp);
     expect(
       context.services.get<ReverseIntelligenceApi>(),
       isA<ReverseIntelligenceApi>(),

@@ -12,6 +12,8 @@ class ConstraintApi {
   Future<ConstraintSolveResult> solve({Iterable<String>? only}) =>
       engine.solve(only: only);
   Future<ConstraintSolveResult> rebuild() => engine.rebuild();
+  Future<void> load() => engine.load();
+  Future<void> persist() => engine.persist();
   void delete(String id) => engine.delete(id);
   void enable(String id) => engine.enable(id);
   void disable(String id) => engine.disable(id);

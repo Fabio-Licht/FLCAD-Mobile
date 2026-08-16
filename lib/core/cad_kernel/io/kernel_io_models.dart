@@ -126,6 +126,12 @@ abstract interface class SurfaceOperationKernelAPI {
   Future<void> rollbackSurfaceOperation(String undoToken);
 }
 
+/// Adds redo without changing existing SurfaceOperationKernelAPI implementers.
+abstract interface class ReversibleSurfaceOperationKernelAPI
+    implements SurfaceOperationKernelAPI {
+  Future<void> redoSurfaceOperation(String redoToken);
+}
+
 abstract interface class MeshGeometryKernelAPI {
   Future<KernelMeshHandle> importStl(
     String path, {

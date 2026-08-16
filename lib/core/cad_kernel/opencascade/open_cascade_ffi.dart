@@ -363,8 +363,44 @@ typedef _MeshGeometryDart =
       int,
     );
 
+typedef _SurfaceOperationNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Double>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _SurfaceOperationDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
+
 class OpenCascadeFFI
-    implements OpenCascadeNativeBridge, OpenCascadeMeshNativeBridge {
+    implements
+        OpenCascadeNativeBridge,
+        OpenCascadeMeshNativeBridge,
+        OpenCascadeSurfaceNativeBridge {
   OpenCascadeFFI._(this.library)
     : _initialize = library.lookupFunction<_InitNative, _InitDart>(
         'flcad_occ_initialize',
@@ -1007,6 +1043,60 @@ class OpenCascadeFFI
             );
           })
           .toList();
+
+  @override
+  Future<OpenCascadeNativeShape> executeSurfaceOperation(
+    String operation, {
+    String? sourceToken,
+    List<String> referenceTokens = const [],
+    List<double> values = const [],
+  }) async {
+    final op = operation.toNativeUtf8();
+    final source = (sourceToken ?? '').toNativeUtf8();
+    final references = referenceTokens.join(',').toNativeUtf8();
+    final nativeValues = calloc<Double>(values.isEmpty ? 1 : values.length);
+    final type = calloc<Uint8>(64).cast<Utf8>();
+    final buffers = _Buffers();
+    for (var index = 0; index < values.length; index++) {
+      nativeValues[index] = values[index];
+    }
+    final fn = library
+        .lookupFunction<_SurfaceOperationNative, _SurfaceOperationDart>(
+          'flcad_occ_surface_operation',
+        );
+    try {
+      final ok = fn(
+        op,
+        source,
+        references,
+        nativeValues,
+        values.length,
+        buffers.token,
+        256,
+        buffers.fingerprint,
+        256,
+        type,
+        64,
+        buffers.error,
+        4096,
+      );
+      if (ok != 1) throw StateError(buffers.error.toDartString());
+      return OpenCascadeNativeShape(
+        token: buffers.token.toDartString(),
+        type: CADShapeType.values.byName(type.toDartString()),
+        fingerprint: buffers.fingerprint.toDartString(),
+        metadata: {'backend': 'OpenCascade', 'operator': operation},
+      );
+    } finally {
+      calloc.free(op);
+      calloc.free(source);
+      calloc.free(references);
+      calloc.free(nativeValues);
+      calloc.free(type);
+      buffers.dispose();
+    }
+  }
+
   @override
   Future<OpenCascadeNativeShape> sew(List<String> tokens, double tolerance) =>
       createShape('CREATE SHELL', {

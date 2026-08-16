@@ -10,10 +10,11 @@ import 'open_cascade_ffi.dart';
 class OpenCascadeKernelAdapter
     implements
         InterchangeGeometryKernelAPI,
+        PersistentGeometryKernelAPI,
         MeshGeometryKernelAPI,
         SurfaceTopologyKernelAPI,
         SurfaceQualityKernelAPI,
-        SurfaceOperationKernelAPI {
+        ReversibleSurfaceOperationKernelAPI {
   OpenCascadeKernelAdapter({
     OpenCascadeNativeBridge? bridge,
     OpenCascadeNativeBridge Function()? bridgeFactory,
@@ -30,6 +31,7 @@ class OpenCascadeKernelAdapter
   final KernelRuntime runtime;
   final Map<String, String> _nativeTokens = {};
   final Map<String, String> _nativeMeshTokens = {};
+  final Map<String, bool> _surfaceHistory = {};
   String _version = 'uninitialized';
   Set<KernelCapability> _capabilities = {};
   bool _initialized = false;
@@ -62,6 +64,9 @@ class OpenCascadeKernelAdapter
       if (normalized.contains('boolean')) KernelCapability.boolean,
       if (normalized.contains('healing')) KernelCapability.healing,
       if (normalized.contains('meshing')) KernelCapability.meshing,
+      if (normalized.contains('loft')) KernelCapability.loft,
+      if (normalized.contains('sweep')) KernelCapability.sweep,
+      if (normalized.contains('offset')) KernelCapability.offset,
       if (normalized.contains('surface')) ...{
         KernelCapability.planeSurface,
         KernelCapability.cylinderSurface,
@@ -141,6 +146,38 @@ class OpenCascadeKernelAdapter
     entityCount: 1,
     runInIsolate: false,
   );
+
+  @override
+  Future<void> persistShape(ShapeHandle handle, String payloadPath) async {
+    await initialize();
+    await _nativeBridge.exportShape(
+      _resolve(handle),
+      payloadPath,
+      KernelExchangeFormat.brep,
+      cancellation: const NoKernelCancellation(),
+    );
+  }
+
+  @override
+  Future<ShapeHandle> restoreShape(
+    String payloadPath, {
+    required String persistentId,
+  }) async {
+    await initialize();
+    final native = await _nativeBridge.importShape(
+      payloadPath,
+      KernelExchangeFormat.brep,
+      cancellation: const NoKernelCancellation(),
+    );
+    _nativeTokens[persistentId] = native.token;
+    return ShapeHandle.reference(
+      persistentId: persistentId,
+      kernelId: descriptor.id,
+      type: native.type,
+      fingerprint: native.fingerprint,
+      metadata: {...native.metadata, 'restoredFrom': payloadPath},
+    );
+  }
 
   @override
   Future<KernelMeshHandle> importStl(
@@ -318,11 +355,18 @@ class OpenCascadeKernelAdapter
           nativeParameters[entry.key] = value.map(_resolve).toList();
         }
       }
-      final shape = await _nativeBridge.createShape(
-        operation,
-        nativeParameters,
-        expectedType,
-      );
+      final professional = _professionalOperation(operation);
+      final bridge = _nativeBridge;
+      final shape =
+          professional != null && bridge is OpenCascadeSurfaceNativeBridge
+          ? await (bridge as OpenCascadeSurfaceNativeBridge)
+                .executeSurfaceOperation(
+                  professional,
+                  sourceToken: nativeParameters['source'] as String?,
+                  referenceTokens: _stringList(nativeParameters['references']),
+                  values: _surfaceValues(professional, nativeParameters),
+                )
+          : await bridge.createShape(operation, nativeParameters, expectedType);
       _nativeTokens[persistentId] = shape.token;
       return ShapeHandle.reference(
         persistentId: persistentId,
@@ -426,15 +470,75 @@ class OpenCascadeKernelAdapter
     required String projectId,
   }) async {
     await initialize();
+    final nativeOperation = _professionalOperation(operation);
+    if (nativeOperation == null) {
+      return KernelSurfaceOperationResult(
+        supported: false,
+        diagnostic: _limitation(operation),
+      );
+    }
+    final bridge = _nativeBridge;
+    if (bridge is! OpenCascadeSurfaceNativeBridge) {
+      return const KernelSurfaceOperationResult(
+        supported: false,
+        diagnostic:
+            'FFI bridge does not implement OpenCascadeSurfaceNativeBridge',
+      );
+    }
+    final references = <String>[];
+    final rawReferences = parameters['references'];
+    if (rawReferences is List<ShapeHandle>) {
+      references.addAll(rawReferences.map(_resolve));
+    } else if (rawReferences is List) {
+      for (final value in rawReferences) {
+        if (value is ShapeHandle) references.add(_resolve(value));
+      }
+    }
+    final native = await (bridge as OpenCascadeSurfaceNativeBridge)
+        .executeSurfaceOperation(
+          nativeOperation,
+          sourceToken: _resolve(surface),
+          referenceTokens: references,
+          values: _surfaceValues(nativeOperation, parameters),
+        );
+    final result = _handle(native, projectId);
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final undo = 'occ-undo:$stamp:${result.persistentId}';
+    final redo = 'occ-redo:$stamp:${result.persistentId}';
+    _surfaceHistory[undo] = true;
+    _surfaceHistory[redo] = false;
     return KernelSurfaceOperationResult(
-      supported: false,
-      diagnostic: 'UnsupportedOperation: $operation',
+      supported: true,
+      diagnostic:
+          'OpenCascade $nativeOperation completed with ${native.metadata['operator']}',
+      result: result,
+      undoToken: undo,
+      redoToken: redo,
     );
   }
 
   @override
   Future<void> rollbackSurfaceOperation(String undoToken) async {
-    throw StateError('UnsupportedOperation: SURFACE_OPERATION_ROLLBACK');
+    if (_surfaceHistory[undoToken] != true) {
+      throw StateError(
+        'Unknown or already consumed OpenCascade undo token: $undoToken',
+      );
+    }
+    _surfaceHistory[undoToken] = false;
+    final redo = undoToken.replaceFirst('occ-undo:', 'occ-redo:');
+    _surfaceHistory[redo] = true;
+  }
+
+  @override
+  Future<void> redoSurfaceOperation(String redoToken) async {
+    if (_surfaceHistory[redoToken] != true) {
+      throw StateError(
+        'Unknown or already consumed OpenCascade redo token: $redoToken',
+      );
+    }
+    _surfaceHistory[redoToken] = false;
+    final undo = redoToken.replaceFirst('occ-redo:', 'occ-undo:');
+    _surfaceHistory[undo] = true;
   }
 
   @override
@@ -442,7 +546,93 @@ class OpenCascadeKernelAdapter
     if (_bridge != null) await _nativeBridge.shutdown();
     _nativeTokens.clear();
     _nativeMeshTokens.clear();
+    _surfaceHistory.clear();
     _initialized = false;
     _initialization = null;
+  }
+
+  static List<String> _stringList(Object? value) =>
+      value is List ? value.whereType<String>().toList() : const [];
+
+  static List<double> _surfaceValues(
+    String operation,
+    Map<String, dynamic> parameters,
+  ) {
+    double number(String key, double fallback) =>
+        (parameters[key] as num?)?.toDouble() ?? fallback;
+    return switch (operation) {
+      'LOFT' => [number('tolerance', 1e-6)],
+      'FILL' || 'PATCH' || 'BLEND' || 'MATCH' => [
+        number('degree', 3),
+        number('pointsOnCurve', 15),
+        number('iterations', 2),
+        number('tolerance2d', 1e-4),
+        number('tolerance3d', 1e-4),
+        number('angularTolerance', 1e-3),
+        number('curvatureTolerance', .1),
+        number('maximumDegree', 8),
+      ],
+      'OFFSET' => [number('distance', 0), number('tolerance', 1e-4)],
+      'EXTEND' => [
+        number('length', 0),
+        number('continuity', 1),
+        parameters['inU'] == true ? 1 : 0,
+        parameters['after'] == false ? 0 : 1,
+        number('tolerance', 1e-6),
+      ],
+      'REDUCE' => [
+        number('tolerance3d', 1e-4),
+        number('tolerance2d', 1e-4),
+        number('maximumDegree', 8),
+        number('maximumSegments', 100),
+      ],
+      'TRIM' => [
+        number('uMin', 0),
+        number('uMax', 1),
+        number('vMin', 0),
+        number('vMax', 1),
+        number('tolerance', 1e-6),
+      ],
+      'JOIN' || 'SEW' => [number('tolerance', 1e-4)],
+      _ => const [],
+    };
+  }
+
+  static String? _professionalOperation(String value) {
+    final normalized = value.toUpperCase().replaceAll('_', ' ');
+    for (final operation in const [
+      'LOFT',
+      'SWEEP',
+      'FILL',
+      'PATCH',
+      'BLEND',
+      'NURBS',
+      'EXTEND',
+      'REDUCE',
+      'OFFSET',
+      'TRIM',
+      'SPLIT',
+      'JOIN',
+      'SEW',
+      'HEAL',
+      'MATCH',
+      'FAIR',
+      'BOUNDARY',
+      'MORPH',
+    ]) {
+      if (normalized.contains(operation)) return operation;
+    }
+    return null;
+  }
+
+  static String _limitation(String operation) {
+    final normalized = operation.toUpperCase();
+    if (normalized.contains('FAIR')) {
+      return 'OCCT 8.0.1 provides FairCurve for curves, but no general surface fairing operator';
+    }
+    if (normalized.contains('MORPH')) {
+      return 'OCCT 8.0.1 has no general-purpose surface morph operator';
+    }
+    return 'No GeometryKernelAPI to OCCT 8.0.1 mapping is registered for $operation';
   }
 }

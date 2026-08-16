@@ -267,19 +267,19 @@ void main() {
         isTrue,
       );
       expect(createRevolveFelCommands(api), hasLength(40));
-    EngineeringBootstrap.instance.initialize();
-    expect(
-      EngineeringBootstrap.instance.services.get<RevolveRuntime>(),
-      isNotNull,
-    );
-    expect(
-      EngineeringBootstrap.instance.services.get<RevolveHistory>(),
-      isNotNull,
-    );
-    expect(
-      EngineeringBootstrap.instance.services.get<RevolveAnalytics>(),
-      isNotNull,
-    );
+      EngineeringBootstrap.instance.initialize();
+      expect(
+        EngineeringBootstrap.instance.services.get<RevolveRuntime>(),
+        isNotNull,
+      );
+      expect(
+        EngineeringBootstrap.instance.services.get<RevolveHistory>(),
+        isNotNull,
+      );
+      expect(
+        EngineeringBootstrap.instance.services.get<RevolveAnalytics>(),
+        isNotNull,
+      );
     },
   );
 }

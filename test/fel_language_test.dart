@@ -33,7 +33,7 @@ void main() {
   test(
     'semantic analyzer rejects unknown variables, functions and commands',
     () {
-      final commands = createNativeCommandRegistry(),
+      final commands = createNativeCommandRegistry(Directory.systemTemp),
           functions = FELFunctionLibrary();
       final ast = FELParser(
         FELLexer().tokenize('UNKNOWN VALUE\nLET X = MISSING(UNDEFINED)'),

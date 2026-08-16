@@ -89,6 +89,39 @@ class GeneratedSurface {
         )
         .toList(),
   };
+  factory GeneratedSurface.fromJson(Map<String, dynamic> json) =>
+      GeneratedSurface(
+        surfaceId: json['surfaceId'] as String,
+        projectId: json['projectId'] as String,
+        kind: SurfaceKind.values.byName(json['kind'] as String),
+        origin: json['origin'] as String,
+        regionIds: (json['regionIds'] as List).cast<String>(),
+        evidenceIds: (json['evidenceIds'] as List).cast<String>(),
+        featureId: json['featureId'] as String?,
+        handle: ShapeHandle.fromJson(
+          (json['handle'] as Map).cast<String, dynamic>(),
+        ),
+        revision: json['revision'] as int,
+        timestamp: DateTime.parse(json['timestamp'] as String),
+        parameters: (json['parameters'] as Map).cast<String, dynamic>(),
+        continuity: SurfaceContinuityLevel.values.byName(
+          json['continuity'] as String,
+        ),
+        valid: json['valid'] as bool,
+        confidence: (json['confidence'] as num).toDouble(),
+        diagnostics: (json['diagnostics'] as List)
+            .map(
+              (value) => GeometryDiagnostic(
+                code: value['code'] as String,
+                message: value['message'] as String,
+                severity: value['severity'] as String,
+                shapeId: value['shapeId'] as String?,
+                metadata: (value['metadata'] as Map? ?? const {})
+                    .cast<String, dynamic>(),
+              ),
+            )
+            .toList(),
+      );
 }
 
 class SurfaceGenerationResult {

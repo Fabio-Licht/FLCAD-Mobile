@@ -79,6 +79,12 @@ class ProjectManager extends ChangeNotifier {
     return _current!;
   }
 
+  Future<void> close() async {
+    _current = null;
+    await _repository.clearCurrent();
+    notifyListeners();
+  }
+
   Future<void> setStatus(ProjectStatus status) =>
       _updateCurrent((project) => project.copyWith(status: status));
 

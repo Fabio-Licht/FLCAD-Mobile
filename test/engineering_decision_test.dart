@@ -279,7 +279,7 @@ void main() {
   });
 
   test('FEL registers the complete decision vocabulary', () {
-    final names = createNativeCommandRegistry().names;
+    final names = createNativeCommandRegistry(Directory.systemTemp).names;
     for (final command in createDecisionFELCommands(api: DecisionApi())) {
       expect(names, contains(command.name));
     }

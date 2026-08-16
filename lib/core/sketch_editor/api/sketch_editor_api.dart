@@ -2,6 +2,7 @@ import '../../sketch_engine/entities/sketch_entities.dart';
 import '../../sketch_engine/models/sketch_models.dart';
 import '../engine/sketch_editor_engine.dart';
 import '../models/editor_models.dart';
+import '../snapping/editor_snapping.dart';
 
 class SketchEditorApi {
   const SketchEditorApi(this.engine);
@@ -24,4 +25,7 @@ class SketchEditorApi {
   DegreesOfFreedom get dof => engine.readDof();
   SketchQuality get quality => engine.quality();
   List<SketchRecommendation> get recommendations => engine.recommendations();
+  SnapCandidate? snap(SketchVector cursor) =>
+      engine.snapping.snap(cursor, engine.sketch.engine.entities.values);
+  Future<void> persist() => engine.persist();
 }

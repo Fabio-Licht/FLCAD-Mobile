@@ -54,4 +54,12 @@ class SurfaceGenerationApi {
         (throw StateError('Surface $surfaceId not found'));
     return engine.advisor.explain(surface, predictedQuality: predictedQuality);
   }
+
+  Future<List<GeneratedSurface>> load() async {
+    final surfaces = await engine.repository.loadAll();
+    for (final surface in surfaces) {
+      engine.registry.register(surface);
+    }
+    return surfaces;
+  }
 }

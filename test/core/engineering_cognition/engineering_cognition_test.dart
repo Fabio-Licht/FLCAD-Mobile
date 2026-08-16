@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flcad_mobile/core/engineering/context/engineering_context.dart';
 import 'package:flcad_mobile/core/engineering_cognition/engineering_cognition.dart';
 import 'package:flcad_mobile/core/fel/commands/native_commands.dart';
@@ -134,7 +136,7 @@ void main() {
     },
   );
   test('FEL registers complete cognition vocabulary', () {
-    final registry = createNativeCommandRegistry();
+    final registry = createNativeCommandRegistry(Directory.systemTemp);
     for (final name in [
       'RECOGNIZE FEATURES',
       'RECOGNIZE PART',

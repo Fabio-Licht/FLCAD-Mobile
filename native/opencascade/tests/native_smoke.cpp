@@ -1,6 +1,7 @@
 #include "flcad_occ_api.h"
 #include <cassert>
 #include <cstring>
+#include <cstdio>
 #include <filesystem>
 
 int main() {
@@ -82,6 +83,21 @@ int main() {
                                 sizeof(imported_fp), imported_type,
                                 sizeof(imported_type), error,
                                 sizeof(error)) == 1);
+  const double transform[16] = {
+      1, 0, 0, 10,
+      0, 1, 0, 20,
+      0, 0, 1, 30,
+      0, 0, 0, 1};
+  char transformed[256] = {}, transformed_fp[256] = {}, transformed_type[64] = {};
+  if (flcad_occ_transform_shape(
+          roundtrip, transform, 1, transformed, sizeof(transformed),
+          transformed_fp, sizeof(transformed_fp), transformed_type,
+          sizeof(transformed_type), error, sizeof(error)) != 1) {
+    fprintf(stderr, "transform failed: %s\n", error);
+    return 2;
+  }
+  assert(std::strlen(transformed_fp) > 0);
+  assert(flcad_occ_destroy_shape(transformed, error, sizeof(error)) == 1);
   assert(flcad_occ_export_shape(roundtrip, iges_path, "iges", error,
                                 sizeof(error)) == 1);
   assert(std::filesystem::file_size(iges_path) > 0);

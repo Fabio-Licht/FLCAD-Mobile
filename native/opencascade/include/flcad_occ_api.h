@@ -26,6 +26,7 @@ FLCAD_OCC_EXPORT int flcad_occ_create_cone(const double* apex,const double* dire
 FLCAD_OCC_EXPORT int flcad_occ_create_sphere(const double* center,double radius,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_torus(const double* center,const double* direction,double major_radius,double minor_radius,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_import_shape(const char* path,const char* format,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* type,size_t type_size,char* error,size_t error_size);
+FLCAD_OCC_EXPORT int flcad_occ_transform_shape(const char* source_token,const double* matrix,int copy_geometry,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* type,size_t type_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_import_stl(const char* path,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,int* vertices,int* triangles,int* degenerate_triangles,double* bounds,int* has_normals,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_destroy_mesh(const char* token,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_mesh_geometry(const char* token,double* nodes,size_t node_values,int* triangles,size_t triangle_values,char* error,size_t error_size);

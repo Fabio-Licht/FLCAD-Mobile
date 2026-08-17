@@ -207,6 +207,7 @@ class DesktopCommandCoordinator {
       'Engineering Knowledge',
       'Sketch & Surface',
       'Sections',
+      'Transform',
     ];
     for (final value in workspaces) {
       var previous = workspace.state.workspace;

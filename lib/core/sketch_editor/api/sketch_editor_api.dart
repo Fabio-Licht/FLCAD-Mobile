@@ -19,7 +19,16 @@ class SketchEditorApi {
     Iterable<String> ids, {
     SketchVector? delta,
     double value = 1,
-  }) => engine.edit(tool, ids, delta: delta, value: value);
+    Map<String, dynamic> parameters = const {},
+    bool confirmConstrained = false,
+  }) => engine.edit(
+    tool,
+    ids,
+    delta: delta,
+    value: value,
+    parameters: parameters,
+    confirmConstrained: confirmConstrained,
+  );
   bool undo() => engine.undo();
   bool redo() => engine.redo();
   DegreesOfFreedom get dof => engine.readDof();

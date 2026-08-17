@@ -177,23 +177,65 @@ class SketchEditorEngine {
     Iterable<String> ids, {
     SketchVector? delta,
     double value = 1,
+    Map<String, dynamic> parameters = const {},
+    bool confirmConstrained = false,
   }) {
     if (preview.active.isEmpty) {
       throw StateError('Editing requires preview before confirmation');
     }
     final op = preview.confirm(preview.active.last.id), targets = ids.toList();
+    final affectedConstraints = constraints.constraints
+        .where((constraint) => constraint.references.any(targets.contains))
+        .toList();
+    if (affectedConstraints.isNotEmpty && !confirmConstrained) {
+      throw StateError(
+        'Editing affects ${affectedConstraints.length} constraint(s); confirmation is required.',
+      );
+    }
+    final historyBefore = sketch.engine.history.entries.length;
     sketch.engine.transaction('edit:${op.id}', () {
+      if (tool == SketchToolType.join) {
+        _join(targets);
+        return;
+      }
+      if (tool == SketchToolType.fillet || tool == SketchToolType.chamfer) {
+        _corner(tool, targets, value);
+        return;
+      }
       for (final id in targets) {
         switch (tool) {
           case SketchToolType.move:
             sketch.move(id, delta ?? const SketchVector(0, 0));
             analytics.movements++;
           case SketchToolType.rotate:
-            sketch.rotate(id, value);
+            sketch.rotate(id, value, center: _vector(parameters['center']));
           case SketchToolType.scale:
-            sketch.scale(id, value);
+            sketch.scale(
+              id,
+              value,
+              factorY: (parameters['factorY'] as num?)?.toDouble(),
+              center: _vector(parameters['center']),
+            );
+          case SketchToolType.stretch:
+            _stretch(id, delta ?? const SketchVector(0, 0), parameters);
           case SketchToolType.mirror:
-            sketch.mirror(id);
+            sketch.mirror(
+              id,
+              axisStart: _vector(parameters['axisStart']),
+              axisEnd: _vector(
+                parameters['axisEnd'],
+                fallback: const SketchVector(1, 0),
+              ),
+            );
+          case SketchToolType.offset:
+            _offset(id, value);
+          case SketchToolType.trim:
+            _trimOrExtend(id, _vector(parameters['point']), trim: true);
+          case SketchToolType.extend:
+            _trimOrExtend(id, _vector(parameters['point']), trim: false);
+          case SketchToolType.breakEntity:
+          case SketchToolType.split:
+            _split(id, _vector(parameters['point']));
           case SketchToolType.delete:
             sketch.deleteEntity(id);
           case SketchToolType.convertConstruction:
@@ -213,16 +255,14 @@ class SketchEditorEngine {
             e.locked = false;
             e.version++;
           default:
-            sketch.engine.modify(
-              id,
-              SketchHistoryAction.modify,
-              (e) => e.parameters['editor:${tool.name}'] = value,
+            throw StateError(
+              'Editing tool is not geometrically implemented: ${tool.name}',
             );
         }
       }
     });
     graph.record(op.id, targets);
-    _undoCounts.add(targets.length);
+    _undoCounts.add(sketch.engine.history.entries.length - historyBefore);
     _redoCounts.clear();
     history.record(EditorHistoryAction.edit, op.id);
     analytics.editCount++;
@@ -266,6 +306,421 @@ class SketchEditorEngine {
       const SketchAdvisor().analyze(sketch, constraints, readDof());
   Future<void> persist() =>
       repository.save(history: history, graph: graph, analytics: analytics);
+
+  SketchVector _vector(
+    Object? value, {
+    SketchVector fallback = const SketchVector(0, 0),
+  }) => value == null ? fallback : SketchVector.fromJson(value);
+
+  void _stretch(
+    String id,
+    SketchVector delta,
+    Map<String, dynamic> parameters,
+  ) {
+    final entity =
+        sketch.entity(id) ?? (throw StateError('Unknown entity: $id'));
+    if (entity is! SketchLine) {
+      throw StateError('Stretch currently requires a line endpoint.');
+    }
+    final endpoint = parameters['endpoint'] == 'start' ? 'start' : 'end';
+    sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+      final point = SketchVector.fromJson(value.parameters[endpoint]);
+      value.parameters[endpoint] = (point + delta).toJson();
+    });
+  }
+
+  void _offset(String id, double distance) {
+    sketch.engine.modify(id, SketchHistoryAction.modify, (entity) {
+      if (entity is SketchLine) {
+        final start = SketchVector.fromJson(entity.parameters['start']);
+        final end = SketchVector.fromJson(entity.parameters['end']);
+        final dx = end.x - start.x, dy = end.y - start.y;
+        final length = math.sqrt(dx * dx + dy * dy);
+        if (length <= 1e-12) {
+          throw StateError('Cannot offset a degenerate line.');
+        }
+        final shift = SketchVector(
+          -dy / length * distance,
+          dx / length * distance,
+        );
+        entity.parameters['start'] = (start + shift).toJson();
+        entity.parameters['end'] = (end + shift).toJson();
+      } else if (entity is SketchCircle || entity is SketchArc) {
+        final radius =
+            (entity.parameters['radius'] as num).toDouble() + distance;
+        if (radius <= 0) throw StateError('Offset collapses the radius.');
+        entity.parameters['radius'] = radius;
+      } else if (entity is SketchEllipse) {
+        final rx = (entity.parameters['radiusX'] as num).toDouble() + distance;
+        final ry = (entity.parameters['radiusY'] as num).toDouble() + distance;
+        if (rx <= 0 || ry <= 0) {
+          throw StateError('Offset collapses the ellipse.');
+        }
+        entity.parameters['radiusX'] = rx;
+        entity.parameters['radiusY'] = ry;
+      } else if (entity is SketchSpline) {
+        final points = (entity.parameters['points'] as List)
+            .map(SketchVector.fromJson)
+            .toList();
+        if (points.length < 2) throw StateError('Spline has too few points.');
+        final shifted = <SketchVector>[];
+        for (var i = 0; i < points.length; i++) {
+          final before = points[i == 0 ? i : i - 1];
+          final after = points[i == points.length - 1 ? i : i + 1];
+          final dx = after.x - before.x, dy = after.y - before.y;
+          final length = math.sqrt(dx * dx + dy * dy);
+          shifted.add(
+            length <= 1e-12
+                ? points[i]
+                : points[i] +
+                      SketchVector(
+                        -dy / length * distance,
+                        dx / length * distance,
+                      ),
+          );
+        }
+        entity.parameters['points'] = shifted
+            .map((point) => point.toJson())
+            .toList();
+        entity.parameters.remove('sampledPoints');
+      } else {
+        throw StateError('Offset is unavailable for ${entity.type.name}.');
+      }
+    });
+  }
+
+  void _trimOrExtend(String id, SketchVector point, {required bool trim}) {
+    final entity =
+        sketch.entity(id) ?? (throw StateError('Unknown entity: $id'));
+    if (entity is SketchLine) {
+      final start = SketchVector.fromJson(entity.parameters['start']);
+      final end = SketchVector.fromJson(entity.parameters['end']);
+      final projected = _projectOnLine(point, start, end);
+      if (trim && (projected.$2 <= 0 || projected.$2 >= 1)) {
+        throw StateError('Trim point must lie inside the line.');
+      }
+      if (!trim && projected.$2 > 0 && projected.$2 < 1) {
+        throw StateError('Extend point must lie outside the line.');
+      }
+      sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+        value.parameters[_distance(start, projected.$1) <
+                _distance(end, projected.$1)
+            ? 'start'
+            : 'end'] = projected.$1
+            .toJson();
+      });
+      return;
+    }
+    if (entity is SketchArc) {
+      final center = SketchVector.fromJson(entity.parameters['center']);
+      final angle = math.atan2(point.y - center.y, point.x - center.x);
+      final start = (entity.parameters['startAngle'] as num).toDouble();
+      final end = (entity.parameters['endAngle'] as num).toDouble();
+      sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+        value.parameters[_angleDistance(angle, start) <
+                    _angleDistance(angle, end)
+                ? 'startAngle'
+                : 'endAngle'] =
+            angle;
+      });
+      return;
+    }
+    if (entity is SketchSpline) {
+      final points = (entity.parameters['points'] as List)
+          .map(SketchVector.fromJson)
+          .toList();
+      if (points.length < 3) throw StateError('Spline has too few points.');
+      if (trim) {
+        final index = _nearestPointIndex(points, point);
+        final left = points.sublist(0, index + 1);
+        final right = points.sublist(index);
+        points
+          ..clear()
+          ..addAll(left.length >= right.length ? left : right);
+      } else if (_distance(point, points.first) <
+          _distance(point, points.last)) {
+        points.insert(0, point);
+      } else {
+        points.add(point);
+      }
+      sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+        value.parameters['points'] = points
+            .map((item) => item.toJson())
+            .toList();
+        value.parameters.remove('sampledPoints');
+      });
+      return;
+    }
+    throw StateError(
+      '${trim ? 'Trim' : 'Extend'} is unavailable for ${entity.type.name}.',
+    );
+  }
+
+  void _split(String id, SketchVector point) {
+    final entity =
+        sketch.entity(id) ?? (throw StateError('Unknown entity: $id'));
+    if (entity is SketchLine) {
+      final start = SketchVector.fromJson(entity.parameters['start']);
+      final end = SketchVector.fromJson(entity.parameters['end']);
+      final projected = _projectOnLine(point, start, end);
+      if (projected.$2 <= 0 || projected.$2 >= 1) {
+        throw StateError('Split point must lie inside the line.');
+      }
+      sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+        value.parameters['end'] = projected.$1.toJson();
+      });
+      sketch.builders.line.build(projected.$1, end);
+      return;
+    }
+    if (entity is SketchCircle || entity is SketchArc) {
+      final center = SketchVector.fromJson(entity.parameters['center']);
+      final radius = (entity.parameters['radius'] as num).toDouble();
+      final angle = math.atan2(point.y - center.y, point.x - center.x);
+      if (entity is SketchCircle) {
+        sketch.deleteEntity(id);
+        sketch.builders.arc.build(center, radius, angle, angle + math.pi);
+        sketch.builders.arc.build(
+          center,
+          radius,
+          angle + math.pi,
+          angle + 2 * math.pi,
+        );
+      } else {
+        final start = (entity.parameters['startAngle'] as num).toDouble();
+        final end = (entity.parameters['endAngle'] as num).toDouble();
+        if (!_angleWithin(angle, start, end)) {
+          throw StateError('Split point must lie on the arc span.');
+        }
+        sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+          value.parameters['endAngle'] = angle;
+        });
+        sketch.builders.arc.build(center, radius, angle, end);
+      }
+      return;
+    }
+    if (entity is SketchSpline) {
+      final points = (entity.parameters['points'] as List)
+          .map(SketchVector.fromJson)
+          .toList();
+      final index = _nearestPointIndex(points, point);
+      if (index == 0 || index == points.length - 1) {
+        throw StateError('Split point must lie inside the Spline.');
+      }
+      final left = points.sublist(0, index + 1);
+      final right = points.sublist(index);
+      sketch.engine.modify(id, SketchHistoryAction.modify, (value) {
+        value.parameters['points'] = left.map((item) => item.toJson()).toList();
+        value.parameters.remove('sampledPoints');
+      });
+      sketch.builders.spline.build(right);
+      return;
+    }
+    throw StateError('Break/Split is unavailable for ${entity.type.name}.');
+  }
+
+  void _join(List<String> ids) {
+    if (ids.length != 2) {
+      throw StateError('Join requires exactly two entities.');
+    }
+    final first = sketch.entity(ids[0]), second = sketch.entity(ids[1]);
+    if (first is SketchSpline && second is SketchSpline) {
+      final firstPoints = (first.parameters['points'] as List)
+          .map(SketchVector.fromJson)
+          .toList();
+      var secondPoints = (second.parameters['points'] as List)
+          .map(SketchVector.fromJson)
+          .toList();
+      if (_distance(firstPoints.last, secondPoints.last) <
+          _distance(firstPoints.last, secondPoints.first)) {
+        secondPoints = secondPoints.reversed.toList();
+      }
+      if (_distance(firstPoints.last, secondPoints.first) > 1e-6) {
+        throw StateError('Spline endpoints are not coincident.');
+      }
+      sketch.engine.modify(first.id, SketchHistoryAction.modify, (value) {
+        value.parameters['points'] = [
+          ...firstPoints,
+          ...secondPoints.skip(1),
+        ].map((item) => item.toJson()).toList();
+        value.parameters.remove('sampledPoints');
+      });
+      sketch.deleteEntity(second.id);
+      return;
+    }
+    if (first is! SketchLine || second is! SketchLine) {
+      throw StateError('Join requires two collinear lines or two Splines.');
+    }
+    final a = SketchVector.fromJson(first.parameters['start']);
+    final b = SketchVector.fromJson(first.parameters['end']);
+    final c = SketchVector.fromJson(second.parameters['start']);
+    final d = SketchVector.fromJson(second.parameters['end']);
+    final pairs = [(a, c, b, d), (a, d, b, c), (b, c, a, d), (b, d, a, c)]
+      ..sort(
+        (left, right) => _distance(
+          left.$1,
+          left.$2,
+        ).compareTo(_distance(right.$1, right.$2)),
+      );
+    final best = pairs.first;
+    final firstDirection = b - a, secondDirection = d - c;
+    final cross =
+        firstDirection.x * secondDirection.y -
+        firstDirection.y * secondDirection.x;
+    if (cross.abs() > 1e-8 || _distance(best.$1, best.$2) > 1e-6) {
+      throw StateError('Lines must be collinear and coincident to Join.');
+    }
+    sketch.engine.modify(first.id, SketchHistoryAction.modify, (value) {
+      value.parameters['start'] = best.$3.toJson();
+      value.parameters['end'] = best.$4.toJson();
+    });
+    sketch.deleteEntity(second.id);
+  }
+
+  void _corner(SketchToolType tool, List<String> ids, double value) {
+    if (ids.length != 2 || value <= 0) {
+      throw StateError('${tool.name} requires two lines and a positive value.');
+    }
+    final first = sketch.entity(ids[0]), second = sketch.entity(ids[1]);
+    if (first is! SketchLine || second is! SketchLine) {
+      throw StateError('${tool.name} requires two lines.');
+    }
+    final a = SketchVector.fromJson(first.parameters['start']);
+    final b = SketchVector.fromJson(first.parameters['end']);
+    final c = SketchVector.fromJson(second.parameters['start']);
+    final d = SketchVector.fromJson(second.parameters['end']);
+    final pairs =
+        [
+          (a, c, 'start', 'start'),
+          (a, d, 'start', 'end'),
+          (b, c, 'end', 'start'),
+          (b, d, 'end', 'end'),
+        ]..sort(
+          (left, right) => _distance(
+            left.$1,
+            left.$2,
+          ).compareTo(_distance(right.$1, right.$2)),
+        );
+    final corner = _lineIntersection(a, b, c, d);
+    SketchVector direction(SketchVector far) {
+      final dx = far.x - corner.x, dy = far.y - corner.y;
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length <= 1e-12) {
+        throw StateError('Corner contains a degenerate line.');
+      }
+      return SketchVector(dx / length, dy / length);
+    }
+
+    final far1 = pairs.first.$3 == 'start' ? b : a;
+    final far2 = pairs.first.$4 == 'start' ? d : c;
+    final u1 = direction(far1), u2 = direction(far2);
+    final dot = (u1.x * u2.x + u1.y * u2.y).clamp(-1.0, 1.0);
+    final theta = math.acos(dot);
+    if (theta <= 1e-6 || (math.pi - theta).abs() <= 1e-6) {
+      throw StateError('${tool.name} requires two non-collinear lines.');
+    }
+    final insetDistance = tool == SketchToolType.fillet
+        ? value / math.tan(theta / 2)
+        : value;
+    if (_distance(corner, far1) <= insetDistance ||
+        _distance(corner, far2) <= insetDistance) {
+      throw StateError('Corner distance exceeds line length.');
+    }
+    final p1 = SketchVector(
+      corner.x + u1.x * insetDistance,
+      corner.y + u1.y * insetDistance,
+    );
+    final p2 = SketchVector(
+      corner.x + u2.x * insetDistance,
+      corner.y + u2.y * insetDistance,
+    );
+    sketch.engine.modify(
+      first.id,
+      SketchHistoryAction.modify,
+      (entity) => entity.parameters[pairs.first.$3] = p1.toJson(),
+    );
+    sketch.engine.modify(
+      second.id,
+      SketchHistoryAction.modify,
+      (entity) => entity.parameters[pairs.first.$4] = p2.toJson(),
+    );
+    if (tool == SketchToolType.chamfer) {
+      sketch.builders.line.build(p1, p2);
+    } else {
+      final bisectorX = u1.x + u2.x, bisectorY = u1.y + u2.y;
+      final bisectorLength = math.sqrt(
+        bisectorX * bisectorX + bisectorY * bisectorY,
+      );
+      final centerDistance = value / math.sin(theta / 2);
+      final center = SketchVector(
+        corner.x + bisectorX / bisectorLength * centerDistance,
+        corner.y + bisectorY / bisectorLength * centerDistance,
+      );
+      sketch.builders.arc.build(
+        center,
+        value,
+        math.atan2(p1.y - center.y, p1.x - center.x),
+        math.atan2(p2.y - center.y, p2.x - center.x),
+      );
+    }
+  }
+
   double _distance(SketchVector a, SketchVector b) =>
       math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2));
+
+  (SketchVector, double) _projectOnLine(
+    SketchVector point,
+    SketchVector start,
+    SketchVector end,
+  ) {
+    final dx = end.x - start.x, dy = end.y - start.y;
+    final length2 = dx * dx + dy * dy;
+    if (length2 <= 1e-24) throw StateError('Line is degenerate.');
+    final t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / length2;
+    return (SketchVector(start.x + dx * t, start.y + dy * t), t);
+  }
+
+  SketchVector _lineIntersection(
+    SketchVector a,
+    SketchVector b,
+    SketchVector c,
+    SketchVector d,
+  ) {
+    final abx = b.x - a.x, aby = b.y - a.y;
+    final cdx = d.x - c.x, cdy = d.y - c.y;
+    final determinant = abx * cdy - aby * cdx;
+    if (determinant.abs() <= 1e-12) {
+      throw StateError('Fillet/Chamfer requires intersecting lines.');
+    }
+    final acx = c.x - a.x, acy = c.y - a.y;
+    final t = (acx * cdy - acy * cdx) / determinant;
+    return SketchVector(a.x + abx * t, a.y + aby * t);
+  }
+
+  int _nearestPointIndex(List<SketchVector> points, SketchVector point) {
+    var best = 0;
+    var distance = double.infinity;
+    for (var index = 0; index < points.length; index++) {
+      final candidate = _distance(points[index], point);
+      if (candidate < distance) {
+        best = index;
+        distance = candidate;
+      }
+    }
+    return best;
+  }
+
+  double _angleDistance(double left, double right) {
+    final value = (left - right).abs() % (2 * math.pi);
+    return math.min(value, 2 * math.pi - value);
+  }
+
+  bool _angleWithin(double value, double start, double end) {
+    double normalized(double angle) =>
+        (angle % (2 * math.pi) + 2 * math.pi) % (2 * math.pi);
+    final angle = normalized(value);
+    final first = normalized(start), last = normalized(end);
+    return first <= last
+        ? angle > first && angle < last
+        : angle > first || angle < last;
+  }
 }

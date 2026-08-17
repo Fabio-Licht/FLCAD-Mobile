@@ -58,6 +58,19 @@ abstract interface class PersistentGeometryKernelAPI
   });
 }
 
+/// Official kernel contract for real BRep transformations.
+/// Implementations must return a new kernel-owned shape; callers decide
+/// whether it replaces the document entity or becomes a Working Copy.
+abstract interface class ShapeTransformGeometryKernelAPI
+    implements GeometryKernelAPI {
+  Future<ShapeHandle> transformShape(
+    ShapeHandle source,
+    List<double> matrix, {
+    required String projectId,
+    bool copyGeometry = true,
+  });
+}
+
 class UnavailableGeometryKernel implements GeometryKernelAPI {
   const UnavailableGeometryKernel();
   @override

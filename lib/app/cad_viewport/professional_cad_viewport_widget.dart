@@ -352,8 +352,13 @@ class _CadScenePainter extends CustomPainter {
     }
     final matrix = camera.viewProjectionMatrix.values;
     final background = colors.surfaceContainer.toARGB32();
-    final foreground = (entity.selected ? colors.tertiary : colors.primary)
-        .toARGB32();
+    final foreground =
+        (entity.geometry['displayColor'] == 'destructiveRed'
+                ? Colors.redAccent
+                : entity.selected
+                ? colors.tertiary
+                : colors.primary)
+            .toARGB32();
     final alphaByte = (alpha * 255).round();
     final colorKey = Object.hash(background, foreground, alphaByte);
     int channel(int value, int shift) => (value >> shift) & 0xff;
@@ -636,12 +641,22 @@ class _CadScenePainter extends CustomPainter {
             .map(project)
             .toList();
         if (points.length > 1) {
+          final displayColor = switch (entity.geometry['displayColor']) {
+            'destructiveRed' => Colors.redAccent,
+            'splineMagenta' => Colors.purpleAccent,
+            'sketchGreen' => Colors.lightGreenAccent,
+            'previewOrange' => Colors.orangeAccent,
+            _ => colors.secondary,
+          };
           canvas.drawPoints(
             PointMode.polygon,
             points,
             Paint()
-              ..color = entity.selected ? colors.tertiary : colors.secondary
-              ..strokeWidth = 2,
+              ..color = entity.selected ? colors.tertiary : displayColor
+              ..strokeWidth =
+                  (entity.geometry['strokeWidth'] as num?)?.toDouble() ?? 2
+              ..strokeCap = StrokeCap.round
+              ..isAntiAlias = true,
           );
         }
       case CadSceneEntityKind.mesh:

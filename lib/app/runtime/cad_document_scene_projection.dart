@@ -39,6 +39,10 @@ class CadDocumentSceneProjection {
       }
     }
     for (final entity in document.entities.values) {
+      if (entity.data['deleted'] == true) {
+        scene.remove(entity.id);
+        continue;
+      }
       final geometry = entity.data['sceneGeometry'];
       if (geometry is! Map) continue;
       scene.upsert(
@@ -59,12 +63,51 @@ class CadDocumentSceneProjection {
     }
   }
 
+  Future<void> synchronizeChanges(
+    CadDocument document, {
+    required Iterable<CadDocumentEntity> upsert,
+    required Iterable<String> remove,
+    KernelDisplayMeshPipeline? displayMeshes,
+  }) async {
+    for (final id in remove) {
+      scene.remove(id);
+    }
+    for (final changed in upsert) {
+      final entity = document.entities[changed.id];
+      if (entity == null) continue;
+      if (entity.data['deleted'] == true) {
+        scene.remove(entity.id);
+        continue;
+      }
+      final geometry = entity.data['sceneGeometry'];
+      if (geometry is! Map) {
+        scene.remove(entity.id);
+        continue;
+      }
+      scene.upsert(
+        CadSceneEntity(
+          id: entity.id,
+          kind: _kind(entity),
+          geometry: Map<String, dynamic>.from(geometry),
+          visible: entity.data['sceneVisible'] as bool? ?? true,
+          transparent: entity.data['sceneTransparent'] as bool? ?? false,
+        ),
+      );
+      if (entity.shape != null &&
+          displayMeshes != null &&
+          displayMeshes.supported) {
+        await displayMeshes.upsert(entityId: entity.id, shape: entity.shape!);
+      }
+    }
+  }
+
   CadSceneEntityKind _kind(CadDocumentEntity entity) {
     final value = entity.data['sceneKind'] as String?;
     if (value != null) {
       return CadSceneEntityKind.values.byName(value);
     }
     return switch (entity.kind) {
+      CadDocumentEntityKind.collection => CadSceneEntityKind.gizmo,
       CadDocumentEntityKind.import when entity.mesh != null =>
         CadSceneEntityKind.mesh,
       CadDocumentEntityKind.import => CadSceneEntityKind.solid,

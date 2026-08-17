@@ -9,6 +9,7 @@ import '../../core/cad_document/cad_document.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
 import '../../core/reference_engine/models/reference_geometry.dart';
+import '../../core/sketch_editor/models/editor_models.dart';
 import '../../features/projects/domain/project_manager.dart';
 import '../../features/projects/models/project.dart';
 import '../bootstrap/app_bootstrap.dart';
@@ -352,7 +353,11 @@ class _DesktopShellState extends State<DesktopShell> {
       cad: cad,
       projects: ProjectManager.instance,
     );
-    commands.initialize();
+    unawaited(
+      commands.initialize().then((_) {
+        if (mounted) setState(() {});
+      }),
+    );
   }
 
   @override
@@ -860,11 +865,22 @@ class _OfficialEngineeringWorkspaceState
       widget.cad.runtime.geometrySelection;
   late final OperationalReverseEngineeringController operational;
   String? fittedDocumentId;
+  final transformX = TextEditingController(text: '10');
+  final transformY = TextEditingController(text: '0');
+  final transformZ = TextEditingController(text: '0');
+  final transformAngle = TextEditingController(text: '15');
+  final transformScaleX = TextEditingController(text: '1.1');
+  final transformScaleY = TextEditingController(text: '1.1');
+  final transformScaleZ = TextEditingController(text: '1.1');
+  double rememberedSplineTolerance = 0.05;
+  bool rememberSplineConfiguration = false;
+  bool automaticSplinePreview = true;
   static const modules = [
     'AI Engineering',
     'Recognition',
     'Sketch & Surface',
     'Sections',
+    'Transform',
   ];
   ModelingSelection? get documentSelection {
     final document = widget.cad.document;
@@ -893,6 +909,22 @@ class _OfficialEngineeringWorkspaceState
     );
     widget.cad.addListener(_synchronizeScene);
     _synchronizeScene();
+  }
+
+  @override
+  void dispose() {
+    transformX.dispose();
+    transformY.dispose();
+    transformZ.dispose();
+    transformAngle.dispose();
+    transformScaleX.dispose();
+    transformScaleY.dispose();
+    transformScaleZ.dispose();
+    widget.cad.removeListener(_synchronizeScene);
+    operational.dispose();
+    camera.dispose();
+    modelingViewport.dispose();
+    super.dispose();
   }
 
   void _synchronizeScene() {
@@ -924,15 +956,6 @@ class _OfficialEngineeringWorkspaceState
       }
       fittedDocumentId = document.id;
     }
-  }
-
-  @override
-  void dispose() {
-    widget.cad.removeListener(_synchronizeScene);
-    operational.dispose();
-    camera.dispose();
-    modelingViewport.dispose();
-    super.dispose();
   }
 
   void selectDocument() {
@@ -992,6 +1015,108 @@ class _OfficialEngineeringWorkspaceState
     }
   }
 
+  Future<void> _bestFitSpline() async {
+    var selected = rememberedSplineTolerance;
+    var remember = rememberSplineConfiguration;
+    var automaticPreview = automaticSplinePreview;
+    if (automaticPreview) operational.previewBestFitSpline(selected);
+    final sectionData =
+        operational.selectedOrActiveSketchSourceSection?.data['section'];
+    final section = sectionData is Map ? sectionData : const {};
+    final segmentCount = (section['segments'] as List?)?.length ?? 0;
+    final pointCount = segmentCount * 2;
+    final tolerance = await showDialog<double>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Best Fit Spline'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Tolerance'),
+              RadioGroup<double>(
+                groupValue: selected,
+                onChanged: (value) {
+                  if (value == null) return;
+                  setDialogState(() => selected = value);
+                  if (automaticPreview) {
+                    operational.previewBestFitSpline(value);
+                  }
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final value in const [0.01, 0.02, 0.05, 0.10])
+                      RadioListTile<double>(
+                        title: Text('${value.toStringAsFixed(2)} mm'),
+                        value: value,
+                      ),
+                  ],
+                ),
+              ),
+              Text('Points: $pointCount  ·  Segments: $segmentCount'),
+              Text(
+                'Estimated time: ${(pointCount / 5000).clamp(.1, 30).toStringAsFixed(1)} s',
+              ),
+              Text('Maximum error target: ${selected.toStringAsFixed(3)} mm'),
+              Text(
+                'Mean error target: ${(selected * .5).toStringAsFixed(3)} mm',
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Remember this configuration'),
+                value: remember,
+                onChanged: (value) =>
+                    setDialogState(() => remember = value ?? false),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Automatic preview'),
+                value: automaticPreview,
+                onChanged: (value) {
+                  setDialogState(() => automaticPreview = value ?? false);
+                  if (automaticPreview) {
+                    operational.previewBestFitSpline(selected);
+                  } else {
+                    operational.clearBestFitSplinePreview();
+                  }
+                },
+              ),
+              const Text(
+                'Assistant: use the largest tolerance that preserves the engineering profile.',
+              ),
+              const Text('Orange: Spline preview'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, selected),
+              child: const Text('Create Spline'),
+            ),
+          ],
+        ),
+      ),
+    );
+    operational.clearBestFitSplinePreview();
+    if (tolerance == null) return;
+    setState(() {
+      rememberSplineConfiguration = remember;
+      automaticSplinePreview = automaticPreview;
+      if (remember) rememberedSplineTolerance = tolerance;
+    });
+    await _sectionAction(
+      () => operational.createSketchFromSelectedSection(
+        convertToSpline: true,
+        tolerance: tolerance,
+      ),
+    );
+  }
+
   Widget _sectionTools() => Wrap(
     spacing: 6,
     runSpacing: 6,
@@ -1001,6 +1126,36 @@ class _OfficialEngineeringWorkspaceState
         label: const Text('Create Section'),
         onPressed: () => _sectionAction(operational.createSection),
       ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.draw),
+        label: const Text('Sketch from Section'),
+        onPressed: () =>
+            _sectionAction(operational.createSketchFromSelectedSection),
+      ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.gesture),
+        label: const Text('Best Fit Spline'),
+        onPressed: _bestFitSpline,
+      ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.layers_outlined),
+        label: const Text('Toggle Section'),
+        onPressed: () =>
+            _sectionAction(operational.toggleSourceSectionVisibility),
+      ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.edit_outlined),
+        label: const Text('Toggle Sketch'),
+        onPressed: () =>
+            _sectionAction(operational.toggleActiveSketchVisibility),
+      ),
+      if (operational.activeSketch?.metadata['associationState'] == 'outdated')
+        FilledButton.tonalIcon(
+          icon: const Icon(Icons.sync_problem),
+          label: const Text('Update Sketch'),
+          onPressed: () =>
+              _sectionAction(operational.updateActiveSketchFromSourceSection),
+        ),
       OutlinedButton.icon(
         icon: const Icon(Icons.swap_vert),
         label: const Text('Dynamic -1'),
@@ -1027,6 +1182,297 @@ class _OfficialEngineeringWorkspaceState
     ],
   );
 
+  Widget _g106bCertificationPanel() {
+    final results = operational.g106bCertificationResults;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('G-106B Certification'),
+            const SizedBox(height: 6),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.science_outlined),
+              label: const Text('Run Core Smoke Test'),
+              onPressed: () async {
+                try {
+                  await operational.runG106BCertification();
+                  widget.cad.setStatus('G-106B core smoke test completed.');
+                } catch (error) {
+                  widget.cad.setStatus('G-106B certification failed: $error');
+                }
+              },
+            ),
+            if (results.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                '${results.length}/14 checks passed',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  double _number(TextEditingController controller, String label) {
+    final value = double.tryParse(controller.text.replaceAll(',', '.'));
+    if (value == null || !value.isFinite) {
+      throw FormatException('$label must be a finite number.');
+    }
+    return value;
+  }
+
+  Future<void> _transformAction(FutureOr<void> Function() action) async {
+    try {
+      await action();
+      widget.cad.setStatus('Transform preview updated.');
+    } catch (error) {
+      widget.cad.setStatus('Transform: $error');
+    }
+  }
+
+  Widget _transformTools() {
+    Widget numberField(String label, TextEditingController controller) =>
+        TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(
+            signed: true,
+            decimal: true,
+          ),
+          decoration: InputDecoration(labelText: label, isDense: true),
+        );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Transform', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Select an entity, configure values, preview, then apply.'),
+        RadioGroup<TransformDisposition>(
+          groupValue: operational.transformDisposition,
+          onChanged: operational.chooseTransformDisposition,
+          child: const Column(
+            children: [
+              RadioListTile<TransformDisposition>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: TransformDisposition.original,
+                title: Text('Transform Original'),
+              ),
+              RadioListTile<TransformDisposition>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: TransformDisposition.workingCopy,
+                title: Text('Create Working Copy'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: numberField('X', transformX)),
+            const SizedBox(width: 4),
+            Expanded(child: numberField('Y', transformY)),
+            const SizedBox(width: 4),
+            Expanded(child: numberField('Z', transformZ)),
+          ],
+        ),
+        FilledButton.tonalIcon(
+          icon: const Icon(Icons.open_with),
+          label: const Text('Move Preview'),
+          onPressed: () => _transformAction(
+            () => operational.previewMove(
+              Vector3(
+                _number(transformX, 'X'),
+                _number(transformY, 'Y'),
+                _number(transformZ, 'Z'),
+              ),
+            ),
+          ),
+        ),
+        const Divider(),
+        numberField('Angle (degrees)', transformAngle),
+        Wrap(
+          spacing: 4,
+          children: [
+            for (final axis in const [
+              ('X', Vector3(1, 0, 0)),
+              ('Y', Vector3(0, 1, 0)),
+              ('Z', Vector3(0, 0, 1)),
+            ])
+              OutlinedButton(
+                onPressed: () => _transformAction(
+                  () => operational.previewRotate(
+                    axis.$2,
+                    _number(transformAngle, 'Angle'),
+                  ),
+                ),
+                child: Text('Rotate ${axis.$1}'),
+              ),
+          ],
+        ),
+        const Divider(),
+        Row(
+          children: [
+            Expanded(child: numberField('Scale X', transformScaleX)),
+            const SizedBox(width: 4),
+            Expanded(child: numberField('Y', transformScaleY)),
+            const SizedBox(width: 4),
+            Expanded(child: numberField('Z', transformScaleZ)),
+          ],
+        ),
+        FilledButton.tonalIcon(
+          icon: const Icon(Icons.aspect_ratio),
+          label: const Text('Scale Preview'),
+          onPressed: () => _transformAction(
+            () => operational.previewScale(
+              Vector3(
+                _number(transformScaleX, 'Scale X'),
+                _number(transformScaleY, 'Scale Y'),
+                _number(transformScaleZ, 'Scale Z'),
+              ),
+            ),
+          ),
+        ),
+        const Divider(),
+        const Text('Transform by Reference'),
+        Wrap(
+          spacing: 4,
+          children: [
+            for (final target in const [
+              'Origin',
+              'XY',
+              'XZ',
+              'YZ',
+              'X',
+              'Y',
+              'Z',
+            ])
+              OutlinedButton(
+                onPressed: () => _transformAction(
+                  () => operational.previewTransformByReference(target),
+                ),
+                child: Text(target),
+              ),
+          ],
+        ),
+        const Divider(),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                icon: const Icon(Icons.check),
+                label: const Text('Apply'),
+                onPressed: operational.manualTransformPreview == null
+                    ? null
+                    : () => _transformAction(operational.applyManualTransform),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Cancel preview',
+              onPressed: operational.manualTransformPreview == null
+                  ? null
+                  : operational.cancelManualTransform,
+              icon: const Icon(Icons.close),
+            ),
+            IconButton(
+              tooltip: 'Reset transform',
+              onPressed: () =>
+                  _transformAction(operational.resetSelectedTransform),
+              icon: const Icon(Icons.restart_alt),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.undo),
+                label: const Text('Undo'),
+                onPressed: widget.cad.runtime.canUndo
+                    ? () => _transformAction(operational.undoManualTransform)
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.redo),
+                label: const Text('Redo'),
+                onPressed: widget.cad.runtime.canRedo
+                    ? () => _transformAction(operational.redoManualTransform)
+                    : null,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmDelete(CadDocumentEntity entity) async {
+    final impacted = operational.deletionImpact(entity.id);
+    operational.previewDeletion(
+      entity.id,
+      includeDependencies: impacted.isNotEmpty,
+    );
+    final choice = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        final counts = <String, int>{};
+        for (final item in impacted) {
+          counts.update(
+            item.kind.name,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+        }
+        return AlertDialog(
+          title: const Text('Dependency Analysis'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${entity.data['name'] ?? entity.id} affects:'),
+              if (counts.isEmpty) const Text('No dependent entities.'),
+              for (final entry in counts.entries)
+                Text('${entry.value} ${entry.key}'),
+              const SizedBox(height: 12),
+              const Text(
+                'Deleted entities are moved to the Project Recycle Bin.',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'cancel'),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(context, 'only'),
+              child: const Text('Delete only this entity'),
+            ),
+            if (impacted.isNotEmpty)
+              FilledButton(
+                onPressed: () => Navigator.pop(context, 'all'),
+                child: const Text('Delete all affected'),
+              ),
+          ],
+        );
+      },
+    );
+    operational.clearDeletionPreview();
+    if (choice == 'only' || choice == 'all') {
+      await operational.deleteToRecycleBin(
+        entity.id,
+        includeDependencies: choice == 'all',
+      );
+    }
+  }
+
   Widget _documentExplorer(BuildContext context) {
     final entities =
         widget.cad.runtime.document?.entities.values.toList() ?? [];
@@ -1034,13 +1480,25 @@ class _OfficialEngineeringWorkspaceState
         .where((entity) => entity.data['group'] == 'World Coordinate System')
         .toList();
     final groups = <String, List<CadDocumentEntity>>{
+      'Collections': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.collection &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
       'Meshes': entities
-          .where((entity) => entity.kind == CadDocumentEntityKind.import)
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.import &&
+                entity.data['deleted'] != true,
+          )
           .toList(),
       'References': entities
           .where(
             (entity) =>
                 entity.kind == CadDocumentEntityKind.reference &&
+                entity.data['deleted'] != true &&
                 entity.data['group'] != 'World Coordinate System' &&
                 entity.data['sceneKind'] != 'coordinateSystem',
           )
@@ -1049,53 +1507,167 @@ class _OfficialEngineeringWorkspaceState
           .where(
             (entity) =>
                 entity.kind == CadDocumentEntityKind.reference &&
+                entity.data['deleted'] != true &&
                 entity.data['group'] != 'World Coordinate System' &&
                 entity.data['sceneKind'] == 'coordinateSystem',
           )
           .toList(),
       'Sketches': entities
-          .where((entity) => entity.kind == CadDocumentEntityKind.sketch)
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.sketch &&
+                entity.data['deleted'] != true &&
+                entity.data['sketch'] is Map,
+          )
           .toList(),
       'Sections': entities
-          .where((entity) => entity.kind == CadDocumentEntityKind.section)
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.section &&
+                entity.data['deleted'] != true,
+          )
           .toList(),
       'Surfaces': entities
-          .where((entity) => entity.kind == CadDocumentEntityKind.surface)
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.surface &&
+                entity.data['deleted'] != true,
+          )
           .toList(),
       'Bodies': entities
           .where(
             (entity) =>
                 entity.kind == CadDocumentEntityKind.import &&
+                entity.data['deleted'] != true &&
                 entity.shape != null,
           )
           .toList(),
+      'Recycle Bin': entities
+          .where((entity) => entity.data['deleted'] == true)
+          .toList(),
     };
     Widget row(CadDocumentEntity entity) {
+      final collection = entity.kind == CadDocumentEntityKind.collection;
+      final deleted = entity.data['deleted'] == true;
       final visible = entity.data['sceneVisible'] as bool? ?? true;
       final name = entity.data['name'] as String? ?? entity.id;
       return ListTile(
         dense: true,
         selected: scene.find(entity.id)?.selected ?? false,
-        leading: Icon(switch (entity.data['sceneKind']) {
-          'plane' => Icons.crop_16_9,
-          'axis' => Icons.straighten,
-          'point' => Icons.adjust,
-          'coordinateSystem' => Icons.threed_rotation,
-          'sketch' => Icons.gesture,
-          'surface' => Icons.layers,
-          'curve' when entity.kind == CadDocumentEntityKind.section =>
-            Icons.polyline,
-          'mesh' => Icons.grid_on,
-          _ => Icons.category_outlined,
-        }),
-        trailing: IconButton(
-          tooltip: visible ? 'Hide' : 'Show',
-          icon: Icon(visible ? Icons.visibility : Icons.visibility_off),
-          onPressed: () =>
-              widget.cad.runtime.setEntityVisibility(entity.id, !visible),
+        leading: Icon(
+          collection
+              ? entity.id == 'collection:recycle-bin'
+                    ? Icons.delete_outline
+                    : Icons.folder_copy_outlined
+              : switch (entity.data['sceneKind']) {
+                  'plane' => Icons.crop_16_9,
+                  'axis' => Icons.straighten,
+                  'point' => Icons.adjust,
+                  'coordinateSystem' => Icons.threed_rotation,
+                  'sketch' => Icons.gesture,
+                  'surface' => Icons.layers,
+                  'curve' when entity.kind == CadDocumentEntityKind.section =>
+                    Icons.polyline,
+                  'mesh' => Icons.grid_on,
+                  _ => Icons.category_outlined,
+                },
         ),
+        trailing: collection
+            ? PopupMenuButton<String>(
+                onSelected: (action) async {
+                  switch (action) {
+                    case 'visibility':
+                      await widget.cad.runtime.updateCollection(
+                        entity.id,
+                        visible: !(entity.data['visible'] as bool? ?? true),
+                      );
+                    case 'lock':
+                      await widget.cad.runtime.updateCollection(
+                        entity.id,
+                        locked: !(entity.data['locked'] as bool? ?? false),
+                      );
+                    case 'active':
+                      await widget.cad.runtime.updateCollection(
+                        entity.id,
+                        active: true,
+                      );
+                    case 'duplicate':
+                      await widget.cad.runtime.duplicateCollection(entity.id);
+                    case 'delete':
+                      await _confirmDelete(entity);
+                  }
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
+                    value: 'visibility',
+                    child: Text('Show/Hide'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'lock',
+                    child: Text('Lock/Unlock'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'active',
+                    child: Text('Make Active'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'duplicate',
+                    child: Text('Duplicate'),
+                  ),
+                  if (entity.data['systemCollection'] != true)
+                    const PopupMenuItem(
+                      value: 'delete',
+                      child: Text('Move to Recycle Bin'),
+                    ),
+                ],
+              )
+            : deleted
+            ? PopupMenuButton<String>(
+                onSelected: (action) async {
+                  if (action == 'restore') {
+                    await operational.restoreDeleted(entity.id);
+                  } else if (action == 'purge') {
+                    await operational.permanentlyDelete(entity.id);
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'restore', child: Text('Restore')),
+                  PopupMenuItem(
+                    value: 'purge',
+                    child: Text('Delete Permanently'),
+                  ),
+                ],
+              )
+            : PopupMenuButton<String>(
+                onSelected: (action) async {
+                  if (action == 'visibility') {
+                    if (entity.kind == CadDocumentEntityKind.sketch &&
+                        entity.data['sketch'] is Map) {
+                      operational.selectSketch(entity.id);
+                      await operational.toggleActiveSketchVisibility();
+                    } else {
+                      await widget.cad.runtime.setEntityVisibility(
+                        entity.id,
+                        !visible,
+                      );
+                    }
+                  } else if (action == 'delete') {
+                    await _confirmDelete(entity);
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'visibility',
+                    child: Text(visible ? 'Hide' : 'Show'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Move to Recycle Bin'),
+                  ),
+                ],
+              ),
         title: Text(name),
-        onLongPress: entity.kind != CadDocumentEntityKind.section
+        onLongPress: entity.kind != CadDocumentEntityKind.section && !collection
             ? null
             : () async {
                 final controller = TextEditingController(text: name);
@@ -1119,15 +1691,27 @@ class _OfficialEngineeringWorkspaceState
                 );
                 controller.dispose();
                 if (replacement != null && replacement.trim().isNotEmpty) {
-                  await operational.sections.rename(entity.id, replacement);
+                  if (collection) {
+                    await widget.cad.runtime.updateCollection(
+                      entity.id,
+                      name: replacement,
+                    );
+                  } else {
+                    await operational.sections.rename(entity.id, replacement);
+                  }
                 }
               },
-        onTap: () {
-          geometrySelection.select(entity.id);
-          if (entity.data['sceneKind'] == 'plane') {
-            operational.selectDocumentPlane(entity.id);
-          }
-        },
+        onTap: collection
+            ? null
+            : () {
+                geometrySelection.select(entity.id);
+                if (entity.data['sceneKind'] == 'plane') {
+                  operational.selectDocumentPlane(entity.id);
+                } else if (entity.kind == CadDocumentEntityKind.sketch &&
+                    entity.data['sketch'] is Map) {
+                  operational.selectSketch(entity.id);
+                }
+              },
       );
     }
 
@@ -1152,343 +1736,585 @@ class _OfficialEngineeringWorkspaceState
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([
-      widget.cad,
-      modelingViewport,
-      operational,
-      geometrySelection,
-    ]),
-    builder: (context, _) => Column(
-      children: [
-        SizedBox(
-          height: 44,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            children: [
-              for (final item in modules)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                  child: ChoiceChip(
-                    label: Text(item),
-                    selected: module == item,
-                    onSelected: (_) async {
-                      await widget.commands.dispatch(
-                        'workspace.${item.toLowerCase().replaceAll(' ', '_')}',
-                      );
-                      if (mounted) setState(() => module = item);
-                    },
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const Divider(),
-        Expanded(
-          child: Row(
-            children: [
-              SizedBox(
-                width: 240,
-                child: _WorkspacePanel(
-                  title: 'Explorer',
-                  icon: Icons.account_tree,
-                  child: module == 'Recognition'
-                      ? RecognitionWorkspacePanel(
-                          controller: operational,
-                          onApplyAlignment: _applyAlignment,
-                        )
-                      : module == 'Sketch & Surface'
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            SketchSurfaceWorkspacePanel(
-                              controller: operational,
-                              onOpenSketch: _openSketch,
-                              onFinishSketch: _finishSketch,
-                            ),
-                            const Divider(),
-                            _documentExplorer(context),
-                          ],
-                        )
-                      : module == 'Sections'
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _sectionTools(),
-                            const Divider(),
-                            _documentExplorer(context),
-                          ],
-                        )
-                      : widget.cad.runtime.document == null
-                      ? const _EmptyState(
-                          icon: Icons.folder_outlined,
-                          message:
-                              'Open a project to populate the engineering tree.',
-                        )
-                      : _documentExplorer(context),
-                ),
-              ),
-              const VerticalDivider(),
-              Expanded(
-                child: ProfessionalCadViewportWidget(
-                  scene: scene,
-                  camera: camera,
-                  showSketchGrid:
-                      module == 'Sketch & Surface' &&
-                      operational.stage == SketchSurfaceStage.sketchActive,
-                  onSketchTap:
-                      module == 'Sketch & Surface' &&
-                          operational.stage == SketchSurfaceStage.sketchActive
-                      ? (position) =>
-                            operational.captureSketchTap(position, camera)
-                      : null,
-                  onPick: widget.cad.document == null
-                      ? null
-                      : (pick) async {
-                          geometrySelection.select(
-                            pick.entityId,
-                            toggle: HardwareKeyboard.instance.isControlPressed,
-                            range: HardwareKeyboard.instance.isShiftPressed,
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.escape): () {
+        operational.previewPoints = const [];
+        operational.cancelProfessionalSurface();
+        widget.cad.setStatus('Sketch command cancelled.');
+      },
+      const SingleActivator(LogicalKeyboardKey.enter): () =>
+          widget.cad.setStatus('Sketch command confirmed.'),
+      const SingleActivator(LogicalKeyboardKey.delete): () {
+        final ids = operational.selectedSketchEntityIds;
+        if (ids.isNotEmpty) {
+          operational.editorApi?.edit(SketchToolType.delete, ids);
+          operational.selectedSketchEntityIds.clear();
+          widget.cad.setStatus('Sketch selection removed.');
+        }
+      },
+      const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+          operational.undo,
+      const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+          operational.redo,
+      const SingleActivator(LogicalKeyboardKey.space): () {
+        operational.selectSketchTool(operational.activeTool);
+        widget.cad.setStatus(
+          'Repeated ${operational.activeTool.name} command.',
+        );
+      },
+    },
+    child: Focus(
+      autofocus: true,
+      child: AnimatedBuilder(
+        animation: Listenable.merge([
+          widget.cad,
+          modelingViewport,
+          operational,
+          geometrySelection,
+        ]),
+        builder: (context, _) => Column(
+          children: [
+            SizedBox(
+              height: 44,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final item in modules)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: ChoiceChip(
+                        label: Text(item),
+                        selected: module == item,
+                        onSelected: (_) async {
+                          await widget.commands.dispatch(
+                            'workspace.${item.toLowerCase().replaceAll(' ', '_')}',
                           );
-                          selectDocument();
-                          await operational.recognizePick(pick: pick);
+                          if (mounted) setState(() => module = item);
                         },
-                ),
+                      ),
+                    ),
+                ],
               ),
-              const VerticalDivider(),
-              SizedBox(
-                width: 280,
-                child: _WorkspacePanel(
-                  title: 'Property Inspector',
-                  icon: Icons.tune,
-                  child: module == 'Sketch & Surface'
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('State: ${operational.stage.name}'),
-                            Text(
-                              'Sketch entities: ${operational.sketchEntities.length}',
-                            ),
-                            Text(
-                              'Constraints: ${operational.constraints.length}',
-                            ),
-                            if (operational.surfacePlan != null)
-                              Text(
-                                'Surface quality: ${(operational.surfacePlan!.candidates.first.quality * 100).toStringAsFixed(1)}%',
-                              ),
-                            if (operational.activeSurface != null) ...[
-                              Text(
-                                'Continuity: ${operational.activeSurface!.continuity.name}',
-                              ),
-                              Text(
-                                'Confidence: ${(operational.activeSurface!.confidence * 100).toStringAsFixed(1)}%',
-                              ),
-                              Text(
-                                'Kernel shape: ${operational.activeSurface!.handle.persistentId}',
-                              ),
-                            ],
-                          ],
-                        )
-                      : module == 'Sections'
-                      ? Builder(
-                          builder: (context) {
-                            final entity = operational.selectedSection;
-                            final section = entity?.data['section'];
-                            if (section is! Map) {
-                              return const Text(
-                                'Select a Section to inspect it.',
-                              );
-                            }
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(entity!.data['name'] as String),
-                                Text('Segments: ${section['segmentCount']}'),
-                                Text('Loops: ${section['loopCount']}'),
-                                Text(
-                                  'Length: ${(section['length'] as num).toStringAsFixed(3)} mm',
-                                ),
-                                Text('Closed: ${section['closed']}'),
-                                Text(
-                                  'Projected area: ${(section['projectedArea'] as num).toStringAsFixed(3)} mm²',
-                                ),
-                                Text('Tolerance: ${section['toleranceUsed']}'),
-                                const SizedBox(height: 8),
-                                FilledButton.tonalIcon(
-                                  icon: const Icon(Icons.delete_outline),
-                                  label: const Text('Delete Section'),
-                                  onPressed: () => _sectionAction(
-                                    () =>
-                                        operational.sections.remove(entity.id),
-                                  ),
-                                ),
-                              ],
-                            );
-                          },
-                        )
-                      : module == 'Recognition'
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Alignment guidance'),
-                            if (operational.activeReference == null)
-                              const Text(
-                                'Accept a planar hypothesis and create its official reference.',
-                              )
-                            else ...[
-                              const Text(
-                                'Deseja criar um Sistema de Coordenadas utilizando essas referências?',
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                'Deseja alinhar a peça utilizando este sistema?',
-                              ),
-                              if (operational.alignmentTransform != null)
-                                Text(
-                                  'Preview ativo: plano → ${operational.alignmentTarget}. Confirme somente após revisar a posição final.',
-                                ),
-                            ],
-                          ],
-                        )
-                      : modelingViewport.selection.isEmpty
-                      ? const _EmptyState(
-                          icon: Icons.touch_app_outlined,
-                          message:
-                              'Select an engineering object to inspect its properties.',
-                        )
-                      : ModelingPropertyInspector(
-                          context: InteractionContext(
-                            stage: InteractionStage.selected,
-                            selection: modelingViewport.selection,
-                            message: 'Selection synchronized',
-                          ),
-                          onParameterChanged: (key, value) => widget.cad
-                              .setStatus('Parameter $key updated to $value.'),
-                        ),
-                ),
-              ),
-              const VerticalDivider(),
-              SizedBox(
-                width: 300,
-                child: _WorkspacePanel(
-                  title: 'Engineering Assistant',
-                  icon: Icons.psychology_outlined,
-                  child: module == 'Sketch & Surface'
-                      ? Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Certified operational guidance'),
-                            Text(switch (operational.stage) {
-                              SketchSurfaceStage.idle =>
-                                'Accept a planar Recognition hypothesis before creating a reference.',
-                              SketchSurfaceStage.referenceReady =>
-                                'The approved reference is ready for a Sketch session.',
-                              SketchSurfaceStage.sketchActive =>
-                                'Capture the profile points and review constraints before finishing.',
-                              SketchSurfaceStage.sketchFinished =>
-                                'The profile is persisted and ready for surface planning.',
-                              SketchSurfaceStage.surfacePreview =>
-                                'Review quality and continuity evidence before confirmation.',
-                              SketchSurfaceStage.surfaceGenerated =>
-                                'The CAD kernel generated and validated the surface.',
-                            }),
-                            if (operational.surfacePlan != null)
-                              for (final evidence
-                                  in operational
-                                      .surfacePlan!
-                                      .candidates
-                                      .first
-                                      .evidence)
-                                Text('• ${evidence.description}'),
-                          ],
-                        )
-                      : module == 'Sections'
-                      ? Builder(
-                          builder: (context) {
-                            final data =
-                                operational.selectedSection?.data['section'];
-                            if (data is! Map) {
-                              return const Text(
-                                'Select a plane and use Create Section. Existing Sections remain associative to their source plane and mesh.',
-                              );
-                            }
-                            final quality =
-                                (data['degenerations'] as int) == 0 &&
-                                    (data['nonManifoldEdges'] as int) == 0
-                                ? 'Good'
-                                : 'Review';
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Segments: ${data['segmentCount']}'),
-                                Text('Loops: ${data['loopCount']}'),
-                                Text(
-                                  'Length: ${(data['length'] as num).toStringAsFixed(3)} mm',
-                                ),
-                                Text('Quality: $quality'),
-                                Text(
-                                  'Candidates: ${data['candidateTriangles']} triangles',
-                                ),
-                                const SizedBox(height: 12),
-                                const Text(
-                                  'Deseja converter esta Section em Sketch?',
-                                ),
-                                const Text(
-                                  'Conversion will be available in G-106.',
-                                ),
-                              ],
-                            );
-                          },
-                        )
-                      : modelingViewport.selection.isEmpty
-                      ? const _EmptyState(
-                          icon: Icons.chat_bubble_outline,
-                          message:
-                              'Assistant guidance appears when project evidence is available.',
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Selected evidence'),
-                            for (final evidence
-                                in modelingViewport.selection.first.evidence)
-                              Text('• $evidence'),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'No operation will execute until a preview is reviewed and explicitly accepted.',
-                            ),
-                          ],
-                        ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (widget.cad.busy)
-          LinearProgressIndicator(value: widget.cad.progress),
-        if (widget.cad.message != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(widget.cad.message!),
             ),
-          ),
-        Container(
-          height: 28,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: const Row(
-            children: [
-              Icon(Icons.check_circle_outline, size: 16),
-              SizedBox(width: 6),
-              Text('Ready'),
-              Spacer(),
-              Text('OpenCascade · Project First · Consultative AI'),
-            ],
-          ),
+            const Divider(),
+            Expanded(
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 240,
+                    child: _WorkspacePanel(
+                      title: 'Explorer',
+                      icon: Icons.account_tree,
+                      child: module == 'Recognition'
+                          ? RecognitionWorkspacePanel(
+                              controller: operational,
+                              onApplyAlignment: _applyAlignment,
+                            )
+                          : module == 'Sketch & Surface'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                SketchSurfaceWorkspacePanel(
+                                  controller: operational,
+                                  onOpenSketch: _openSketch,
+                                  onFinishSketch: _finishSketch,
+                                ),
+                                _g106bCertificationPanel(),
+                                const Divider(),
+                                _documentExplorer(context),
+                              ],
+                            )
+                          : module == 'Sections'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _sectionTools(),
+                                const Divider(),
+                                _documentExplorer(context),
+                              ],
+                            )
+                          : module == 'Transform'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _transformTools(),
+                                const Divider(),
+                                _documentExplorer(context),
+                              ],
+                            )
+                          : widget.cad.runtime.document == null
+                          ? const _EmptyState(
+                              icon: Icons.folder_outlined,
+                              message:
+                                  'Open a project to populate the engineering tree.',
+                            )
+                          : _documentExplorer(context),
+                    ),
+                  ),
+                  const VerticalDivider(),
+                  Expanded(
+                    child: ProfessionalCadViewportWidget(
+                      scene: scene,
+                      camera: camera,
+                      showSketchGrid:
+                          module == 'Sketch & Surface' &&
+                          operational.stage == SketchSurfaceStage.sketchActive,
+                      onSketchTap:
+                          module == 'Sketch & Surface' &&
+                              operational.stage ==
+                                  SketchSurfaceStage.sketchActive
+                          ? (position) =>
+                                operational.captureSketchTap(position, camera)
+                          : null,
+                      onPick: widget.cad.document == null
+                          ? null
+                          : (pick) async {
+                              geometrySelection.select(
+                                pick.entityId,
+                                toggle:
+                                    HardwareKeyboard.instance.isControlPressed,
+                                range: HardwareKeyboard.instance.isShiftPressed,
+                              );
+                              selectDocument();
+                              await operational.recognizePick(pick: pick);
+                            },
+                    ),
+                  ),
+                  const VerticalDivider(),
+                  SizedBox(
+                    width: 280,
+                    child: _WorkspacePanel(
+                      title: 'Property Inspector',
+                      icon: Icons.tune,
+                      child: module == 'Sketch & Surface'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('State: ${operational.stage.name}'),
+                                Text(
+                                  'Sketch entities: ${operational.sketchEntities.length}',
+                                ),
+                                Text(
+                                  'Constraints: ${operational.constraints.length}',
+                                ),
+                                if (operational.surfacePlan != null)
+                                  Text(
+                                    'Surface quality: ${(operational.surfacePlan!.candidates.first.quality * 100).toStringAsFixed(1)}%',
+                                  ),
+                                if (operational.activeSurface != null) ...[
+                                  Text(
+                                    'Continuity: ${operational.activeSurface!.continuity.name}',
+                                  ),
+                                  Text(
+                                    'Confidence: ${(operational.activeSurface!.confidence * 100).toStringAsFixed(1)}%',
+                                  ),
+                                  Text(
+                                    'Kernel shape: ${operational.activeSurface!.handle.persistentId}',
+                                  ),
+                                ],
+                              ],
+                            )
+                          : module == 'Transform'
+                          ? Builder(
+                              builder: (context) {
+                                final selected = geometrySelection.selectedIds;
+                                if (selected.isEmpty) {
+                                  return const Text(
+                                    'Select an entity to transform.',
+                                  );
+                                }
+                                final entity = widget
+                                    .cad
+                                    .runtime
+                                    .document
+                                    ?.entities[selected.first];
+                                final matrix = entity?.data['transformMatrix'];
+                                final collectionId =
+                                    entity?.data['collectionId'] as String?;
+                                final collection = collectionId == null
+                                    ? null
+                                    : widget
+                                          .cad
+                                          .runtime
+                                          .document
+                                          ?.entities[collectionId];
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      entity?.data['name'] as String? ??
+                                          entity?.id ??
+                                          '-',
+                                    ),
+                                    Text('Type: ${entity?.kind.name ?? '-'}'),
+                                    Text('Selected: ${selected.length}'),
+                                    Text(
+                                      'Collection: ${collection?.data['name'] ?? '-'}',
+                                    ),
+                                    Text(
+                                      'Position/rotation/scale: ${matrix is List ? 'transformed' : 'identity'}',
+                                    ),
+                                    Text(
+                                      'Active system: ${operational.manualTransformMode?.name ?? 'World'}',
+                                    ),
+                                    if (entity?.shape != null)
+                                      const Text('Native BRep transform: OCCT'),
+                                  ],
+                                );
+                              },
+                            )
+                          : module == 'Sections'
+                          ? Builder(
+                              builder: (context) {
+                                final entity = operational.selectedSection;
+                                final section = entity?.data['section'];
+                                if (section is! Map) {
+                                  final sketch = operational.activeSketch;
+                                  if (sketch == null) {
+                                    return const Text(
+                                      'Select a Section or associated Sketch.',
+                                    );
+                                  }
+                                  final metadata = sketch.metadata;
+                                  String metric(String key) =>
+                                      ((metadata[key] as num?) ?? 0)
+                                          .toDouble()
+                                          .toStringAsFixed(6);
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(sketch.name),
+                                      Text(
+                                        'Entities: ${sketch.entityIds.length}',
+                                      ),
+                                      Text(
+                                        'Points: ${metadata['pointCount'] ?? 0}',
+                                      ),
+                                      Text(
+                                        'Segments: ${metadata['segmentCount'] ?? 0}',
+                                      ),
+                                      Text(
+                                        'Maximum error: ${metric('maximumError')} mm',
+                                      ),
+                                      Text(
+                                        'Mean error: ${metric('meanError')} mm',
+                                      ),
+                                      Text(
+                                        'Tolerance: ${metric('tolerance')} mm',
+                                      ),
+                                      Text(
+                                        'Association: ${metadata['associationState'] ?? 'detached'}',
+                                      ),
+                                      Text(
+                                        'Updated: ${metadata['lastUpdatedAt'] ?? '-'}',
+                                      ),
+                                    ],
+                                  );
+                                }
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(entity!.data['name'] as String),
+                                    Text(
+                                      'Segments: ${section['segmentCount']}',
+                                    ),
+                                    Text('Loops: ${section['loopCount']}'),
+                                    Text(
+                                      'Length: ${(section['length'] as num).toStringAsFixed(3)} mm',
+                                    ),
+                                    Text('Closed: ${section['closed']}'),
+                                    Text(
+                                      'Projected area: ${(section['projectedArea'] as num).toStringAsFixed(3)} mm²',
+                                    ),
+                                    Text(
+                                      'Tolerance: ${section['toleranceUsed']}',
+                                    ),
+                                    const SizedBox(height: 8),
+                                    FilledButton.tonalIcon(
+                                      icon: const Icon(Icons.delete_outline),
+                                      label: const Text('Delete Section'),
+                                      onPressed: () => _sectionAction(
+                                        () => operational.sections.remove(
+                                          entity.id,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            )
+                          : module == 'Recognition'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Alignment guidance'),
+                                if (operational.activeReference == null)
+                                  const Text(
+                                    'Accept a planar hypothesis and create its official reference.',
+                                  )
+                                else ...[
+                                  const Text(
+                                    'Deseja criar um Sistema de Coordenadas utilizando essas referências?',
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Deseja alinhar a peça utilizando este sistema?',
+                                  ),
+                                  if (operational.alignmentTransform != null)
+                                    Text(
+                                      'Preview ativo: plano → ${operational.alignmentTarget}. Confirme somente após revisar a posição final.',
+                                    ),
+                                ],
+                              ],
+                            )
+                          : modelingViewport.selection.isEmpty
+                          ? const _EmptyState(
+                              icon: Icons.touch_app_outlined,
+                              message:
+                                  'Select an engineering object to inspect its properties.',
+                            )
+                          : ModelingPropertyInspector(
+                              context: InteractionContext(
+                                stage: InteractionStage.selected,
+                                selection: modelingViewport.selection,
+                                message: 'Selection synchronized',
+                              ),
+                              onParameterChanged: (key, value) =>
+                                  widget.cad.setStatus(
+                                    'Parameter $key updated to $value.',
+                                  ),
+                            ),
+                    ),
+                  ),
+                  const VerticalDivider(),
+                  SizedBox(
+                    width: 300,
+                    child: _WorkspacePanel(
+                      title: 'Engineering Assistant',
+                      icon: Icons.psychology_outlined,
+                      child: module == 'Sketch & Surface'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Certified operational guidance'),
+                                Text(switch (operational.stage) {
+                                  SketchSurfaceStage.idle =>
+                                    'Accept a planar Recognition hypothesis before creating a reference.',
+                                  SketchSurfaceStage.referenceReady =>
+                                    'The approved reference is ready for a Sketch session.',
+                                  SketchSurfaceStage.sketchActive =>
+                                    'Capture the profile points and review constraints before finishing.',
+                                  SketchSurfaceStage.sketchFinished =>
+                                    'The profile is persisted and ready for surface planning.',
+                                  SketchSurfaceStage.surfacePreview =>
+                                    'Review quality and continuity evidence before confirmation.',
+                                  SketchSurfaceStage.surfaceGenerated =>
+                                    'The CAD kernel generated and validated the surface.',
+                                }),
+                                if (operational.stage ==
+                                    SketchSurfaceStage.sketchActive) ...[
+                                  const SizedBox(height: 8),
+                                  for (final recommendation
+                                      in operational
+                                              .editorApi
+                                              ?.recommendations ??
+                                          const [])
+                                    ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: const Icon(
+                                        Icons.lightbulb_outline,
+                                        size: 17,
+                                      ),
+                                      title: Text(recommendation.title),
+                                      subtitle: Text(recommendation.reason),
+                                    ),
+                                  const Text('Suggestions'),
+                                  const Text('• Simplify the fitted spline'),
+                                  const Text('• Complete useful constraints'),
+                                  if (operational
+                                          .activeSketch
+                                          ?.metadata['associationState'] ==
+                                      'outdated')
+                                    const Text(
+                                      '• Update the associated Sketch',
+                                    ),
+                                  const Text(
+                                    '• Prepare profile for Loft or Sweep',
+                                  ),
+                                ],
+                                if (operational.surfacePlan != null)
+                                  for (final evidence
+                                      in operational
+                                          .surfacePlan!
+                                          .candidates
+                                          .first
+                                          .evidence)
+                                    Text('• ${evidence.description}'),
+                              ],
+                            )
+                          : module == 'Transform'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Manual transform guidance'),
+                                Text(
+                                  operational.transformDisposition == null
+                                      ? 'Transform Original or Create Working Copy?'
+                                      : operational.manualTransformPreview ==
+                                            null
+                                      ? 'Select geometry and create a preview. The document is unchanged until Apply.'
+                                      : 'Deseja aplicar esta transformação permanentemente?',
+                                ),
+                                if (operational.transformDisposition ==
+                                    TransformDisposition.original)
+                                  const Text(
+                                    'The Original will move to the Modified Collection.',
+                                  ),
+                                if (operational.transformDisposition ==
+                                    TransformDisposition.workingCopy)
+                                  const Text(
+                                    'The Original remains intact and a new Working Copy Collection will be created.',
+                                  ),
+                                if (operational.manualTransformMode ==
+                                    ManualTransformMode.align)
+                                  const Text(
+                                    'Deseja criar um novo Sistema de Coordenadas baseado nesta posição?',
+                                  ),
+                              ],
+                            )
+                          : module == 'Sections'
+                          ? Builder(
+                              builder: (context) {
+                                final data = operational
+                                    .selectedSection
+                                    ?.data['section'];
+                                if (data is! Map) {
+                                  final sketch = operational.activeSketch;
+                                  if (sketch == null) {
+                                    return const Text(
+                                      'Select a plane and create a Section, then convert it to a Sketch.',
+                                    );
+                                  }
+                                  final metadata = sketch.metadata;
+                                  final outdated =
+                                      metadata['associationState'] ==
+                                      'outdated';
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Section converted successfully.',
+                                      ),
+                                      Text(
+                                        'Maximum error: ${((metadata['maximumError'] as num?) ?? 0).toStringAsFixed(6)} mm',
+                                      ),
+                                      Text(
+                                        'Mean error: ${((metadata['meanError'] as num?) ?? 0).toStringAsFixed(6)} mm',
+                                      ),
+                                      Text(
+                                        'Entities: ${metadata['entityCount'] ?? sketch.entityIds.length}',
+                                      ),
+                                      Text(
+                                        outdated
+                                            ? 'The source Section changed. Do you want to update this Sketch?'
+                                            : 'Association with Section is active.',
+                                      ),
+                                      const SizedBox(height: 8),
+                                      const Text(
+                                        'Do you want to start editing the Sketch?',
+                                      ),
+                                    ],
+                                  );
+                                }
+                                final quality =
+                                    (data['degenerations'] as int) == 0 &&
+                                        (data['nonManifoldEdges'] as int) == 0
+                                    ? 'Good'
+                                    : 'Review';
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Segments: ${data['segmentCount']}'),
+                                    Text('Loops: ${data['loopCount']}'),
+                                    Text(
+                                      'Length: ${(data['length'] as num).toStringAsFixed(3)} mm',
+                                    ),
+                                    Text('Quality: $quality'),
+                                    Text(
+                                      'Candidates: ${data['candidateTriangles']} triangles',
+                                    ),
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Deseja converter esta Section em Sketch?',
+                                    ),
+                                    const Text(
+                                      'Choose Polyline or Best Fit Spline.',
+                                    ),
+                                  ],
+                                );
+                              },
+                            )
+                          : modelingViewport.selection.isEmpty
+                          ? const _EmptyState(
+                              icon: Icons.chat_bubble_outline,
+                              message:
+                                  'Assistant guidance appears when project evidence is available.',
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Selected evidence'),
+                                for (final evidence
+                                    in modelingViewport
+                                        .selection
+                                        .first
+                                        .evidence)
+                                  Text('• $evidence'),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'No operation will execute until a preview is reviewed and explicitly accepted.',
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (widget.cad.busy)
+              LinearProgressIndicator(value: widget.cad.progress),
+            if (widget.cad.message != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
+                ),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(widget.cad.message!),
+                ),
+              ),
+            Container(
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: const Row(
+                children: [
+                  Icon(Icons.check_circle_outline, size: 16),
+                  SizedBox(width: 6),
+                  Text('Ready'),
+                  Spacer(),
+                  Text('OpenCascade · Project First · Consultative AI'),
+                ],
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     ),
   );
 }

@@ -11,6 +11,7 @@ class OpenCascadeKernelAdapter
     implements
         InterchangeGeometryKernelAPI,
         PersistentGeometryKernelAPI,
+        ShapeTransformGeometryKernelAPI,
         MeshGeometryKernelAPI,
         SurfaceTopologyKernelAPI,
         SurfaceQualityKernelAPI,
@@ -178,6 +179,30 @@ class OpenCascadeKernelAdapter
       metadata: {...native.metadata, 'restoredFrom': payloadPath},
     );
   }
+
+  @override
+  Future<ShapeHandle> transformShape(
+    ShapeHandle source,
+    List<double> matrix, {
+    required String projectId,
+    bool copyGeometry = true,
+  }) => runtime.run(
+    'occ-transform-shape',
+    () async {
+      await initialize();
+      if (matrix.length != 16 || matrix.any((value) => !value.isFinite)) {
+        throw ArgumentError('Shape transform requires a finite 4x4 matrix.');
+      }
+      final native = await _nativeBridge.transformShape(
+        _resolve(source),
+        matrix,
+        copyGeometry: copyGeometry,
+      );
+      return _handle(native, projectId);
+    },
+    entityCount: 1,
+    runInIsolate: false,
+  );
 
   @override
   Future<KernelMeshHandle> importStl(

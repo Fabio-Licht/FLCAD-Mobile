@@ -14,6 +14,11 @@ abstract interface class OpenCascadeNativeBridge {
     CADShapeType expectedType,
   );
   Future<void> destroyShape(String nativeToken);
+  Future<OpenCascadeNativeShape> transformShape(
+    String nativeToken,
+    List<double> matrix, {
+    bool copyGeometry = true,
+  });
   Future<OpenCascadeNativeShape> importShape(
     String path,
     KernelExchangeFormat format, {
@@ -137,6 +142,12 @@ class UnavailableOpenCascadeBridge implements OpenCascadeNativeBridge {
   ) async => _fail();
   @override
   Future<void> destroyShape(String nativeToken) async => _fail();
+  @override
+  Future<OpenCascadeNativeShape> transformShape(
+    String nativeToken,
+    List<double> matrix, {
+    bool copyGeometry = true,
+  }) async => _fail();
   @override
   Future<OpenCascadeNativeShape> importShape(
     String path,

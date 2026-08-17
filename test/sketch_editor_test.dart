@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flcad_mobile/app/bootstrap/engineering_bootstrap.dart';
 import 'package:flcad_mobile/core/engineering_studio/properties/property_inspector.dart';
 import 'package:flcad_mobile/core/sketch_constraints/integration/constraint_factory.dart';
@@ -85,7 +86,7 @@ void main() {
     editor.edit(SketchToolType.move, [
       point.id,
     ], delta: const SketchVector(1, 1));
-    expect(point.parameters['translation'], [1.0, 1.0, 0.0]);
+    expect(point.parameters['point'], [1.0, 1.0, 0.0]);
     expect(editor.undo(), isTrue);
     expect(editor.redo(), isTrue);
     final bad = editor.preview(SketchToolType.circle, const [
@@ -97,6 +98,125 @@ void main() {
       editor.engine.history.entries.last.action,
       EditorHistoryAction.rollback,
     );
+  });
+
+  test('professional editing tools change real sketch geometry', () {
+    void edit(
+      SketchToolType tool,
+      Iterable<String> ids, {
+      SketchVector? delta,
+      double value = 1,
+      Map<String, dynamic> parameters = const {},
+    }) {
+      editor.preview(tool, const []);
+      editor.edit(
+        tool,
+        ids,
+        delta: delta,
+        value: value,
+        parameters: parameters,
+      );
+    }
+
+    final transformed = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(2, 0),
+    );
+    edit(SketchToolType.move, [
+      transformed.id,
+    ], delta: const SketchVector(1, 2));
+    expect(transformed.parameters['start'], [1.0, 2.0, 0.0]);
+    edit(
+      SketchToolType.rotate,
+      [transformed.id],
+      value: math.pi / 2,
+      parameters: {'center': const SketchVector(1, 2).toJson()},
+    );
+    expect((transformed.parameters['end'] as List)[0], closeTo(1, 1e-9));
+    edit(
+      SketchToolType.scale,
+      [transformed.id],
+      value: 2,
+      parameters: {'center': const SketchVector(1, 2).toJson()},
+    );
+    edit(
+      SketchToolType.mirror,
+      [transformed.id],
+      parameters: {
+        'axisStart': const SketchVector(0, 0).toJson(),
+        'axisEnd': const SketchVector(1, 0).toJson(),
+      },
+    );
+    expect((transformed.parameters['end'] as List)[1], closeTo(-6, 1e-9));
+
+    final offset = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(10, 0),
+    );
+    edit(SketchToolType.offset, [offset.id], value: 2);
+    expect(offset.parameters['start'], [0.0, 2.0, 0.0]);
+    edit(
+      SketchToolType.trim,
+      [offset.id],
+      parameters: {'point': const SketchVector(3, 5).toJson()},
+    );
+    expect(offset.parameters['start'], [3.0, 2.0, 0.0]);
+    edit(
+      SketchToolType.extend,
+      [offset.id],
+      parameters: {'point': const SketchVector(15, 8).toJson()},
+    );
+    expect(offset.parameters['end'], [15.0, 2.0, 0.0]);
+
+    final split = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(10, 0),
+    );
+    final countBeforeSplit = sketch.engine.entities.length;
+    edit(
+      SketchToolType.split,
+      [split.id],
+      parameters: {'point': const SketchVector(4, 3).toJson()},
+    );
+    expect(split.parameters['end'], [4.0, 0.0, 0.0]);
+    expect(sketch.engine.entities.length, countBeforeSplit + 1);
+
+    final joinA = sketch.builders.line.build(
+      const SketchVector(0, 5),
+      const SketchVector(2, 5),
+    );
+    final joinB = sketch.builders.line.build(
+      const SketchVector(2, 5),
+      const SketchVector(5, 5),
+    );
+    edit(SketchToolType.join, [joinA.id, joinB.id]);
+    expect(sketch.entity(joinB.id), isNull);
+    expect(joinA.parameters['end'], [5.0, 5.0, 0.0]);
+
+    final filletA = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(5, 0),
+    );
+    final filletB = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(0, 5),
+    );
+    edit(SketchToolType.fillet, [filletA.id, filletB.id], value: 1);
+    expect(sketch.engine.entities.values.whereType<SketchArc>(), isNotEmpty);
+
+    final chamferA = sketch.builders.line.build(
+      const SketchVector(10, 0),
+      const SketchVector(15, 0),
+    );
+    final chamferB = sketch.builders.line.build(
+      const SketchVector(10, 0),
+      const SketchVector(10, 5),
+    );
+    final countBeforeChamfer = sketch.engine.entities.length;
+    edit(SketchToolType.chamfer, [chamferA.id, chamferB.id], value: 1);
+    expect(sketch.engine.entities.length, countBeforeChamfer + 1);
+    expect(editor.undo(), isTrue);
+    expect(editor.redo(), isTrue);
   });
 
   test('1000 selections groups persistence hover preview and filters', () {

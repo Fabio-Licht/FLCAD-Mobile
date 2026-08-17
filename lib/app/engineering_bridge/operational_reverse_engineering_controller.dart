@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +10,7 @@ import '../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../core/adaptive_surface/models/surface_geometry.dart';
 import '../../core/adaptive_surface/continuity/surface_continuity.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
+import '../../core/geometric_kernel/linear_algebra/matrices.dart';
 import '../../core/geometric_kernel/transforms/transform3.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
 import '../../core/professional_recognition/models/professional_recognition_models.dart';
@@ -75,6 +77,10 @@ enum SketchSurfaceStage {
   surfacePreview,
   surfaceGenerated,
 }
+
+enum ManualTransformMode { move, rotate, scale, align }
+
+enum TransformDisposition { original, workingCopy }
 
 class OperationalReverseEngineeringController extends ChangeNotifier {
   OperationalReverseEngineeringController({
@@ -193,6 +199,174 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return null;
   }
 
+  CadDocumentEntity? get selectedOrActiveSketchSourceSection {
+    final selected = selectedSection;
+    if (selected != null) return selected;
+    final sourceId = activeSketch?.metadata['sourceSectionId'] as String?;
+    if (sourceId == null) return null;
+    final source = runtime.document?.entities[sourceId];
+    return source?.kind == CadDocumentEntityKind.section ? source : null;
+  }
+
+  void selectSketch(String id) {
+    var sketch = sketchApi?.sketches.where((item) => item.id == id).firstOrNull;
+    final persisted = runtime.document?.entities[id]?.data['sketch'];
+    if (sketch == null && persisted is Map) {
+      sketch = Sketch.fromJson(Map<String, dynamic>.from(persisted));
+    }
+    if (sketch == null) throw StateError('Unknown Sketch: $id');
+    activeSketch = sketch;
+    runtime.select({id});
+    notifyListeners();
+  }
+
+  List<String> get g106bCertificationResults =>
+      runtime.read<List<String>>('sketch.g106bCertification') ?? const [];
+
+  Future<void> runG106BCertification() async {
+    final api = sketchApi ?? (throw StateError('SketchEngine is unavailable.'));
+    final editor =
+        editorApi ?? (throw StateError('SketchEditor is unavailable.'));
+    final sketch = api.createSketch(
+      'G-106B Certification',
+      plane: SketchPlane(type: SketchPlaneType.xy),
+      coordinates: const SketchCoordinateSystem(),
+    );
+    sketch.metadata.addAll({
+      'certification': 'G-106B',
+      'associationState': 'detached',
+      'lastUpdatedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+    api.openSketch(sketch.id);
+    activeSketch = sketch;
+    final results = <String>[];
+
+    void edit(
+      SketchToolType tool,
+      Iterable<String> ids, {
+      SketchVector? delta,
+      double value = 1,
+      Map<String, dynamic> parameters = const {},
+    }) {
+      editor.preview(tool, const []);
+      editor.edit(
+        tool,
+        ids,
+        delta: delta,
+        value: value,
+        parameters: parameters,
+      );
+      results.add('${tool.name}: OK');
+    }
+
+    final transformed = api.builders.line.build(
+      const SketchVector(-18, 8),
+      const SketchVector(-12, 8),
+    );
+    edit(SketchToolType.move, [
+      transformed.id,
+    ], delta: const SketchVector(1, 1));
+    edit(
+      SketchToolType.rotate,
+      [transformed.id],
+      value: math.pi / 12,
+      parameters: {'center': const SketchVector(-17, 9).toJson()},
+    );
+    edit(
+      SketchToolType.scale,
+      [transformed.id],
+      value: 1.25,
+      parameters: {'center': const SketchVector(-17, 9).toJson()},
+    );
+    edit(
+      SketchToolType.mirror,
+      [transformed.id],
+      parameters: {
+        'axisStart': const SketchVector(0, 0).toJson(),
+        'axisEnd': const SketchVector(1, 0).toJson(),
+      },
+    );
+
+    final offset = api.builders.circle.build(const SketchVector(-8, 8), 2);
+    edit(SketchToolType.offset, [offset.id], value: 1);
+
+    final trimmed = api.builders.line.build(
+      const SketchVector(0, 8),
+      const SketchVector(8, 8),
+    );
+    edit(
+      SketchToolType.trim,
+      [trimmed.id],
+      parameters: {'point': const SketchVector(2, 10).toJson()},
+    );
+    edit(
+      SketchToolType.extend,
+      [trimmed.id],
+      parameters: {'point': const SketchVector(10, 6).toJson()},
+    );
+
+    final broken = api.builders.line.build(
+      const SketchVector(-18, 2),
+      const SketchVector(-10, 2),
+    );
+    edit(
+      SketchToolType.breakEntity,
+      [broken.id],
+      parameters: {'point': const SketchVector(-14, 3).toJson()},
+    );
+    final split = api.builders.circle.build(const SketchVector(-5, 2), 3);
+    edit(
+      SketchToolType.split,
+      [split.id],
+      parameters: {'point': const SketchVector(-2, 2).toJson()},
+    );
+
+    final joinA = api.builders.line.build(
+      const SketchVector(2, 2),
+      const SketchVector(5, 2),
+    );
+    final joinB = api.builders.line.build(
+      const SketchVector(5, 2),
+      const SketchVector(9, 2),
+    );
+    edit(SketchToolType.join, [joinA.id, joinB.id]);
+
+    final filletA = api.builders.line.build(
+      const SketchVector(12, 1),
+      const SketchVector(18, 1),
+    );
+    final filletB = api.builders.line.build(
+      const SketchVector(12, 1),
+      const SketchVector(12, 7),
+    );
+    edit(SketchToolType.fillet, [filletA.id, filletB.id], value: 1);
+    final chamferA = api.builders.line.build(
+      const SketchVector(12, 10),
+      const SketchVector(18, 10),
+    );
+    final chamferB = api.builders.line.build(
+      const SketchVector(12, 10),
+      const SketchVector(12, 16),
+    );
+    edit(SketchToolType.chamfer, [chamferA.id, chamferB.id], value: 1);
+
+    if (!editor.undo() || !editor.redo()) {
+      throw StateError('G-106B Undo/Redo certification failed.');
+    }
+    results.add('undo: OK');
+    results.add('redo: OK');
+    sketch.metadata.addAll({
+      'entityCount': sketch.entityIds.length,
+      'certificationResults': results,
+      'certifiedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+    runtime.write('sketch.g106bCertification', List<String>.of(results));
+    stage = SketchSurfaceStage.sketchFinished;
+    await _synchronizeSketchScene();
+    runtime.select({sketch.id});
+    notifyListeners();
+  }
+
   Future<void> createSection() async {
     final plane = activeSketchPlane;
     final planeId = activeSketchPlaneId;
@@ -257,6 +431,432 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> createSketchFromSelectedSection({
+    bool convertToSpline = false,
+    double tolerance = 0.05,
+  }) async {
+    final section =
+        selectedOrActiveSketchSourceSection ??
+        (throw StateError('Select a Section before creating a Sketch.'));
+    final api =
+        sketchApi ??
+        (throw StateError('The project SketchEngine is unavailable.'));
+    final definition = Map<String, dynamic>.from(
+      section.data['section'] as Map,
+    );
+    final origin = Vector3.fromJson(definition['origin'] as List);
+    final normal = Vector3.fromJson(definition['normal'] as List).normalized;
+    final xAxis = normal
+        .cross(
+          normal.z.abs() < .9 ? const Vector3(0, 0, 1) : const Vector3(0, 1, 0),
+        )
+        .normalized;
+    final yAxis = normal.cross(xAxis).normalized;
+    SketchVector vector(Vector3 value) =>
+        SketchVector(value.x, value.y, value.z);
+    final chains = _orderedSectionChains(definition['segments'] as List);
+    if (chains.isEmpty) {
+      throw StateError('The selected Section has no connected segments.');
+    }
+    final sketch = api.createSketch(
+      'Sketch ${(api.sketches.length + 1).toString().padLeft(3, '0')}',
+      plane: SketchPlane(
+        type: SketchPlaneType.faceReference,
+        parameters: {
+          'referenceId': definition['planeId'],
+          'sectionId': section.id,
+          'origin': origin.toJson(),
+          'normal': normal.toJson(),
+          'xDirection': xAxis.toJson(),
+        },
+      ),
+      coordinates: SketchCoordinateSystem(
+        origin: vector(origin),
+        xAxis: vector(xAxis),
+        yAxis: vector(yAxis),
+        normal: vector(normal),
+      ),
+    );
+    sketch.metadata.addAll({
+      'sourceSectionId': section.id,
+      'associative': true,
+      'conversion': convertToSpline ? 'spline' : 'polyline',
+      'tolerance': tolerance,
+      'associationState': 'current',
+      'sourceSectionRevision': section.data['revision'] ?? 1,
+      'lastUpdatedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+    api.openSketch(sketch.id);
+    var sourcePoints = 0;
+    var sourceSegments = 0;
+    var maximumError = 0.0;
+    var errorSum = 0.0;
+    var errorSamples = 0;
+    for (final chain in chains) {
+      final local = chain
+          .map((point) => sketch.coordinates.globalToLocal(vector(point)))
+          .toList();
+      sourcePoints += local.length;
+      sourceSegments += math.max(0, local.length - 1);
+      if (convertToSpline) {
+        final fit = _fitSectionSpline(local, tolerance);
+        final spline = api.builders.spline.build(fit.controlPoints);
+        spline.parameters.addAll({
+          'sampledPoints': fit.sampledPoints
+              .map((point) => point.toJson())
+              .toList(),
+          'degree': math.min(3, fit.controlPoints.length - 1),
+          'tolerance': tolerance,
+          'maximumError': fit.maximumError,
+          'meanError': fit.meanError,
+          'sourcePointCount': local.length,
+        });
+        maximumError = math.max(maximumError, fit.maximumError);
+        errorSum += fit.meanError * local.length;
+        errorSamples += local.length;
+      } else {
+        for (var index = 0; index + 1 < local.length; index++) {
+          api.builders.line.build(local[index], local[index + 1]);
+        }
+      }
+    }
+    sketch.metadata.addAll({
+      'pointCount': sourcePoints,
+      'segmentCount': sourceSegments,
+      'entityCount': sketch.entityIds.length,
+      'maximumError': maximumError,
+      'meanError': errorSamples == 0 ? 0.0 : errorSum / errorSamples,
+      'fittingParameters': {
+        'method': convertToSpline
+            ? 'centripetalCatmullRomAdaptive'
+            : 'sectionPolyline',
+        'tolerance': tolerance,
+      },
+    });
+    activeSketch = sketch;
+    stage = SketchSurfaceStage.sketchFinished;
+    await _synchronizeSketchScene();
+    runtime.select({sketch.id});
+    notifyListeners();
+  }
+
+  _SectionSplineFit _fitSectionSpline(
+    List<SketchVector> source,
+    double tolerance,
+  ) {
+    if (source.length < 2) {
+      throw StateError('A spline requires at least two Section points.');
+    }
+    var epsilon = math.max(tolerance, 1e-9);
+    var controls = source;
+    var samples = source;
+    var errors = const <double>[];
+    for (var attempt = 0; attempt < 10; attempt++) {
+      controls = _simplifySketchPoints(source, epsilon);
+      if (controls.length < 4 && source.length >= 4) {
+        controls = [
+          source.first,
+          source[source.length ~/ 3],
+          source[source.length * 2 ~/ 3],
+          source.last,
+        ];
+      }
+      samples = _sampleCentripetalSpline(controls);
+      errors = source
+          .map((point) => _distanceToSketchPolyline(point, samples))
+          .toList();
+      if (errors.isEmpty || errors.reduce(math.max) <= tolerance) break;
+      epsilon *= .5;
+    }
+    final maximum = errors.isEmpty ? 0.0 : errors.reduce(math.max);
+    final mean = errors.isEmpty
+        ? 0.0
+        : errors.reduce((a, b) => a + b) / errors.length;
+    return _SectionSplineFit(controls, samples, maximum, mean);
+  }
+
+  List<SketchVector> _simplifySketchPoints(
+    List<SketchVector> points,
+    double tolerance,
+  ) {
+    if (points.length <= 2) return List.of(points);
+    var maximum = 0.0, split = 0;
+    for (var index = 1; index + 1 < points.length; index++) {
+      final distance = _distanceToSketchSegment(
+        points[index],
+        points.first,
+        points.last,
+      );
+      if (distance > maximum) {
+        maximum = distance;
+        split = index;
+      }
+    }
+    if (maximum <= tolerance) return [points.first, points.last];
+    final left = _simplifySketchPoints(points.sublist(0, split + 1), tolerance);
+    final right = _simplifySketchPoints(points.sublist(split), tolerance);
+    return [...left.take(left.length - 1), ...right];
+  }
+
+  List<SketchVector> _sampleCentripetalSpline(List<SketchVector> controls) {
+    if (controls.length < 3) return List.of(controls);
+    final output = <SketchVector>[controls.first];
+    for (var index = 0; index + 1 < controls.length; index++) {
+      final p0 = controls[math.max(0, index - 1)];
+      final p1 = controls[index];
+      final p2 = controls[index + 1];
+      final p3 = controls[math.min(controls.length - 1, index + 2)];
+      for (var step = 1; step <= 16; step++) {
+        final t = step / 16, t2 = t * t, t3 = t2 * t;
+        SketchVector axis(double Function(SketchVector) value) => SketchVector(
+          .5 *
+              ((2 * value(p1)) +
+                  (-value(p0) + value(p2)) * t +
+                  (2 * value(p0) - 5 * value(p1) + 4 * value(p2) - value(p3)) *
+                      t2 +
+                  (-value(p0) + 3 * value(p1) - 3 * value(p2) + value(p3)) *
+                      t3),
+          0,
+        );
+        final x = axis((point) => point.x).x;
+        final y = axis((point) => point.y).x;
+        final z = axis((point) => point.z).x;
+        output.add(SketchVector(x, y, z));
+      }
+    }
+    return output;
+  }
+
+  double _distanceToSketchPolyline(
+    SketchVector point,
+    List<SketchVector> polyline,
+  ) {
+    var minimum = double.infinity;
+    for (var index = 0; index + 1 < polyline.length; index++) {
+      minimum = math.min(
+        minimum,
+        _distanceToSketchSegment(point, polyline[index], polyline[index + 1]),
+      );
+    }
+    return minimum.isFinite ? minimum : 0;
+  }
+
+  double _distanceToSketchSegment(
+    SketchVector point,
+    SketchVector start,
+    SketchVector end,
+  ) {
+    final segment = end - start;
+    final lengthSquared = segment.dot(segment);
+    if (lengthSquared <= 1e-24) {
+      final delta = point - start;
+      return math.sqrt(delta.dot(delta));
+    }
+    final t = ((point - start).dot(segment) / lengthSquared)
+        .clamp(0.0, 1.0)
+        .toDouble();
+    final delta = point - (start + segment.scale(t));
+    return math.sqrt(delta.dot(delta));
+  }
+
+  List<List<Vector3>> _orderedSectionChains(List<dynamic> rawSegments) {
+    final segments = rawSegments
+        .map(
+          (raw) => (raw as List)
+              .map((point) => Vector3.fromJson(point as List))
+              .toList(),
+        )
+        .where((segment) => segment.length == 2)
+        .toList();
+    if (segments.isEmpty) return const [];
+    final scale = segments
+        .expand((segment) => segment)
+        .fold<double>(
+          1,
+          (value, point) => math.max(
+            value,
+            math.max(point.x.abs(), math.max(point.y.abs(), point.z.abs())),
+          ),
+        );
+    final tolerance = math.max(1e-9, scale * 1e-9);
+    String key(Vector3 point) =>
+        '${(point.x / tolerance).round()}:${(point.y / tolerance).round()}:${(point.z / tolerance).round()}';
+    final remaining = List<List<Vector3>>.from(segments);
+    final output = <List<Vector3>>[];
+    while (remaining.isNotEmpty) {
+      final first = remaining.removeLast();
+      final chain = <Vector3>[first[0], first[1]];
+      var extended = true;
+      while (extended) {
+        extended = false;
+        for (var index = 0; index < remaining.length; index++) {
+          final candidate = remaining[index];
+          if (key(candidate[0]) == key(chain.last)) {
+            chain.add(candidate[1]);
+          } else if (key(candidate[1]) == key(chain.last)) {
+            chain.add(candidate[0]);
+          } else {
+            continue;
+          }
+          remaining.removeAt(index);
+          extended = true;
+          break;
+        }
+      }
+      output.add(chain);
+    }
+    return output;
+  }
+
+  Future<void> updateActiveSketchFromSourceSection() async {
+    final sketch =
+        activeSketch ??
+        (throw StateError('Select an associated Sketch first.'));
+    final sourceId = sketch.metadata['sourceSectionId'] as String?;
+    if (sourceId == null) throw StateError('The Sketch is not associative.');
+    final source = runtime.document?.entities[sourceId];
+    if (source?.kind != CadDocumentEntityKind.section) {
+      throw StateError('The source Section is unavailable.');
+    }
+    final api = sketchApi!;
+    api.openSketch(sketch.id);
+    for (final id in List<String>.of(sketch.entityIds)) {
+      api.deleteEntity(id);
+    }
+    final definition = Map<String, dynamic>.from(
+      source!.data['section'] as Map,
+    );
+    final chains = _orderedSectionChains(definition['segments'] as List);
+    final spline = sketch.metadata['conversion'] == 'spline';
+    final tolerance =
+        (sketch.metadata['tolerance'] as num?)?.toDouble() ?? 0.05;
+    var points = 0, segments = 0, samples = 0;
+    var maximumError = 0.0, weightedError = 0.0;
+    for (final chain in chains) {
+      final local = chain
+          .map(
+            (point) => sketch.coordinates.globalToLocal(
+              SketchVector(point.x, point.y, point.z),
+            ),
+          )
+          .toList();
+      points += local.length;
+      segments += math.max(0, local.length - 1);
+      if (spline) {
+        final fit = _fitSectionSpline(local, tolerance);
+        final entity = api.builders.spline.build(fit.controlPoints);
+        entity.parameters.addAll({
+          'sampledPoints': fit.sampledPoints
+              .map((point) => point.toJson())
+              .toList(),
+          'degree': math.min(3, fit.controlPoints.length - 1),
+          'tolerance': tolerance,
+          'maximumError': fit.maximumError,
+          'meanError': fit.meanError,
+          'sourcePointCount': local.length,
+        });
+        maximumError = math.max(maximumError, fit.maximumError);
+        weightedError += fit.meanError * local.length;
+        samples += local.length;
+      } else {
+        for (var index = 0; index + 1 < local.length; index++) {
+          api.builders.line.build(local[index], local[index + 1]);
+        }
+      }
+    }
+    sketch.version++;
+    sketch.metadata.addAll({
+      'associationState': 'current',
+      'sourceSectionRevision': source.data['revision'] ?? 1,
+      'lastUpdatedAt': DateTime.now().toUtc().toIso8601String(),
+      'pointCount': points,
+      'segmentCount': segments,
+      'entityCount': sketch.entityIds.length,
+      'maximumError': maximumError,
+      'meanError': samples == 0 ? 0.0 : weightedError / samples,
+    });
+    await _synchronizeSketchScene();
+    runtime.select({sketch.id});
+    notifyListeners();
+  }
+
+  Future<void> toggleSourceSectionVisibility() async {
+    final sketch = activeSketch;
+    final sourceId = sketch?.metadata['sourceSectionId'] as String?;
+    final section =
+        selectedSection ??
+        (sourceId == null ? null : runtime.document?.entities[sourceId]);
+    if (section == null) throw StateError('No source Section is available.');
+    final visible = section.data['sceneVisible'] as bool? ?? true;
+    await sections.visibility(section.id, !visible);
+    notifyListeners();
+  }
+
+  Future<void> toggleActiveSketchVisibility() async {
+    final sketch = activeSketch ?? (throw StateError('No active Sketch.'));
+    final visible = sketch.metadata['visible'] as bool? ?? true;
+    sketch.metadata['visible'] = !visible;
+    final ids = [sketch.id, ...sketch.entityIds];
+    for (final id in ids) {
+      await runtime.setEntityVisibility(id, !visible);
+    }
+    await sketchApi?.persist();
+    notifyListeners();
+  }
+
+  void previewBestFitSpline(double tolerance) {
+    final section =
+        selectedOrActiveSketchSourceSection ??
+        (throw StateError('Select a Section before previewing a Spline.'));
+    final definition = Map<String, dynamic>.from(
+      section.data['section'] as Map,
+    );
+    final origin = Vector3.fromJson(definition['origin'] as List);
+    final normal = Vector3.fromJson(definition['normal'] as List).normalized;
+    final xAxis = normal
+        .cross(
+          normal.z.abs() < .9 ? const Vector3(0, 0, 1) : const Vector3(0, 1, 0),
+        )
+        .normalized;
+    final yAxis = normal.cross(xAxis).normalized;
+    final points = <List<double>>[];
+    for (final chain in _orderedSectionChains(definition['segments'] as List)) {
+      final local = chain
+          .map(
+            (point) => SketchVector(
+              (point - origin).dot(xAxis),
+              (point - origin).dot(yAxis),
+            ),
+          )
+          .toList();
+      final fit = _fitSectionSpline(local, tolerance);
+      points.addAll(
+        fit.sampledPoints.map((point) {
+          final global = origin + xAxis * point.x + yAxis * point.y;
+          return global.toJson();
+        }),
+      );
+    }
+    runtime.showTransient(
+      CadSceneEntity(
+        id: 'section-spline-preview',
+        kind: CadSceneEntityKind.preview,
+        transparent: true,
+        geometry: {
+          'points': points,
+          'displayColor': 'previewOrange',
+          'strokeWidth': 3.0,
+        },
+      ),
+    );
+    notifyListeners();
+  }
+
+  void clearBestFitSplinePreview() {
+    runtime.hideTransient('section-spline-preview');
+    notifyListeners();
+  }
+
   String? get alignmentTarget => runtime.read('alignment.target');
   set alignmentTarget(String? value) =>
       runtime.write('alignment.target', value);
@@ -265,6 +865,356 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.write('alignment.transform', value);
 
   bool get canAlign => activeReference?.geometry is PlaneGeometry;
+
+  ManualTransformMode? get manualTransformMode =>
+      runtime.read('transform.mode');
+  Transform3? get manualTransformPreview => runtime.read('transform.preview');
+  Set<String> get manualTransformTargets =>
+      runtime.read<Set<String>>('transform.targets') ?? const {};
+  TransformDisposition? get transformDisposition =>
+      runtime.read('transform.disposition');
+
+  void chooseTransformDisposition(TransformDisposition? value) {
+    cancelManualTransform(notify: false);
+    runtime.write('transform.disposition', value);
+    notifyListeners();
+  }
+
+  bool get canTransformSelection => runtime.selection.any((id) {
+    final entity = runtime.document?.entities[id];
+    return entity != null &&
+        entity.data['group'] != 'World Coordinate System' &&
+        entity.data['deleted'] != true;
+  });
+
+  Future<void> previewManualTransform(
+    ManualTransformMode mode,
+    Transform3 transform,
+  ) async {
+    cancelManualTransform(notify: false);
+    if (transformDisposition == null) {
+      throw StateError(
+        'Choose Transform Original or Create Working Copy before preview.',
+      );
+    }
+    final document =
+        runtime.document ??
+        (throw StateError('Open a project before transforming geometry.'));
+    final selected = _expandedTransformTargets(runtime.selection, document);
+    if (selected.isEmpty) {
+      throw StateError('Select an entity in the viewport or Explorer first.');
+    }
+    for (final id in selected) {
+      final entity =
+          document.entities[id] ??
+          (throw StateError('Unknown document entity: $id'));
+      if (entity.data['group'] == 'World Coordinate System') {
+        throw StateError('World Coordinate System entities are protected.');
+      }
+      final scene = runtime.scene.find(id);
+      if (scene == null) continue;
+      if (entity.shape != null) {
+        final preview = await runtime.previewNativeShapeTransform(
+          entity.shape!,
+          transform.matrix,
+        );
+        await runtime.showTransientShape(
+          CadSceneEntity(
+            id: 'transform-preview-$id',
+            kind: CadSceneEntityKind.preview,
+            transparent: true,
+            geometry: const {'displayColor': 'previewOrange'},
+          ),
+          preview,
+        );
+        continue;
+      }
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'transform-preview-$id',
+          kind: scene.kind == CadSceneEntityKind.mesh
+              ? CadSceneEntityKind.preview
+              : scene.kind,
+          transparent: true,
+          geometry: runtime.transformedSceneGeometry(entity, transform.matrix),
+        ),
+      );
+    }
+    final pivot = _selectionPivot(selected, document);
+    const length = 25.0;
+    for (final axis in const [
+      ('x', Vector3(1, 0, 0)),
+      ('y', Vector3(0, 1, 0)),
+      ('z', Vector3(0, 0, 1)),
+    ]) {
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'transform-gizmo-${axis.$1}',
+          kind: CadSceneEntityKind.axis,
+          geometry: {
+            'origin': pivot.toJson(),
+            'direction': axis.$2.toJson(),
+            'visualLength': length,
+            'axisColor': axis.$1,
+          },
+        ),
+      );
+    }
+    runtime.write('transform.mode', mode);
+    runtime.write('transform.preview', transform);
+    runtime.write('transform.targets', Set<String>.from(selected));
+    notifyListeners();
+  }
+
+  Future<void> previewMove(Vector3 delta) => previewManualTransform(
+    ManualTransformMode.move,
+    Transform3.translation(delta),
+  );
+
+  Future<void> previewRotate(Vector3 axis, double degrees) {
+    final pivot = _selectionPivot(
+      runtime.selection,
+      runtime.document ?? (throw StateError('Open a project first.')),
+    );
+    final rotation = Transform3.rotation(
+      Quaternion.axisAngle(axis, degrees * math.pi / 180),
+    );
+    return previewManualTransform(
+      ManualTransformMode.rotate,
+      Transform3.translation(
+        pivot,
+      ).compose(rotation).compose(Transform3.translation(-pivot)),
+    );
+  }
+
+  Future<void> previewScale(Vector3 factors) {
+    if (factors.x == 0 || factors.y == 0 || factors.z == 0) {
+      throw ArgumentError('Scale factors must be non-zero.');
+    }
+    final pivot = _selectionPivot(
+      runtime.selection,
+      runtime.document ?? (throw StateError('Open a project first.')),
+    );
+    return previewManualTransform(
+      ManualTransformMode.scale,
+      Transform3.translation(pivot)
+          .compose(Transform3.scale(factors))
+          .compose(Transform3.translation(-pivot)),
+    );
+  }
+
+  Future<void> previewTransformByReference(String target) {
+    final document =
+        runtime.document ?? (throw StateError('Open a project first.'));
+    final references = runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where((entity) => entity.kind == CadDocumentEntityKind.reference)
+        .toList();
+    if (references.isEmpty) {
+      throw StateError('Select a point, plane, axis, or coordinate system.');
+    }
+    final geometry = references.first.data['sceneGeometry'];
+    if (geometry is! Map) {
+      throw StateError('Reference geometry is unavailable.');
+    }
+    final origin = _vector(geometry['origin'] ?? geometry['position']);
+    Transform3 transform;
+    if (target == 'Origin') {
+      transform = Transform3.translation(-origin);
+    } else {
+      final source = _vector(geometry['normal'] ?? geometry['direction']);
+      final destination = switch (target) {
+        'XY' || 'Z' => const Vector3(0, 0, 1),
+        'XZ' || 'Y' => const Vector3(0, 1, 0),
+        'YZ' || 'X' => const Vector3(1, 0, 0),
+        _ => throw StateError('Unknown reference target: $target'),
+      };
+      transform = Transform3.align(source, destination);
+    }
+    return previewManualTransform(ManualTransformMode.align, transform);
+  }
+
+  Future<void> applyManualTransform() async {
+    final preview = manualTransformPreview;
+    final targets = manualTransformTargets;
+    if (preview == null || targets.isEmpty) {
+      throw StateError('Create a transform preview before applying it.');
+    }
+    await runtime.applyEntityTransform(
+      targets,
+      preview.matrix,
+      command: 'transform.${manualTransformMode!.name}',
+      createCopy: transformDisposition == TransformDisposition.workingCopy,
+    );
+    cancelManualTransform(notify: false);
+    notifyListeners();
+  }
+
+  Future<void> resetSelectedTransform() async {
+    final document =
+        runtime.document ?? (throw StateError('Open a project first.'));
+    for (final id in runtime.selection) {
+      final entity = document.entities[id];
+      final raw = entity?.data['transformMatrix'];
+      if (raw is! List || raw.length != 16) continue;
+      final matrix = Matrix4(raw.cast<num>().map((v) => v.toDouble()).toList());
+      await runtime.applyEntityTransform(
+        {id},
+        matrix.inverse(),
+        command: 'transform.reset',
+      );
+    }
+  }
+
+  Future<void> undoManualTransform() async {
+    cancelManualTransform(notify: false);
+    await runtime.undoDocument();
+    notifyListeners();
+  }
+
+  Future<void> redoManualTransform() async {
+    cancelManualTransform(notify: false);
+    await runtime.redoDocument();
+    notifyListeners();
+  }
+
+  void cancelManualTransform({bool notify = true}) {
+    for (final id in manualTransformTargets) {
+      runtime.hideTransient('transform-preview-$id');
+    }
+    for (final axis in const ['x', 'y', 'z']) {
+      runtime.hideTransient('transform-gizmo-$axis');
+    }
+    runtime.write<ManualTransformMode>('transform.mode', null);
+    runtime.write<Transform3>('transform.preview', null);
+    runtime.write<Set<String>>('transform.targets', null);
+    if (notify) notifyListeners();
+  }
+
+  List<CadDocumentEntity> deletionImpact(String entityId) =>
+      runtime.dependencyImpact(entityId);
+
+  void previewDeletion(String entityId, {required bool includeDependencies}) {
+    clearDeletionPreview();
+    final document =
+        runtime.document ??
+        (throw StateError('Open a project before deleting entities.'));
+    final ids = <String>{
+      entityId,
+      if (includeDependencies)
+        ...runtime.dependencyImpact(entityId).map((item) => item.id),
+    };
+    runtime.write('delete.previewIds', ids);
+    for (final id in ids) {
+      final entity = document.entities[id];
+      final scene = runtime.scene.find(id);
+      if (entity == null || scene == null) continue;
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'delete-preview-$id',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            ...scene.geometry,
+            'displayColor': 'destructiveRed',
+            'strokeWidth': 4.0,
+          },
+        ),
+      );
+    }
+    notifyListeners();
+  }
+
+  void clearDeletionPreview() {
+    final ids = runtime.read<Set<String>>('delete.previewIds') ?? const {};
+    for (final id in ids) {
+      runtime.hideTransient('delete-preview-$id');
+    }
+    runtime.write<Set<String>>('delete.previewIds', null);
+  }
+
+  Future<void> deleteToRecycleBin(
+    String entityId, {
+    required bool includeDependencies,
+  }) async {
+    clearDeletionPreview();
+    await runtime.moveToRecycleBin(
+      entityId,
+      includeDependencies: includeDependencies,
+    );
+    notifyListeners();
+  }
+
+  Future<void> restoreDeleted(String entityId) async {
+    await runtime.restoreFromRecycleBin(entityId);
+    notifyListeners();
+  }
+
+  Future<void> permanentlyDelete(String entityId) async {
+    await runtime.permanentlyDelete(entityId);
+    notifyListeners();
+  }
+
+  Vector3 _selectionPivot(Set<String> ids, CadDocument document) {
+    final points = <Vector3>[];
+    for (final id in ids) {
+      final geometry = document.entities[id]?.data['sceneGeometry'];
+      if (geometry is! Map) continue;
+      final bounds = geometry['bounds'];
+      if (bounds is Map) {
+        final minimum = _vector(bounds['min']);
+        final maximum = _vector(bounds['max']);
+        points.add((minimum + maximum) * .5);
+      } else if (geometry['origin'] is List || geometry['position'] is List) {
+        points.add(_vector(geometry['origin'] ?? geometry['position']));
+      } else if (geometry['points'] is List &&
+          (geometry['points'] as List).isNotEmpty) {
+        points.add(_vector((geometry['points'] as List).first));
+      }
+    }
+    if (points.isEmpty) return Vector3.zero;
+    return points.reduce((a, b) => a + b) / points.length.toDouble();
+  }
+
+  Set<String> _expandedTransformTargets(
+    Set<String> selected,
+    CadDocument document,
+  ) {
+    final result = Set<String>.from(selected);
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entity in document.entities.values) {
+        final sourceSection = entity.data['sourceSectionId'];
+        final section = entity.data['section'];
+        final meshId = section is Map ? section['meshId'] : null;
+        final ownerSketch = document.entities.values.any((parent) {
+          final ids = parent.data['geometricEntities'];
+          return result.contains(parent.id) &&
+              ids is List &&
+              ids.contains(entity.id);
+        });
+        if ((sourceSection is String && result.contains(sourceSection)) ||
+            (meshId is String && result.contains(meshId)) ||
+            ownerSketch) {
+          changed = result.add(entity.id) || changed;
+        }
+      }
+    }
+    return result;
+  }
+
+  Vector3 _vector(Object? value) {
+    if (value is! List || value.length < 3) {
+      throw StateError('Reference does not contain a valid 3D vector.');
+    }
+    return Vector3(
+      (value[0] as num).toDouble(),
+      (value[1] as num).toDouble(),
+      (value[2] as num).toDouble(),
+    );
+  }
 
   void previewAlignment(String target) {
     final plane = activeReference?.geometry;
@@ -485,7 +1435,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         )
         .lastOrNull;
     if (sketch.sketches.isNotEmpty) {
-      activeSketch = sketch.sketches.first;
+      activeSketch = sketch.sketches.last;
       await _synchronizeSketchScene();
     }
     if (activeSurface != null) {
@@ -1664,9 +2614,17 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Future<void> _synchronizeSketchScene() async {
     final document = runtime.document;
     if (document == null) return;
+    final allSketches = sketchApi?.sketches ?? const <Sketch>[];
+    final allSketchEntities = <SketchEntity>[];
+    for (final sketch in allSketches) {
+      for (final id in sketch.entityIds) {
+        final entity = sketchApi?.entity(id);
+        if (entity != null) allSketchEntities.add(entity);
+      }
+    }
     final currentIds = {
-      ...sketchEntities.map((item) => item.id),
-      if (activeSketch != null) activeSketch!.id,
+      ...allSketchEntities.map((item) => item.id),
+      ...allSketches.map((item) => item.id),
     };
     final constraintIds = constraints.map((item) => item.id).toSet();
     final stale = document.entities.values
@@ -1681,13 +2639,36 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       command: 'sketch.synchronize',
       remove: [...stale, ...staleConstraints],
       upsert: [
-        if (activeSketch != null)
-          CadDocumentEntity(
-            id: activeSketch!.id,
+        ...allSketches.map(
+          (sketch) => CadDocumentEntity(
+            id: sketch.id,
             kind: CadDocumentEntityKind.sketch,
-            data: {'sketch': activeSketch!.toJson()},
+            data: {
+              'name': sketch.name,
+              'group': 'Sketches',
+              'sceneKind': 'sketch',
+              'sceneVisible': sketch.metadata['visible'] as bool? ?? true,
+              'revision': sketch.version,
+              'sourceSectionId': sketch.metadata['sourceSectionId'],
+              'associationState':
+                  sketch.metadata['associationState'] ?? 'detached',
+              'entityCount': sketch.entityIds.length,
+              'constraintCount': constraints.length,
+              'pointCount': sketch.metadata['pointCount'] ?? 0,
+              'segmentCount': sketch.metadata['segmentCount'] ?? 0,
+              'maximumError': sketch.metadata['maximumError'] ?? 0.0,
+              'meanError': sketch.metadata['meanError'] ?? 0.0,
+              'tolerance': sketch.metadata['tolerance'] ?? 0.0,
+              'lastUpdatedAt': sketch.metadata['lastUpdatedAt'],
+              'sketchState': stage.name,
+              'localCoordinateSystem': sketch.coordinates.toJson(),
+              'geometricEntities': sketch.entityIds,
+              'constraints': constraints.map((item) => item.id).toList(),
+              'sketch': sketch.toJson(),
+            },
           ),
-        ...sketchEntities.map((value) {
+        ),
+        ...allSketchEntities.map((value) {
           final visual = _sketchScene.adapt(value);
           return CadDocumentEntity(
             id: value.id,
@@ -1713,4 +2694,17 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     await constraintApi?.persist();
     runtime.select(selectedSketchEntityIds);
   }
+}
+
+class _SectionSplineFit {
+  const _SectionSplineFit(
+    this.controlPoints,
+    this.sampledPoints,
+    this.maximumError,
+    this.meanError,
+  );
+  final List<SketchVector> controlPoints;
+  final List<SketchVector> sampledPoints;
+  final double maximumError;
+  final double meanError;
 }

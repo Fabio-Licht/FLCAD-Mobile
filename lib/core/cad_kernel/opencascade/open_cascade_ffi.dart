@@ -396,6 +396,35 @@ typedef _SurfaceOperationDart =
       int,
     );
 
+typedef _TransformShapeNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Int32,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _TransformShapeDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
+
 class OpenCascadeFFI
     implements
         OpenCascadeNativeBridge,
@@ -615,6 +644,50 @@ class OpenCascadeFFI
     } finally {
       calloc.free(token);
       calloc.free(error);
+    }
+  }
+
+  @override
+  Future<OpenCascadeNativeShape> transformShape(
+    String nativeToken,
+    List<double> matrix, {
+    bool copyGeometry = true,
+  }) async {
+    if (matrix.length != 16 || matrix.any((value) => !value.isFinite)) {
+      throw ArgumentError('Shape transform requires a finite 4x4 matrix.');
+    }
+    final source = nativeToken.toNativeUtf8();
+    final values = calloc<Double>(16);
+    final type = calloc<Uint8>(64).cast<Utf8>();
+    final buffers = _buffers();
+    final fn = library
+        .lookupFunction<_TransformShapeNative, _TransformShapeDart>(
+          'flcad_occ_transform_shape',
+        );
+    try {
+      for (var index = 0; index < 16; index++) {
+        values[index] = matrix[index];
+      }
+      final ok = fn(
+        source,
+        values,
+        copyGeometry ? 1 : 0,
+        buffers.token,
+        256,
+        buffers.fingerprint,
+        256,
+        type,
+        64,
+        buffers.error,
+        4096,
+      );
+      if (ok != 1) throw StateError(buffers.error.toDartString());
+      return _shape(buffers, CADShapeType.values.byName(type.toDartString()));
+    } finally {
+      calloc.free(source);
+      calloc.free(values);
+      calloc.free(type);
+      buffers.dispose();
     }
   }
 

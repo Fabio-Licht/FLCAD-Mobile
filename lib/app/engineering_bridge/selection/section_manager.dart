@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import '../../../core/cad_document/cad_document.dart';
 import '../../../core/geometric_kernel/geometry/primitives.dart';
 import '../../../core/geometric_kernel/geometry/vectors.dart';
+import '../../../core/sketch_engine/api/sketch_engine_api.dart';
 import '../../runtime/cad_runtime.dart';
 import 'mesh_bvh.dart';
 import 'mesh_section_kernel.dart';
@@ -105,8 +106,45 @@ class SectionManager {
       result: result,
       absoluteTolerance: absolute,
       relativeTolerance: relative,
+      revision: ((source.data['revision'] as num?)?.toInt() ?? 1) + 1,
     );
-    await runtime.mutate(command: command, upsert: [replacement]);
+    final staleSketches = <CadDocumentEntity>[];
+    final sketchApi = runtime.read<SketchEngineApi>('sketch.api');
+    for (final entity
+        in runtime.document?.entities.values ?? const <CadDocumentEntity>[]) {
+      if (entity.kind != CadDocumentEntityKind.sketch ||
+          entity.data['sourceSectionId'] != source.id ||
+          entity.data['sketch'] is! Map) {
+        continue;
+      }
+      final sketchJson = Map<String, dynamic>.from(
+        entity.data['sketch'] as Map,
+      );
+      final metadata = Map<String, dynamic>.from(sketchJson['metadata'] as Map);
+      metadata['associationState'] = 'outdated';
+      metadata['outdatedSince'] = DateTime.now().toUtc().toIso8601String();
+      sketchJson['metadata'] = metadata;
+      staleSketches.add(
+        CadDocumentEntity(
+          id: entity.id,
+          kind: entity.kind,
+          data: {
+            ...entity.data,
+            'associationState': 'outdated',
+            'sketch': sketchJson,
+          },
+        ),
+      );
+      final sketch = sketchApi?.sketches
+          .where((item) => item.id == entity.id)
+          .firstOrNull;
+      sketch?.metadata.addAll(metadata);
+    }
+    await runtime.mutate(
+      command: command,
+      upsert: [replacement, ...staleSketches],
+    );
+    await sketchApi?.persist();
     return replacement;
   }
 
@@ -163,6 +201,7 @@ class SectionManager {
     required MeshSectionResult result,
     required double absoluteTolerance,
     required double relativeTolerance,
+    int revision = 1,
   }) {
     final segments = result.segments
         .map((segment) => [segment.a.toJson(), segment.b.toJson()])
@@ -177,6 +216,7 @@ class SectionManager {
       kind: CadDocumentEntityKind.section,
       data: {
         'name': name,
+        'revision': revision,
         'sceneKind': 'curve',
         'sceneVisible': true,
         'sceneGeometry': {

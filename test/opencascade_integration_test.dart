@@ -313,6 +313,16 @@ class _RecordingBridge
   Future<void> destroyShape(String nativeToken) async =>
       destroyed.add(nativeToken);
   @override
+  Future<OpenCascadeNativeShape> transformShape(
+    String nativeToken,
+    List<double> matrix, {
+    bool copyGeometry = true,
+  }) async => OpenCascadeNativeShape(
+    token: '$nativeToken-transformed',
+    type: CADShapeType.solid,
+    fingerprint: 'sha256:transformed',
+  );
+  @override
   Future<OpenCascadeNativeShape> importShape(
     String path,
     KernelExchangeFormat format, {

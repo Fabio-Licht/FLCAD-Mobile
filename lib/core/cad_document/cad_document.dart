@@ -2,6 +2,7 @@ import '../cad_kernel/io/kernel_io_models.dart';
 import '../cad_kernel/models/kernel_models.dart';
 
 enum CadDocumentEntityKind {
+  collection,
   import,
   reference,
   section,

@@ -14,6 +14,12 @@ class SketchSceneAdapter {
         geometry: {
           'points': _points(entity).map((point) => point.toJson()).toList(),
           'entityType': entity.type.name,
+          'displayColor': preview
+              ? 'previewOrange'
+              : entity is SketchSpline
+              ? 'splineMagenta'
+              : 'sketchGreen',
+          'strokeWidth': entity is SketchSpline ? 2.5 : 2.0,
           'construction': entity.construction,
           'reference': entity.reference,
         },
@@ -39,7 +45,10 @@ class SketchSceneAdapter {
       (entity.parameters['radiusY'] as num).toDouble(),
     ),
     SketchSpline() =>
-      (entity.parameters['points'] as List).map(SketchVector.fromJson).toList(),
+      ((entity.parameters['sampledPoints'] ?? entity.parameters['points'])
+              as List)
+          .map(SketchVector.fromJson)
+          .toList(),
     _ => const [],
   };
 

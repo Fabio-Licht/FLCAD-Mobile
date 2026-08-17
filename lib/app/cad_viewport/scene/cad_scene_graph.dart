@@ -48,7 +48,9 @@ class CadSceneGraph extends ChangeNotifier {
   }
 
   void remove(String id) {
-    if (_entities.remove(id) != null) notifyListeners();
+    if (_entities.remove(id) != null) {
+      notifyListeners();
+    }
   }
 
   void clear() {

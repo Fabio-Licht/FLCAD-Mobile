@@ -7,8 +7,15 @@ import '../../../core/professional_surface/models/professional_surface_models.da
 import '../operational_reverse_engineering_controller.dart';
 
 class SketchSurfaceWorkspacePanel extends StatelessWidget {
-  const SketchSurfaceWorkspacePanel({super.key, required this.controller});
+  const SketchSurfaceWorkspacePanel({
+    super.key,
+    required this.controller,
+    this.onOpenSketch,
+    this.onFinishSketch,
+  });
   final OperationalReverseEngineeringController controller;
+  final Future<void> Function()? onOpenSketch;
+  final Future<void> Function()? onFinishSketch;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -57,9 +64,11 @@ class SketchSurfaceWorkspacePanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           FilledButton.icon(
-            onPressed: controller.busy ? null : controller.openSketch,
+            onPressed: controller.busy
+                ? null
+                : (onOpenSketch ?? controller.openSketch),
             icon: const Icon(Icons.edit_note),
-            label: const Text('Open Sketch'),
+            label: const Text('New Sketch'),
           ),
         ],
         if (controller.stage == SketchSurfaceStage.sketchActive) ...[
@@ -135,7 +144,7 @@ class SketchSurfaceWorkspacePanel extends StatelessWidget {
           FilledButton.icon(
             onPressed: controller.sketchEntities.isEmpty || controller.busy
                 ? null
-                : controller.finishSketch,
+                : (onFinishSketch ?? controller.finishSketch),
             icon: const Icon(Icons.done),
             label: const Text('Finish Sketch'),
           ),

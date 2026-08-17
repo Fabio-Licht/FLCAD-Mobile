@@ -90,11 +90,27 @@ int main() {
                         error, sizeof(error)) == 1);
   assert(vertices > 0 && triangles > 0);
   assert(std::filesystem::file_size(stl_path) > 84);
+  const char* unicode_stl_path = u8"flcad_peça.stl";
+  std::filesystem::copy_file(
+      stl_path, std::filesystem::u8path(unicode_stl_path),
+      std::filesystem::copy_options::overwrite_existing);
+  char mesh_token[256] = {}, mesh_fingerprint[256] = {};
+  int mesh_vertices = 0, mesh_triangles = 0, mesh_degenerates = 0,
+      mesh_normals = 0;
+  double mesh_bounds[6] = {};
+  assert(flcad_occ_import_stl(
+             unicode_stl_path, mesh_token, sizeof(mesh_token),
+             mesh_fingerprint, sizeof(mesh_fingerprint), &mesh_vertices,
+             &mesh_triangles, &mesh_degenerates, mesh_bounds, &mesh_normals,
+             error, sizeof(error)) == 1);
+  assert(mesh_vertices > 0 && mesh_triangles > 0);
+  assert(flcad_occ_destroy_mesh(mesh_token, error, sizeof(error)) == 1);
   assert(flcad_occ_destroy_shape(exported, error, sizeof(error)) == 1);
   assert(flcad_occ_destroy_shape(roundtrip, error, sizeof(error)) == 1);
   std::filesystem::remove(step_path);
   std::filesystem::remove(iges_path);
   std::filesystem::remove(stl_path);
+  std::filesystem::remove(std::filesystem::u8path(unicode_stl_path));
   for (int i = 0; i < 1000; ++i) {
     assert(flcad_occ_create_vertex(i, i, i, token, sizeof(token), fingerprint,
                                    sizeof(fingerprint), error, sizeof(error)) == 1);

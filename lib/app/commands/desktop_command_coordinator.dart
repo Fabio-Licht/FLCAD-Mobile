@@ -56,6 +56,8 @@ class DesktopCommandCoordinator {
   Future<void> createProject(String name, String client) async {
     await router.route('project.new', {'name': name, 'client': client});
     await refreshContext();
+    final project = projects.current;
+    if (project != null) await cad.restoreProjectGeometry(project.id);
   }
 
   Future<void> openProject(Project project) async {
@@ -204,6 +206,7 @@ class DesktopCommandCoordinator {
       'Interactive Assistant',
       'Engineering Knowledge',
       'Sketch & Surface',
+      'Sections',
     ];
     for (final value in workspaces) {
       var previous = workspace.state.workspace;

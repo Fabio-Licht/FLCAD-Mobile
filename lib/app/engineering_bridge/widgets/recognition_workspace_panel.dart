@@ -4,8 +4,13 @@ import '../../engineering_bridge/operational_reverse_engineering_controller.dart
 import '../../../core/adaptive_surface/models/surface_geometry.dart';
 
 class RecognitionWorkspacePanel extends StatelessWidget {
-  const RecognitionWorkspacePanel({super.key, required this.controller});
+  const RecognitionWorkspacePanel({
+    super.key,
+    required this.controller,
+    this.onApplyAlignment,
+  });
   final OperationalReverseEngineeringController controller;
+  final Future<void> Function()? onApplyAlignment;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -23,6 +28,66 @@ class RecognitionWorkspacePanel extends StatelessWidget {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (controller.canAlign) ...[
+            Text(
+              'Alignment Workbench',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.straighten),
+                  label: const Text('Axis'),
+                  onPressed: controller.createAxis,
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.adjust),
+                  label: const Text('Origin'),
+                  onPressed: controller.createPoint,
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.threed_rotation),
+                  label: const Text('CSYS'),
+                  onPressed: controller.createCoordinateSystem,
+                ),
+              ],
+            ),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'XY', label: Text('XY')),
+                ButtonSegment(value: 'XZ', label: Text('XZ')),
+                ButtonSegment(value: 'YZ', label: Text('YZ')),
+              ],
+              emptySelectionAllowed: true,
+              selected: {
+                if (controller.alignmentTarget != null)
+                  controller.alignmentTarget!,
+              },
+              onSelectionChanged: (value) {
+                if (value.isNotEmpty) {
+                  controller.previewAlignment(value.first);
+                }
+              },
+            ),
+            if (controller.alignmentTransform != null)
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: onApplyAlignment ?? controller.applyAlignment,
+                      child: const Text('Apply Alignment'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.cancelAlignment,
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ),
+            const Divider(),
+          ],
           if (controller.canDetect)
             Wrap(
               spacing: 4,
@@ -45,8 +110,31 @@ class RecognitionWorkspacePanel extends StatelessWidget {
             )
           else
             const Text(
-              'Select a mesh triangle in the viewport before running detection.',
+              'Select the mesh in the viewport to grow a homogeneous region.',
             ),
+          if (controller.activeContext?.region case final region?) ...[
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Recognition MeshRegion',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Text('${region.triangleIndices.length} triangles'),
+                    Text('Area ${region.area.toStringAsFixed(3)}'),
+                    if (controller.hypotheses.isNotEmpty)
+                      Text(
+                        'Confidence ${(controller.hypotheses.first.recognition.dna.confidence * 100).toStringAsFixed(1)}%',
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (controller.hypotheses.isEmpty && controller.canDetect) ...[
             const SizedBox(height: 8),
             const Text('No hypothesis of the selected type was detected.'),
@@ -57,6 +145,49 @@ class RecognitionWorkspacePanel extends StatelessWidget {
               '${controller.hypotheses.length} hypotheses',
               style: Theme.of(context).textTheme.titleSmall,
             ),
+            const SizedBox(height: 8),
+            if (controller.hypotheses.any(
+              (item) => item.recognition.winner.type.name == 'plane',
+            ))
+              FilledButton.icon(
+                onPressed: controller.busy
+                    ? null
+                    : () async {
+                        final plane = controller.hypotheses.firstWhere(
+                          (item) =>
+                              item.recognition.winner.type.name == 'plane',
+                        );
+                        controller.decide(
+                          plane.recognition.id,
+                          RecognitionDecision.accepted,
+                        );
+                        await controller.createRecognizedPlane();
+                      },
+                icon: const Icon(Icons.verified_outlined),
+                label: const Text('Accept Plane & Create Reference'),
+              ),
+            if (controller.hypotheses.any(
+              (item) => item.recognition.winner.type.name != 'plane',
+            ))
+              FilledButton.icon(
+                onPressed: controller.busy
+                    ? null
+                    : () async {
+                        final primitive = controller.hypotheses.firstWhere(
+                          (item) =>
+                              item.recognition.winner.type.name != 'plane',
+                        );
+                        controller.decide(
+                          primitive.recognition.id,
+                          RecognitionDecision.accepted,
+                        );
+                        await controller.createRecognizedReference();
+                      },
+                icon: const Icon(Icons.verified_outlined),
+                label: Text(
+                  'Accept ${controller.hypotheses.firstWhere((item) => item.recognition.winner.type.name != 'plane').recognition.winner.type.name} & Create Reference',
+                ),
+              ),
             const SizedBox(height: 8),
             for (final primitive in controller.hypotheses)
               Card(
@@ -118,7 +249,9 @@ class RecognitionWorkspacePanel extends StatelessWidget {
               children: [
                 for (final kind in const [
                   SurfaceKind.cylinder,
+                  SurfaceKind.cone,
                   SurfaceKind.sphere,
+                  SurfaceKind.torus,
                 ])
                   if (controller.canCreateRecognizedSurface(kind))
                     FilledButton(
@@ -129,6 +262,85 @@ class RecognitionWorkspacePanel extends StatelessWidget {
                     ),
               ],
             ),
+            if (controller.hypotheses.any(
+              (item) =>
+                  item.recognition.winner.type.name == 'plane' &&
+                  controller.decisions[item.recognition.id] ==
+                      RecognitionDecision.accepted,
+            ))
+              FilledButton.icon(
+                onPressed: controller.busy
+                    ? null
+                    : controller.createRecognizedPlane,
+                icon: const Icon(Icons.crop_16_9),
+                label: const Text('Create Plane Reference'),
+              ),
+          ],
+          if (controller.canAlign) ...[
+            const Divider(),
+            Text(
+              'Alignment Workbench',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const Text(
+              'Create the axis, origin and coordinate system from the approved plane.',
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: controller.createAxis,
+                  icon: const Icon(Icons.straighten),
+                  label: const Text('Create Axis'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: controller.createPoint,
+                  icon: const Icon(Icons.adjust),
+                  label: const Text('Create Origin'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: controller.createCoordinateSystem,
+                  icon: const Icon(Icons.threed_rotation),
+                  label: const Text('Create CSYS'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text('Align approved plane to:'),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'XY', label: Text('XY')),
+                ButtonSegment(value: 'XZ', label: Text('XZ')),
+                ButtonSegment(value: 'YZ', label: Text('YZ')),
+              ],
+              emptySelectionAllowed: true,
+              selected: {
+                if (controller.alignmentTarget != null)
+                  controller.alignmentTarget!,
+              },
+              onSelectionChanged: (value) {
+                if (value.isNotEmpty) controller.previewAlignment(value.first);
+              },
+            ),
+            if (controller.alignmentTransform != null)
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: controller.busy
+                          ? null
+                          : (onApplyAlignment ?? controller.applyAlignment),
+                      icon: const Icon(Icons.check),
+                      label: const Text('Apply Alignment'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.cancelAlignment,
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ),
           ],
         ],
       );

@@ -32,15 +32,18 @@ class SketchEngine {
   final List<_Snapshot> _redo = [];
   String? activeSketchId;
 
-  Sketch createSketch(String name, {SketchPlane? plane}) =>
-      _change(SketchHistoryAction.create, name, () {
-        final sketch = Sketch(name: name, plane: plane);
-        sketches[sketch.id] = sketch;
-        graphs.sketch.addNode(sketch.id);
-        activeSketchId = sketch.id;
-        analytics.sketches++;
-        return sketch;
-      });
+  Sketch createSketch(
+    String name, {
+    SketchPlane? plane,
+    SketchCoordinateSystem? coordinates,
+  }) => _change(SketchHistoryAction.create, name, () {
+    final sketch = Sketch(name: name, plane: plane, coordinates: coordinates);
+    sketches[sketch.id] = sketch;
+    graphs.sketch.addNode(sketch.id);
+    activeSketchId = sketch.id;
+    analytics.sketches++;
+    return sketch;
+  });
   void deleteSketch(String id) => _change(SketchHistoryAction.delete, id, () {
     final sketch =
         sketches.remove(id) ?? (throw StateError('Unknown sketch: $id'));

@@ -142,18 +142,32 @@ class ProfessionalRegionGrowing {
     List<Set<int>> adjacency,
     int minimum,
   ) {
+    final owner = <int, int>{};
+    for (var group = 0; group < groups.length; group++) {
+      for (final triangle in groups[group]) {
+        owner[triangle] = group;
+      }
+    }
+    final active = List<bool>.filled(groups.length, true);
     var changed = true;
     while (changed) {
       changed = false;
       for (var i = groups.length - 1; i >= 0; i--) {
-        if (groups.length == 1 || groups[i].length >= minimum) continue;
+        if (!active[i] || groups[i].length >= minimum) continue;
+        final contactsByGroup = <int, int>{};
+        for (final triangle in groups[i]) {
+          for (final neighbor in adjacency[triangle]) {
+            final candidate = owner[neighbor];
+            if (candidate != null && candidate != i && active[candidate]) {
+              contactsByGroup[candidate] =
+                  (contactsByGroup[candidate] ?? 0) + 1;
+            }
+          }
+        }
         var best = -1, contacts = -1;
-        for (var j = 0; j < groups.length; j++) {
-          if (i == j) continue;
-          final count = groups[i].fold<int>(
-            0,
-            (sum, t) => sum + adjacency[t].where(groups[j].contains).length,
-          );
+        final candidates = contactsByGroup.keys.toList()..sort();
+        for (final j in candidates) {
+          final count = contactsByGroup[j]!;
           if (count > contacts) {
             best = j;
             contacts = count;
@@ -161,11 +175,16 @@ class ProfessionalRegionGrowing {
         }
         if (best >= 0 && contacts > 0) {
           groups[best].addAll(groups[i]);
-          groups.removeAt(i);
+          for (final triangle in groups[i]) {
+            owner[triangle] = best;
+          }
+          groups[i].clear();
+          active[i] = false;
           changed = true;
         }
       }
     }
+    groups.removeWhere((group) => group.isEmpty);
   }
 
   double _angle(Vector3 a, Vector3 b) =>

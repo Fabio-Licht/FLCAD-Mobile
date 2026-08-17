@@ -1,7 +1,14 @@
 import '../cad_kernel/io/kernel_io_models.dart';
 import '../cad_kernel/models/kernel_models.dart';
 
-enum CadDocumentEntityKind { import, reference, sketch, constraint, surface }
+enum CadDocumentEntityKind {
+  import,
+  reference,
+  section,
+  sketch,
+  constraint,
+  surface,
+}
 
 class CadDocumentEntity {
   const CadDocumentEntity({

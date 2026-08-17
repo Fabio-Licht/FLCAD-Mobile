@@ -7,6 +7,25 @@ import '../../../core/geometric_kernel/linear_algebra/matrices.dart';
 
 enum CadProjectionMode { perspective, orthographic }
 
+class CadCameraState {
+  const CadCameraState({
+    required this.eye,
+    required this.target,
+    required this.up,
+    required this.projectionMode,
+    required this.orthographicHeight,
+    required this.nearPlane,
+    required this.farPlane,
+  });
+  final Vector3 eye;
+  final Vector3 target;
+  final Vector3 up;
+  final CadProjectionMode projectionMode;
+  final double orthographicHeight;
+  final double nearPlane;
+  final double farPlane;
+}
+
 class CadCameraController extends ChangeNotifier {
   CadCameraController({
     this.eye = const Vector3(6, -6, 4),
@@ -24,6 +43,56 @@ class CadCameraController extends ChangeNotifier {
   double nearPlane = .01;
   double farPlane = 100000;
   double orthographicHeight = 10;
+  CadCameraState? _preSketchState;
+
+  bool get isInSketchMode => _preSketchState != null;
+
+  CadCameraState snapshot() => CadCameraState(
+    eye: eye,
+    target: target,
+    up: up,
+    projectionMode: projectionMode,
+    orthographicHeight: orthographicHeight,
+    nearPlane: nearPlane,
+    farPlane: farPlane,
+  );
+
+  void enterSketch({
+    required Vector3 origin,
+    required Vector3 normal,
+    required Vector3 xDirection,
+    double visualSize = 60,
+  }) {
+    _preSketchState ??= snapshot();
+    final n = normal.normalized;
+    final x = xDirection.normalized;
+    final y = n.cross(x).normalized;
+    final currentSide = (eye - origin).dot(n) < 0 ? -1.0 : 1.0;
+    final distance = math.max(visualSize * 1.5, .01);
+    target = origin;
+    eye = origin + n * (distance * currentSide);
+    // Keep local +Y pointing upward and local +X to the right on either side.
+    up = y * -currentSide;
+    projectionMode = CadProjectionMode.orthographic;
+    orthographicHeight = math.max(visualSize * 1.1, .01);
+    nearPlane = math.max(distance / 10000, 1e-6);
+    farPlane = math.max(distance * 1000, 10);
+    notifyListeners();
+  }
+
+  void exitSketch() {
+    final state = _preSketchState;
+    if (state == null) return;
+    eye = state.eye;
+    target = state.target;
+    up = state.up;
+    projectionMode = state.projectionMode;
+    orthographicHeight = state.orthographicHeight;
+    nearPlane = state.nearPlane;
+    farPlane = state.farPlane;
+    _preSketchState = null;
+    notifyListeners();
+  }
 
   Matrix4 get viewMatrix {
     final forward = (target - eye).normalized;
@@ -139,12 +208,17 @@ class CadCameraController extends ChangeNotifier {
   }
 
   void fit(Vector3 minimum, Vector3 maximum) {
+    final previousDirection = eye - target;
     target = (minimum + maximum) / 2;
     final radius = (maximum - minimum).length / 2;
-    final direction = (eye - target).length == 0
+    final direction = previousDirection.length == 0
         ? const Vector3(1, -1, .7).normalized
-        : (eye - target).normalized;
-    final distance = math.max(radius * 2.8, .01);
+        : previousDirection.normalized;
+    // Keep the complete bounding sphere inside the perspective frustum even
+    // after orbiting to an oblique view.  At a 45 degree vertical FOV the
+    // theoretical minimum is ~2.62 radii; use a practical CAD fit margin so
+    // corners are not clipped by perspective or viewport aspect rounding.
+    final distance = math.max(radius * 3.5, .01);
     eye = target + direction * distance;
     orthographicHeight = math.max(radius * 2.4, .01);
     nearPlane = math.max(distance / 10000, 1e-6);

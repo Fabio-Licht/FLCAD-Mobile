@@ -8,8 +8,11 @@ class SketchEngineApi {
   SketchEngineApi(this.engine) : builders = SketchBuilders(engine);
   final SketchEngine engine;
   final SketchBuilders builders;
-  Sketch createSketch(String name, {SketchPlane? plane}) =>
-      engine.createSketch(name, plane: plane);
+  Sketch createSketch(
+    String name, {
+    SketchPlane? plane,
+    SketchCoordinateSystem? coordinates,
+  }) => engine.createSketch(name, plane: plane, coordinates: coordinates);
   void deleteSketch(String id) => engine.deleteSketch(id);
   void openSketch(String id) => engine.openSketch(id);
   void closeSketch() => engine.closeSketch();

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart';
@@ -8,6 +9,7 @@ import '../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../core/adaptive_surface/models/surface_geometry.dart';
 import '../../core/adaptive_surface/continuity/surface_continuity.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
+import '../../core/geometric_kernel/transforms/transform3.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
 import '../../core/professional_recognition/models/professional_recognition_models.dart';
 import '../../core/professional_surface/api/professional_surface_modeling_api.dart';
@@ -24,11 +26,16 @@ import '../../core/sketch_editor/api/sketch_editor_api.dart';
 import '../../core/sketch_editor/integration/editor_factory.dart';
 import '../../core/sketch_editor/models/editor_models.dart';
 import '../../core/sketch_engine/api/sketch_engine_api.dart';
-import '../../core/sketch_engine/entities/sketch_entities.dart';
+import '../../core/sketch_engine/entities/sketch_entities.dart'
+    hide ReferenceGeometry;
 import '../../core/sketch_engine/integration/sketch_factory.dart';
 import '../../core/sketch_engine/models/sketch_models.dart';
 import '../../core/smart_reference/models/smart_reference_models.dart';
 import '../../core/smart_regions/api/smart_regions_api.dart';
+import '../../core/smart_regions/models/geometry.dart';
+import '../../core/surface_recognition/models/surface_recognition_models.dart'
+    as region_recognition;
+import '../../core/surface_recognition/segmentation/region_growing.dart';
 import '../../core/surface_generation/api/surface_generation_api.dart';
 import '../../core/surface_generation/integration/surface_generation_factory.dart';
 import '../../core/surface_generation/models/surface_generation_models.dart';
@@ -54,6 +61,7 @@ import 'adapters/surface_bridge.dart';
 import 'contracts/bridge_context.dart';
 import 'contracts/bridge_selection.dart';
 import 'selection/mesh_region_builder.dart';
+import 'selection/section_manager.dart';
 import 'selection/geometry_selection_manager.dart';
 import '../runtime/cad_runtime.dart';
 
@@ -139,6 +147,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   ReferenceEntity? get activeReference => runtime.read('reference.active');
   set activeReference(ReferenceEntity? value) =>
       runtime.write('reference.active', value);
+  PlaneGeometry? get activeSketchPlane =>
+      activeReference?.geometry is PlaneGeometry
+      ? activeReference!.geometry as PlaneGeometry
+      : runtime.read<PlaneGeometry>('sketch.selectedPlane');
+  String? get activeSketchPlaneId => activeReference?.geometry is PlaneGeometry
+      ? activeReference!.id
+      : runtime.read<String>('sketch.selectedPlaneId');
   Sketch? get activeSketch => runtime.read('sketch.active');
   set activeSketch(Sketch? value) => runtime.write('sketch.active', value);
   SurfacePlan? get surfacePlan => runtime.read('surface.plan');
@@ -166,6 +181,225 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   final SurfaceSceneAdapter _surfaceScene = const SurfaceSceneAdapter();
   final ViewportPickingController _viewportPicking =
       ViewportPickingController();
+  SectionManager get sections => SectionManager(runtime);
+
+  CadDocumentEntity? get selectedSection {
+    final document = runtime.document;
+    if (document == null) return null;
+    for (final id in runtime.selection) {
+      final entity = document.entities[id];
+      if (entity?.kind == CadDocumentEntityKind.section) return entity;
+    }
+    return null;
+  }
+
+  Future<void> createSection() async {
+    final plane = activeSketchPlane;
+    final planeId = activeSketchPlaneId;
+    if (plane == null || planeId == null) {
+      throw StateError('Select a plane in Explorer before creating a Section.');
+    }
+    await sections.create(
+      planeId: planeId,
+      origin: Vector3.fromJson(plane.origin.toJson()),
+      normal: Vector3.fromJson(plane.normal.toJson()),
+    );
+    notifyListeners();
+  }
+
+  Future<void> createMultipleSections({
+    int count = 5,
+    double spacing = 5,
+  }) async {
+    final plane = activeSketchPlane;
+    final planeId = activeSketchPlaneId;
+    if (plane == null || planeId == null) {
+      throw StateError('Select a plane in Explorer before creating Sections.');
+    }
+    await sections.createMultiple(
+      planeId: planeId,
+      origin: Vector3.fromJson(plane.origin.toJson()),
+      normal: Vector3.fromJson(plane.normal.toJson()),
+      count: count,
+      spacing: spacing,
+    );
+    notifyListeners();
+  }
+
+  Future<void> createSectionsBySelectedAxis({
+    int count = 5,
+    double spacing = 5,
+  }) async {
+    final selected = runtime.selection
+        .map(runtime.scene.find)
+        .whereType<CadSceneEntity>()
+        .where((entity) => entity.kind == CadSceneEntityKind.axis)
+        .firstOrNull;
+    if (selected == null) throw StateError('Select an axis in Explorer first.');
+    final origin = Vector3.fromJson(selected.geometry['origin'] as List);
+    final direction = Vector3.fromJson(selected.geometry['direction'] as List);
+    await sections.createMultiple(
+      planeId: selected.id,
+      origin: origin,
+      normal: direction,
+      count: count,
+      spacing: spacing,
+    );
+    notifyListeners();
+  }
+
+  Future<void> moveSelectedSection(double offset) async {
+    final section =
+        selectedSection ??
+        (throw StateError('Select a Section before moving it.'));
+    await sections.updateOffset(section.id, offset);
+    runtime.select({section.id});
+    notifyListeners();
+  }
+
+  String? get alignmentTarget => runtime.read('alignment.target');
+  set alignmentTarget(String? value) =>
+      runtime.write('alignment.target', value);
+  Transform3? get alignmentTransform => runtime.read('alignment.transform');
+  set alignmentTransform(Transform3? value) =>
+      runtime.write('alignment.transform', value);
+
+  bool get canAlign => activeReference?.geometry is PlaneGeometry;
+
+  void previewAlignment(String target) {
+    final plane = activeReference?.geometry;
+    final meshEntities = runtime.document?.entities.values
+        .where((item) => item.kind == CadDocumentEntityKind.import)
+        .toList();
+    final meshEntity = meshEntities == null || meshEntities.isEmpty
+        ? null
+        : meshEntities.last;
+    if (plane is! PlaneGeometry || meshEntity == null) {
+      throw StateError('Create an approved plane before alignment.');
+    }
+    final targetNormal = switch (target) {
+      'XY' => const Vector3(0, 0, 1),
+      'XZ' => const Vector3(0, 1, 0),
+      'YZ' => const Vector3(1, 0, 0),
+      _ => throw StateError('Unknown alignment target: $target'),
+    };
+    Vector3 vector(List<double> value) => Vector3(value[0], value[1], value[2]);
+    final origin = vector(plane.origin.toJson());
+    final rotation = Transform3.align(
+      vector(plane.normal.toJson()),
+      targetNormal,
+    );
+    final transform = rotation.compose(Transform3.translation(-origin));
+    alignmentTarget = target;
+    alignmentTransform = transform;
+    final geometry = meshEntity.data['sceneGeometry'];
+    if (geometry is Map && geometry['nodes'] is List) {
+      final nodes = (geometry['nodes'] as List).cast<num>();
+      final output = <double>[];
+      for (var index = 0; index + 2 < nodes.length; index += 3) {
+        final point = transform.apply(
+          Vector3(
+            nodes[index].toDouble(),
+            nodes[index + 1].toDouble(),
+            nodes[index + 2].toDouble(),
+          ),
+        );
+        output.addAll([point.x, point.y, point.z]);
+      }
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'alignment-preview',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {...Map<String, dynamic>.from(geometry), 'nodes': output},
+        ),
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> applyAlignment() async {
+    final transform = alignmentTransform;
+    if (transform == null) throw StateError('Preview an alignment first.');
+    final references = await _referenceApi.list(runtime.document!.projectId);
+    for (final reference in references) {
+      final updated = reference.copyWith(
+        geometry: _transformReferenceGeometry(reference.geometry, transform),
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _referenceApi.delete(reference);
+      await _referenceApi.restore(updated);
+      if (activeReference?.id == updated.id) activeReference = updated;
+    }
+    await runtime.applyAlignmentTransform(transform.matrix);
+    runtime.hideTransient('alignment-preview');
+    alignmentTransform = null;
+    notifyListeners();
+  }
+
+  ReferenceGeometry _transformReferenceGeometry(
+    ReferenceGeometry geometry,
+    Transform3 transform,
+  ) {
+    Vec3 point(Vec3 value) {
+      final result = transform.apply(Vector3(value.x, value.y, value.z));
+      return Vec3(result.x, result.y, result.z);
+    }
+
+    Vec3 direction(Vec3 value) {
+      final origin = transform.apply(Vector3.zero);
+      final result = transform.apply(Vector3(value.x, value.y, value.z));
+      final normalized = (result - origin).normalized;
+      return Vec3(normalized.x, normalized.y, normalized.z);
+    }
+
+    return switch (geometry) {
+      PlaneGeometry() => PlaneGeometry(
+        point(geometry.origin),
+        direction(geometry.normal),
+        xDirection: geometry.xDirection == null
+            ? null
+            : direction(geometry.xDirection!),
+      ),
+      AxisGeometry() => AxisGeometry(
+        point(geometry.origin),
+        direction(geometry.direction),
+      ),
+      PointGeometry() => PointGeometry(point(geometry.position)),
+      CoordinateSystemGeometry() => CoordinateSystemGeometry(
+        point(geometry.origin),
+        direction(geometry.xAxis),
+        direction(geometry.yAxis),
+        direction(geometry.zAxis),
+      ),
+      CurveGeometry() => CurveGeometry(
+        geometry.points.map(point).toList(),
+        closed: geometry.closed,
+      ),
+    };
+  }
+
+  void cancelAlignment() {
+    runtime.hideTransient('alignment-preview');
+    alignmentTransform = null;
+    alignmentTarget = null;
+    notifyListeners();
+  }
+
+  void selectDocumentPlane(String entityId) {
+    final entity = runtime.document?.entities[entityId];
+    final raw = entity?.data['sceneGeometry'];
+    if (raw is! Map || raw['type'] != 'plane') return;
+    runtime.write(
+      'sketch.selectedPlane',
+      geometryFromJson(Map<String, dynamic>.from(raw)) as PlaneGeometry,
+    );
+    runtime.write('sketch.selectedPlaneId', entityId);
+    stage = SketchSurfaceStage.referenceReady;
+    runtime.select({entityId});
+    notifyListeners();
+  }
+
   bool get _commandsRegistered =>
       runtime.read<bool>('commands.registered') ?? false;
   set _commandsRegistered(bool value) =>
@@ -222,6 +456,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       ),
       repository: ProfessionalSurfaceRepository(projectDirectory),
     );
+    _registerOperationalCommands();
     await sketch.load();
     await constraints.load();
     final surfaces = await surfaceGenerationApi!.load();
@@ -260,7 +495,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     } else if (activeReference != null) {
       stage = SketchSurfaceStage.referenceReady;
     }
-    _registerOperationalCommands();
     notifyListeners();
   }
 
@@ -298,12 +532,31 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
+      final surfaceData = region_recognition.MeshSurfaceData.fromKernel(
+        geometry,
+      );
+      final fingerprint = document.mesh!.fingerprint;
+      final segmented = await Isolate.run(
+        () =>
+            const ProfessionalRegionGrowing().segment(surfaceData, fingerprint),
+      );
+      final surfaceRegion = segmented.regions
+          .where(
+            (region) => region.triangleIndices.contains(pick.hit.triangleIndex),
+          )
+          .firstOrNull;
+      if (surfaceRegion == null) {
+        throw StateError(
+          'Region Growing produced no homogeneous region for triangle '
+          '${pick.hit.triangleIndex}.',
+        );
+      }
       final selection = BridgeSelection(
-        id: '${document.id}:triangle:${pick.hit.triangleIndex}',
+        id: surfaceRegion.id,
         entityId: pick.entityId,
-        kind: BridgeSelectionKind.triangle,
+        kind: BridgeSelectionKind.meshRegion,
         geometry: geometry,
-        triangleIndices: {pick.hit.triangleIndex},
+        triangleIndices: surfaceRegion.triangleIndices.toSet(),
       );
       final region = regionBuilder.build(
         meshId: document.id,
@@ -319,6 +572,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       report = await recognition.recognize(context);
       activeSelection = selection;
       activeContext = context;
+      _showRecognitionRegion(geometry, surfaceRegion);
       decisions
         ..clear()
         ..addEntries(
@@ -338,6 +592,37 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  void _showRecognitionRegion(
+    KernelMeshGeometry geometry,
+    region_recognition.SurfaceRegion region,
+  ) {
+    final triangles = <int>[];
+    for (final triangle in region.triangleIndices) {
+      final offset = triangle * 3;
+      if (offset + 2 < geometry.triangles.length) {
+        triangles.addAll([
+          geometry.triangles[offset],
+          geometry.triangles[offset + 1],
+          geometry.triangles[offset + 2],
+        ]);
+      }
+    }
+    runtime.showTransient(
+      CadSceneEntity(
+        id: 'recognition-region-preview',
+        kind: CadSceneEntityKind.preview,
+        geometry: {
+          'nodes': geometry.nodes,
+          'triangles': triangles,
+          'color': region.color,
+          'triangleCount': region.triangleIndices.length,
+          'area': region.area,
+        },
+        transparent: true,
+      ),
+    );
   }
 
   List<ProfessionalPrimitive> get hypotheses {
@@ -388,6 +673,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   Future<void> createRecognizedPlane() => _run('reverse.reference.plane');
+  Future<void> createRecognizedReference() =>
+      _run('reverse.reference.recognized');
   Future<void> createAxis() => _run('reverse.reference.axis');
   Future<void> createPoint() => _run('reverse.reference.point');
   Future<void> createCoordinateSystem() =>
@@ -418,7 +705,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     Offset position,
     CadCameraController camera,
   ) async {
-    final geometry = activeReference?.geometry;
+    final geometry = activeSketchPlane;
     if (geometry is! PlaneGeometry ||
         stage != SketchSurfaceStage.sketchActive) {
       return;
@@ -433,18 +720,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       normal: normal,
     );
     if (world == null) return;
-    final xAxis = geometry.xDirection == null
-        ? normal
-              .cross(
-                normal.z.abs() < .9
-                    ? const Vector3(0, 0, 1)
-                    : const Vector3(0, 1, 0),
-              )
-              .normalized
-        : vector(geometry.xDirection!.toJson()).normalized;
-    final yAxis = normal.cross(xAxis).normalized;
-    final delta = world - origin;
-    final raw = SketchVector(delta.dot(xAxis), delta.dot(yAxis));
+    final coordinates = activeSketch!.coordinates;
+    final local = coordinates.globalToLocal(
+      SketchVector(world.x, world.y, world.z),
+    );
+    // A sketch entity is always planar. Numerical error from ray/plane
+    // intersection must never leak into its persisted local coordinates.
+    final raw = SketchVector(local.x, local.y);
     final point = editorApi?.snap(raw)?.position ?? raw;
     previewPoints = [...previewPoints, point];
     notifyListeners();
@@ -484,7 +766,12 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         .firstOrNull;
     return primitive != null &&
         decisions[primitive.recognition.id] == RecognitionDecision.accepted &&
-        {SurfaceKind.cylinder, SurfaceKind.sphere}.contains(kind);
+        {
+          SurfaceKind.cylinder,
+          SurfaceKind.cone,
+          SurfaceKind.sphere,
+          SurfaceKind.torus,
+        }.contains(kind);
   }
 
   Future<void> createRecognizedSurface(SurfaceKind kind) async {
@@ -543,6 +830,31 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               .map((value) => value.toDouble())
               .toList(),
           radius: (parameters['radius'] as num).toDouble(),
+        ),
+        SurfaceKind.cone => await api.cone.fromCandidate(
+          candidate,
+          apex: (parameters['origin'] as List)
+              .cast<num>()
+              .map((value) => value.toDouble())
+              .toList(),
+          axisDirection: (parameters['axis'] as List)
+              .cast<num>()
+              .map((value) => value.toDouble())
+              .toList(),
+          semiAngle: (parameters['halfAngle'] as num).toDouble(),
+        ),
+        SurfaceKind.torus => await api.torus.fromCandidate(
+          candidate,
+          center: (parameters['center'] as List)
+              .cast<num>()
+              .map((value) => value.toDouble())
+              .toList(),
+          axisDirection: (parameters['axis'] as List)
+              .cast<num>()
+              .map((value) => value.toDouble())
+              .toList(),
+          majorRadius: (parameters['majorRadius'] as num).toDouble(),
+          minorRadius: (parameters['minorRadius'] as num).toDouble(),
         ),
         _ => throw StateError('${kind.name} is not mapped by Recognition.'),
       };
@@ -685,7 +997,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
 
   void _registerOperationalCommands() {
     if (_commandsRegistered) return;
-    _commandsRegistered = true;
     void register({
       required String id,
       required Future<Object?> Function(Map<String, Object?>) execute,
@@ -808,6 +1119,99 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       },
     );
 
+    ReferenceEntity? recognizedReferenceCommandValue;
+    register(
+      id: 'reverse.reference.recognized',
+      execute: (_) async {
+        final primitive = hypotheses
+            .where(
+              (item) =>
+                  decisions[item.recognition.id] ==
+                  RecognitionDecision.accepted,
+            )
+            .firstOrNull;
+        final context = activeContext;
+        if (primitive == null || context?.region == null) {
+          throw StateError('Accept a recognition hypothesis first.');
+        }
+        final winner = primitive.recognition.winner;
+        final parameters = winner.parameters;
+        ReferenceRecipe recipe;
+        String name;
+        if (winner.type.name == 'sphere') {
+          final center = parameters['center'];
+          if (center is! List || center.length != 3) {
+            throw StateError('Recognized sphere has no valid center.');
+          }
+          name = 'Recognized Sphere Center';
+          recipe = ReferenceRecipe(
+            'point',
+            {'method': 'explicit', 'point': center},
+            [context!.region!.id],
+          );
+        } else if ({'cylinder', 'cone', 'torus'}.contains(winner.type.name)) {
+          final origin = parameters['origin'] ?? parameters['center'];
+          final direction = parameters['axis'];
+          if (origin is! List ||
+              origin.length != 3 ||
+              direction is! List ||
+              direction.length != 3) {
+            throw StateError(
+              'Recognized ${winner.type.name} has no valid axis.',
+            );
+          }
+          final second = List<double>.generate(
+            3,
+            (index) =>
+                (origin[index] as num).toDouble() +
+                (direction[index] as num).toDouble(),
+          );
+          name = 'Recognized ${winner.type.name} Axis';
+          recipe = ReferenceRecipe(
+            'axis',
+            {
+              'method': 'twoPoints',
+              'points': [origin, second],
+            },
+            [context!.region!.id],
+          );
+        } else {
+          throw StateError(
+            'Use Create Plane Reference for planar recognition.',
+          );
+        }
+        recognizedReferenceCommandValue = await _referenceApi.create(
+          projectId: configuredProjectId!,
+          name: name,
+          mode: ReferenceMode.staticReference,
+          recipe: recipe,
+        );
+        activeReference = recognizedReferenceCommandValue;
+        await _upsertReference(
+          recognizedReferenceCommandValue!,
+          command: 'reference.recognition',
+        );
+        return recognizedReferenceCommandValue!.id;
+      },
+      undo: (_) async {
+        final value = recognizedReferenceCommandValue;
+        if (value != null) {
+          await _referenceApi.delete(value);
+          await runtime.removeEntity(value.id, command: 'reference.undo');
+        }
+        return 'recognized reference removed';
+      },
+      redo: (_) async {
+        final value = recognizedReferenceCommandValue;
+        if (value == null) {
+          throw StateError('No recognized reference to restore.');
+        }
+        await _referenceApi.restore(value);
+        await _upsertReference(value, command: 'reference.redo');
+        return value.id;
+      },
+    );
+
     final createdReferences = <String, ReferenceEntity?>{};
     void registerDerivedReference({
       required String id,
@@ -871,10 +1275,15 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       name: 'Plane Coordinate System',
       recipe: (plane) {
         final normal = plane.normal;
-        final x = plane.xDirection;
-        if (x == null) {
-          throw StateError('The approved plane has no X direction.');
-        }
+        final x =
+            plane.xDirection ??
+            normal
+                .cross(
+                  normal.z.abs() < .9
+                      ? const Vec3(0, 0, 1)
+                      : const Vec3(0, 1, 0),
+                )
+                .normalized;
         final y = normal.cross(x).normalized;
         return ReferenceRecipe('coordinateSystem', {
           'origin': plane.origin.toJson(),
@@ -888,14 +1297,23 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     register(
       id: 'reverse.sketch.open',
       execute: (_) async {
-        final reference = activeReference;
-        final context = activeContext;
-        if (reference == null || context == null) {
-          throw StateError('Create the approved plane before opening Sketch.');
+        final plane = activeSketchPlane;
+        final planeId = activeSketchPlaneId;
+        if (plane == null || planeId == null) {
+          throw StateError('Select a plane before opening Sketch.');
         }
-        sketchCommandValue = SketchBridge(sketchApi!).openFromApprovedPlane(
+        final context =
+            activeContext ??
+            BridgeContext(
+              projectId: runtime.document!.projectId,
+              meshId: 'world-coordinate-system',
+              meshFingerprint: 'system',
+              userConfirmed: true,
+            );
+        sketchCommandValue = SketchBridge(sketchApi!).openFromPlaneGeometry(
           context: context.copyWith(userConfirmed: true),
-          plane: reference,
+          referenceId: planeId,
+          geometry: plane,
           name: 'Surface Profile',
         );
         activeSketch = sketchCommandValue;
@@ -1168,6 +1586,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         return activeSurface!.surfaceId;
       },
     );
+    _commandsRegistered = true;
   }
 
   (double, double) _rectangleBounds() {
@@ -1195,7 +1614,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     command: command,
     kind: CadDocumentEntityKind.reference,
     entity: _referenceScene.adapt(reference),
-    data: {'reference': ReferenceSerializer.toJson(reference)},
+    data: {
+      'name': reference.name,
+      'reference': ReferenceSerializer.toJson(reference),
+    },
   );
 
   CadSceneEntity _professionalSurfaceVisual(

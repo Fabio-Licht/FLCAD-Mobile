@@ -8,12 +8,15 @@ import '../../core/cad_kernel/api/geometry_kernel_api.dart';
 import '../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../core/cad_kernel/models/kernel_models.dart';
 import '../../core/cad_kernel/manager/kernel_manager.dart';
+import '../../core/geometric_kernel/geometry/vectors.dart';
+import '../../core/geometric_kernel/linear_algebra/matrices.dart';
 import '../../core/import_export/api/import_export_api.dart';
 import '../cad_viewport/scene/cad_scene_graph.dart';
 import '../commands/command_manager.dart';
 import 'cad_document_scene_projection.dart';
 import '../cad_viewport/rendering/kernel_display_mesh_pipeline.dart';
 import '../engineering_bridge/selection/geometry_selection_manager.dart';
+import 'world_coordinate_system.dart';
 
 class CadRuntime extends ChangeNotifier {
   CadRuntime({
@@ -116,6 +119,11 @@ class CadRuntime extends ChangeNotifier {
   Future<void> open(String projectId, Directory directory) async {
     _projectDirectory = directory;
     _document = await _repository.load(projectId, directory);
+    final withWorldSystem = WorldCoordinateSystem.ensure(_document!);
+    if (!identical(withWorldSystem, _document)) {
+      _document = withWorldSystem;
+      await _repository.save(_document!, directory);
+    }
     final history = await _repository.loadHistory(directory);
     _displayMeshes = KernelDisplayMeshPipeline(
       kernel: kernels.active,
@@ -153,7 +161,25 @@ class CadRuntime extends ChangeNotifier {
     ImportedCadDocument imported, {
     KernelMeshGeometry? geometry,
   }) async {
+    projection.clearTransient();
+    geometrySelection.clear();
+    for (final key in const [
+      'selection.pick',
+      'selection.bridge',
+      'session.context',
+      'recognition.report',
+      'recognition.filter',
+      'recognition.decisions',
+      'sections.meshBvh',
+    ]) {
+      _state.remove(key);
+    }
     final current = _requireDocument();
+    final replacedImports = current.entities.values
+        .where((entity) => entity.kind == CadDocumentEntityKind.import)
+        .map((entity) => entity.id)
+        .where((id) => id != imported.id)
+        .toList();
     final sceneGeometry = geometry == null
         ? <String, dynamic>{}
         : {
@@ -182,6 +208,7 @@ class CadRuntime extends ChangeNotifier {
           },
         ),
       ],
+      remove: replacedImports,
       officialExportShapeId: imported.shape == null
           ? current.officialExportShapeId
           : imported.id,
@@ -239,8 +266,193 @@ class CadRuntime extends ChangeNotifier {
     officialExportShapeId: officialShape ? entity.id : null,
   );
 
-  Future<void> removeEntity(String id, {required String command}) =>
-      mutate(command: command, remove: [id]);
+  Future<void> removeEntity(String id, {required String command}) {
+    final entity = _requireDocument().entities[id];
+    if (entity != null && WorldCoordinateSystem.isProtected(entity)) {
+      throw StateError('${entity.data['name']} is a protected system entity.');
+    }
+    return mutate(command: command, remove: [id]);
+  }
+
+  Future<void> setEntityVisibility(String id, bool visible) async {
+    final entity =
+        _requireDocument().entities[id] ??
+        (throw StateError('Unknown document entity: $id'));
+    await mutate(
+      command: 'display.visibility',
+      upsert: [
+        CadDocumentEntity(
+          id: entity.id,
+          kind: entity.kind,
+          shape: entity.shape,
+          mesh: entity.mesh,
+          data: {...entity.data, 'sceneVisible': visible},
+        ),
+      ],
+    );
+  }
+
+  Future<void> applyAlignmentTransform(Matrix4 matrix) async {
+    final current = _requireDocument();
+    final transformed = <CadDocumentEntity>[];
+    for (final entity in current.entities.values) {
+      if (WorldCoordinateSystem.isProtected(entity)) continue;
+      final data = _transformEntityData(entity.data, matrix);
+      transformed.add(
+        CadDocumentEntity(
+          id: entity.id,
+          kind: entity.kind,
+          shape: entity.shape,
+          mesh: _alignedMeshHandle(entity.mesh, data),
+          data: data,
+        ),
+      );
+    }
+    await mutate(command: 'alignment.apply', upsert: transformed);
+    _restoreActiveImport();
+    notifyListeners();
+  }
+
+  KernelMeshHandle? _alignedMeshHandle(
+    KernelMeshHandle? handle,
+    Map<String, dynamic> data,
+  ) {
+    if (handle == null) return null;
+    final scene = data['sceneGeometry'];
+    final bounds = scene is Map ? scene['bounds'] : null;
+    if (bounds is! Map || bounds['min'] is! List || bounds['max'] is! List) {
+      return handle;
+    }
+    final minimum = (bounds['min'] as List).cast<num>();
+    final maximum = (bounds['max'] as List).cast<num>();
+    return KernelMeshHandle(
+      persistentId: handle.persistentId,
+      kernelId: handle.kernelId,
+      fingerprint: handle.fingerprint,
+      vertexCount: handle.vertexCount,
+      triangleCount: handle.triangleCount,
+      bounds: KernelBounds(
+        minimum[0].toDouble(),
+        minimum[1].toDouble(),
+        minimum[2].toDouble(),
+        maximum[0].toDouble(),
+        maximum[1].toDouble(),
+        maximum[2].toDouble(),
+      ),
+      hasNormals: handle.hasNormals,
+      metadata: {...handle.metadata, 'aligned': true},
+      degenerateTriangleCount: handle.degenerateTriangleCount,
+    );
+  }
+
+  Map<String, dynamic> _transformEntityData(
+    Map<String, dynamic> source,
+    Matrix4 matrix,
+  ) {
+    final result = Map<String, dynamic>.from(source);
+    final scene = source['sceneGeometry'];
+    if (scene is Map) {
+      result['sceneGeometry'] = _transformGeometry(
+        Map<String, dynamic>.from(scene),
+        matrix,
+      );
+    }
+    final reference = source['reference'];
+    if (reference is Map && reference['geometry'] is Map) {
+      final copy = Map<String, dynamic>.from(reference);
+      copy['geometry'] = _transformGeometry(
+        Map<String, dynamic>.from(reference['geometry'] as Map),
+        matrix,
+      );
+      result['reference'] = copy;
+    }
+    final sketch = source['sketch'];
+    if (sketch is Map && sketch['coordinates'] is Map) {
+      final copy = Map<String, dynamic>.from(sketch);
+      copy['coordinates'] = _transformGeometry(
+        Map<String, dynamic>.from(sketch['coordinates'] as Map),
+        matrix,
+      );
+      result['sketch'] = copy;
+    }
+    result['alignmentMatrix'] = matrix.values;
+    return result;
+  }
+
+  Map<String, dynamic> _transformGeometry(
+    Map<String, dynamic> geometry,
+    Matrix4 matrix,
+  ) {
+    final result = Map<String, dynamic>.from(geometry);
+    Vector3 point(List value) => Vector3(
+      (value[0] as num).toDouble(),
+      (value[1] as num).toDouble(),
+      (value[2] as num).toDouble(),
+    );
+    List<double> transformedPoint(List value) {
+      final p = matrix.transformPoint(point(value));
+      return [p.x, p.y, p.z];
+    }
+
+    List<double> transformedDirection(List value) {
+      final origin = matrix.transformPoint(Vector3.zero);
+      final p = matrix.transformPoint(point(value));
+      final direction = (p - origin).normalized;
+      return [direction.x, direction.y, direction.z];
+    }
+
+    final nodes = geometry['nodes'];
+    if (nodes is List) {
+      final values = nodes.cast<num>();
+      final output = <double>[];
+      for (var i = 0; i + 2 < values.length; i += 3) {
+        output.addAll(transformedPoint(values.sublist(i, i + 3)));
+      }
+      result['nodes'] = output;
+      if (output.isNotEmpty) {
+        final xs = <double>[], ys = <double>[], zs = <double>[];
+        for (var i = 0; i < output.length; i += 3) {
+          xs.add(output[i]);
+          ys.add(output[i + 1]);
+          zs.add(output[i + 2]);
+        }
+        xs.sort();
+        ys.sort();
+        zs.sort();
+        result['bounds'] = {
+          'min': [xs.first, ys.first, zs.first],
+          'max': [xs.last, ys.last, zs.last],
+        };
+      }
+    }
+    final points = geometry['points'];
+    if (points is List) {
+      result['points'] = [
+        for (final value in points)
+          if (value is List) transformedPoint(value),
+      ];
+    }
+    for (final key in const ['origin', 'position']) {
+      final value = geometry[key];
+      if (value is List && value.length >= 3) {
+        result[key] = transformedPoint(value);
+      }
+    }
+    for (final key in const [
+      'normal',
+      'direction',
+      'xDirection',
+      'xAxis',
+      'yAxis',
+      'zAxis',
+    ]) {
+      final value = geometry[key];
+      if (value is List && value.length >= 3) {
+        result[key] = transformedDirection(value);
+      }
+    }
+    return result;
+  }
 
   void showTransient(CadSceneEntity entity) =>
       projection.upsertTransient(entity);

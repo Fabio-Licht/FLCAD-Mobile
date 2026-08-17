@@ -33,6 +33,11 @@ class SurfaceGenerationValidator {
       case SurfaceKind.sphere:
         required('center');
         required('radius');
+      case SurfaceKind.torus:
+        required('center');
+        required('axisDirection');
+        required('majorRadius');
+        required('minorRadius');
       default:
         result.add(
           GeometryDiagnostic(
@@ -42,7 +47,7 @@ class SurfaceGenerationValidator {
           ),
         );
     }
-    for (final key in ['radius', 'tolerance']) {
+    for (final key in ['radius', 'majorRadius', 'minorRadius', 'tolerance']) {
       final value = p[key];
       if (value is num && value <= 0) {
         result.add(

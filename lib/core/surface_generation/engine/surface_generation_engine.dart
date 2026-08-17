@@ -72,6 +72,7 @@ class SurfaceGenerationEngine {
       );
     }
     final capability = _capability(request.candidate.kind);
+    await kernel.healthCheck();
     if (!kernel.descriptor.capabilities.supports(capability)) {
       allDiagnostics.add(
         GeometryDiagnostic(
@@ -296,6 +297,7 @@ class SurfaceGenerationEngine {
     SurfaceKind.cylinder => KernelCapability.cylinderSurface,
     SurfaceKind.cone => KernelCapability.coneSurface,
     SurfaceKind.sphere => KernelCapability.sphereSurface,
+    SurfaceKind.torus => KernelCapability.torusSurface,
     _ => throw UnsupportedError('${kind.name} is outside G-005B'),
   };
   GeometryDiagnostic _diagnostic(String value) {

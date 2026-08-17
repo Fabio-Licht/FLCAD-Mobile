@@ -17,6 +17,9 @@ class CadViewportPick {
 
 class ViewportPickingController {
   final Map<String, MeshBvh> _indexes = {};
+  final Map<String, KernelMeshGeometry> _geometries = {};
+  final Map<String, Object> _nodeSources = {};
+  final Map<String, Object> _triangleSources = {};
   final ProfessionalPickingPipeline pipeline =
       const ProfessionalPickingPipeline();
 
@@ -29,17 +32,27 @@ class ViewportPickingController {
     for (final entity in scene.entities.where(
       (item) =>
           item.visible &&
+          item.kind == CadSceneEntityKind.mesh &&
           item.geometry['nodes'] is List &&
           item.geometry['triangles'] is List,
     )) {
       final nodes = (entity.geometry['nodes'] as List).cast<num>();
       final triangles = (entity.geometry['triangles'] as List).cast<num>();
-      final geometry = KernelMeshGeometry(
-        nodes: nodes.map((value) => value.toDouble()).toList(growable: false),
-        triangles: triangles
-            .map((value) => value.toInt())
-            .toList(growable: false),
-      );
+      final nodesSource = entity.geometry['nodes'] as Object;
+      final trianglesSource = entity.geometry['triangles'] as Object;
+      if (!identical(_nodeSources[entity.id], nodesSource) ||
+          !identical(_triangleSources[entity.id], trianglesSource)) {
+        _geometries[entity.id] = KernelMeshGeometry(
+          nodes: nodes.map((value) => value.toDouble()).toList(growable: false),
+          triangles: triangles
+              .map((value) => value.toInt())
+              .toList(growable: false),
+        );
+        _nodeSources[entity.id] = nodesSource;
+        _triangleSources[entity.id] = trianglesSource;
+        _indexes.remove(entity.id);
+      }
+      final geometry = _geometries[entity.id]!;
       if (triangles.isEmpty) continue;
       final index = _indexes.putIfAbsent(entity.id, () => MeshBvh(geometry));
       final selection = BridgeSelection(
@@ -47,9 +60,7 @@ class ViewportPickingController {
         entityId: entity.id,
         kind: BridgeSelectionKind.triangle,
         geometry: geometry,
-        triangleIndices: Set.from(
-          List.generate(triangles.length ~/ 3, (triangle) => triangle),
-        ),
+        triangleIndices: const {},
       );
       final rowMajor = camera.inverseViewProjectionMatrix.values;
       final columnMajor = [
@@ -81,16 +92,23 @@ class ViewportPickingController {
     required Vector3 origin,
     required Vector3 normal,
   }) {
+    if (camera.viewportWidth <= 0 || camera.viewportHeight <= 0) return null;
+    final unitNormal = normal.normalized;
     final ray = pipeline.camera.ray(
       screenX: position.dx,
       screenY: position.dy,
       camera: _cameraContext(camera),
     );
-    final denominator = normal.dot(ray.direction);
+    final denominator = unitNormal.dot(ray.direction);
     if (denominator.abs() < 1e-12) return null;
-    final distance = normal.dot(origin - ray.origin) / denominator;
-    if (distance < 0) return null;
-    return ray.origin + ray.direction * distance;
+    final distance = unitNormal.dot(origin - ray.origin) / denominator;
+    if (!distance.isFinite || distance < 0) return null;
+    final hit = ray.origin + ray.direction * distance;
+    return Vector3(
+      hit.x.isFinite ? hit.x : origin.x,
+      hit.y.isFinite ? hit.y : origin.y,
+      hit.z.isFinite ? hit.z : origin.z,
+    );
   }
 
   CameraPickingContext _cameraContext(CadCameraController camera) {

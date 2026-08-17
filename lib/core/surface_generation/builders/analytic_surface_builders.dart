@@ -85,3 +85,19 @@ class SphereSurfaceBuilder extends AnalyticSurfaceBuilder {
     'upperBound': upperBound,
   });
 }
+
+class TorusSurfaceBuilder extends AnalyticSurfaceBuilder {
+  const TorusSurfaceBuilder(super.engine);
+  Future<SurfaceGenerationResult> fromCandidate(
+    SurfaceCandidate candidate, {
+    required List<double> center,
+    required List<double> axisDirection,
+    required double majorRadius,
+    required double minorRadius,
+  }) => build(candidate, {
+    'center': center,
+    'axisDirection': axisDirection,
+    'majorRadius': majorRadius,
+    'minorRadius': minorRadius,
+  });
+}

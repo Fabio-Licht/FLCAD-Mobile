@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'dart:ui' show PointMode;
+import 'dart:ui' show PointMode, VertexMode, Vertices;
+import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -38,11 +40,11 @@ class _ProfessionalCadViewportWidgetState
   Offset? previous;
   double previousScale = 1;
   final picking = ViewportPickingController();
+  final Map<String, _MeshRenderCache> meshRenderCaches = {};
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([widget.camera, widget.scene]),
-    builder: (context, _) => LayoutBuilder(
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
       builder: (context, constraints) {
         WidgetsBinding.instance.addPostFrameCallback(
           (_) =>
@@ -103,6 +105,7 @@ class _ProfessionalCadViewportWidgetState
                         style: style,
                         colors: colors,
                         showGrid: widget.showSketchGrid,
+                        meshRenderCaches: meshRenderCaches,
                       ),
                     ),
                   ),
@@ -149,8 +152,8 @@ class _ProfessionalCadViewportWidgetState
           ),
         );
       },
-    ),
-  );
+    );
+  }
 }
 
 class _ProjectedTriangle {
@@ -166,22 +169,124 @@ class _ProjectedTriangle {
   final bool selected;
 }
 
+class _MeshRenderChunk {
+  _MeshRenderChunk({
+    required this.xyz,
+    required this.indices,
+    required this.intensity,
+  }) : screen = Float32List(xyz.length ~/ 3 * 2),
+       colors = Int32List(xyz.length ~/ 3);
+
+  final Float64List xyz;
+  final Uint16List indices;
+  final Float32List intensity;
+  final Float32List screen;
+  final Int32List colors;
+  int colorKey = -1;
+}
+
+class _MeshRenderCache {
+  _MeshRenderCache._(this.chunks, this.nodesSource, this.trianglesSource);
+  final List<_MeshRenderChunk> chunks;
+  final Object nodesSource;
+  final Object trianglesSource;
+
+  factory _MeshRenderCache.from(CadSceneEntity entity) {
+    final nodes = (entity.geometry['nodes'] as List).cast<num>();
+    final triangles = (entity.geometry['triangles'] as List).cast<num>();
+    const trianglesPerChunk = 20000;
+    final chunks = <_MeshRenderChunk>[];
+    for (
+      var first = 0;
+      first < triangles.length;
+      first += trianglesPerChunk * 3
+    ) {
+      final end = math.min(first + trianglesPerChunk * 3, triangles.length);
+      final localByGlobal = <int, int>{};
+      final xyz = <double>[];
+      final localIndices = <int>[];
+      final intensitySum = <double>[];
+      final intensityCount = <int>[];
+      int localVertex(int global) => localByGlobal.putIfAbsent(global, () {
+        final offset = global * 3;
+        xyz.addAll([
+          nodes[offset].toDouble(),
+          nodes[offset + 1].toDouble(),
+          nodes[offset + 2].toDouble(),
+        ]);
+        intensitySum.add(0);
+        intensityCount.add(0);
+        return localByGlobal.length;
+      });
+
+      for (var offset = first; offset + 2 < end; offset += 3) {
+        final ga = triangles[offset].toInt();
+        final gb = triangles[offset + 1].toInt();
+        final gc = triangles[offset + 2].toInt();
+        final a = ga * 3, b = gb * 3, c = gc * 3;
+        final abx = nodes[b].toDouble() - nodes[a].toDouble();
+        final aby = nodes[b + 1].toDouble() - nodes[a + 1].toDouble();
+        final abz = nodes[b + 2].toDouble() - nodes[a + 2].toDouble();
+        final acx = nodes[c].toDouble() - nodes[a].toDouble();
+        final acy = nodes[c + 1].toDouble() - nodes[a + 1].toDouble();
+        final acz = nodes[c + 2].toDouble() - nodes[a + 2].toDouble();
+        final nx = aby * acz - abz * acy;
+        final ny = abz * acx - abx * acz;
+        final nz = abx * acy - aby * acx;
+        final length = math.sqrt(nx * nx + ny * ny + nz * nz);
+        final light = length == 0
+            ? .18
+            : (.18 +
+                      .72 *
+                          ((nx * .3 - ny * .5 + nz * .8) / length / .989949)
+                              .abs())
+                  .clamp(0.0, 1.0);
+        final la = localVertex(ga), lb = localVertex(gb), lc = localVertex(gc);
+        localIndices.addAll([la, lb, lc]);
+        for (final local in [la, lb, lc]) {
+          intensitySum[local] += light;
+          intensityCount[local]++;
+        }
+      }
+      chunks.add(
+        _MeshRenderChunk(
+          xyz: Float64List.fromList(xyz),
+          indices: Uint16List.fromList(localIndices),
+          intensity: Float32List.fromList([
+            for (var i = 0; i < intensitySum.length; i++)
+              intensitySum[i] / math.max(intensityCount[i], 1),
+          ]),
+        ),
+      );
+    }
+    return _MeshRenderCache._(
+      chunks,
+      entity.geometry['nodes'] as Object,
+      entity.geometry['triangles'] as Object,
+    );
+  }
+}
+
 class _CadScenePainter extends CustomPainter {
-  const _CadScenePainter({
+  _CadScenePainter({
     required this.scene,
     required this.camera,
     required this.style,
     required this.colors,
     required this.showGrid,
-  });
+    required this.meshRenderCaches,
+  }) : super(repaint: Listenable.merge([scene, camera]));
   final CadSceneGraph scene;
   final CadCameraController camera;
   final CadRenderStyle style;
   final ColorScheme colors;
   final bool showGrid;
+  final Map<String, _MeshRenderCache> meshRenderCaches;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final currentEntityIds = scene.entities.map((entity) => entity.id).toSet();
+    meshRenderCaches.removeWhere((id, _) => !currentEntityIds.contains(id));
     if (showGrid) {
       final paint = Paint()
         ..color = colors.outlineVariant.withValues(alpha: .3)
@@ -198,7 +303,12 @@ class _CadScenePainter extends CustomPainter {
     for (final entity in scene.entities.where((item) => item.visible)) {
       if (entity.geometry['nodes'] is List &&
           entity.geometry['triangles'] is List) {
-        _projectMesh(entity, size, projected);
+        if (style == CadRenderStyle.shaded ||
+            style == CadRenderStyle.transparent) {
+          _paintMeshBatched(canvas, entity, size);
+        } else {
+          _projectMesh(entity, size, projected);
+        }
       } else {
         _paintReference(canvas, size, entity);
       }
@@ -228,6 +338,63 @@ class _CadScenePainter extends CustomPainter {
             ..color = selected.withValues(alpha: .9),
         );
       }
+    }
+  }
+
+  void _paintMeshBatched(Canvas canvas, CadSceneEntity entity, Size size) {
+    final alpha = style == CadRenderStyle.transparent ? .22 : .82;
+    var cache = meshRenderCaches[entity.id];
+    if (cache == null ||
+        !identical(cache.nodesSource, entity.geometry['nodes']) ||
+        !identical(cache.trianglesSource, entity.geometry['triangles'])) {
+      cache = _MeshRenderCache.from(entity);
+      meshRenderCaches[entity.id] = cache;
+    }
+    final matrix = camera.viewProjectionMatrix.values;
+    final background = colors.surfaceContainer.toARGB32();
+    final foreground = (entity.selected ? colors.tertiary : colors.primary)
+        .toARGB32();
+    final alphaByte = (alpha * 255).round();
+    final colorKey = Object.hash(background, foreground, alphaByte);
+    int channel(int value, int shift) => (value >> shift) & 0xff;
+    for (final chunk in cache.chunks) {
+      for (var i = 0, p = 0; i < chunk.xyz.length; i += 3, p += 2) {
+        final x = chunk.xyz[i], y = chunk.xyz[i + 1], z = chunk.xyz[i + 2];
+        final w = matrix[12] * x + matrix[13] * y + matrix[14] * z + matrix[15];
+        final px =
+            (matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3]) / w;
+        final py =
+            (matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7]) / w;
+        chunk.screen[p] = (px + 1) * size.width / 2;
+        chunk.screen[p + 1] = (1 - py) * size.height / 2;
+      }
+      if (chunk.colorKey != colorKey) {
+        for (var i = 0; i < chunk.colors.length; i++) {
+          final t = chunk.intensity[i];
+          int mix(int shift) =>
+              (channel(background, shift) +
+                      (channel(foreground, shift) -
+                              channel(background, shift)) *
+                          t)
+                  .round()
+                  .clamp(0, 255);
+          chunk.colors[i] =
+              (alphaByte << 24) | (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        }
+        chunk.colorKey = colorKey;
+      }
+      final renderedVertices = Vertices.raw(
+        VertexMode.triangles,
+        chunk.screen,
+        colors: chunk.colors,
+        indices: chunk.indices,
+      );
+      canvas.drawVertices(
+        renderedVertices,
+        BlendMode.srcOver,
+        Paint()..color = Colors.white,
+      );
+      renderedVertices.dispose();
     }
   }
 
@@ -367,10 +534,18 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.axis:
         final origin = vector(entity.geometry['origin']);
         final direction = vector(entity.geometry['direction']).normalized;
+        final length =
+            (entity.geometry['visualLength'] as num?)?.toDouble() ?? scale * 2;
+        final axisColor = switch (entity.geometry['axisColor']) {
+          'x' => Colors.red,
+          'y' => Colors.green,
+          'z' => Colors.blue,
+          _ => colors.secondary,
+        };
         line(
-          origin - direction * scale,
-          origin + direction * scale,
-          entity.selected ? colors.tertiary : colors.secondary,
+          origin - direction * (length / 2),
+          origin + direction * (length / 2),
+          entity.selected ? colors.tertiary : axisColor,
           width: entity.selected ? 2.5 : 1.5,
         );
       case CadSceneEntityKind.plane:
@@ -387,7 +562,16 @@ class _CadScenePainter extends CustomPainter {
                   )
                   .normalized;
         final y = normal.cross(x).normalized;
-        final extent = scale * .7;
+        final extent =
+            ((entity.geometry['visualSize'] as num?)?.toDouble() ??
+                scale * 1.4) /
+            2;
+        final planeColor = switch (entity.geometry['planeColor']) {
+          'xy' => Colors.blue,
+          'xz' => Colors.green,
+          'yz' => Colors.red,
+          _ => colors.secondary,
+        };
         final corners = [
           origin - x * extent - y * extent,
           origin + x * extent - y * extent,
@@ -398,13 +582,13 @@ class _CadScenePainter extends CustomPainter {
         canvas.drawPath(
           path,
           Paint()
-            ..color = colors.secondary.withValues(alpha: .16)
+            ..color = planeColor.withValues(alpha: .16)
             ..style = PaintingStyle.fill,
         );
         canvas.drawPath(
           path,
           Paint()
-            ..color = entity.selected ? colors.tertiary : colors.secondary
+            ..color = entity.selected ? colors.tertiary : planeColor
             ..style = PaintingStyle.stroke,
         );
       case CadSceneEntityKind.coordinateSystem:
@@ -427,6 +611,26 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.curve:
       case CadSceneEntityKind.sketch:
       case CadSceneEntityKind.preview:
+        final rawSegments = entity.geometry['segments'];
+        if (rawSegments is List) {
+          final paint = Paint()
+            ..color = entity.selected ? Colors.yellow : Colors.blue
+            ..strokeWidth = entity.selected
+                ? 3
+                : (entity.geometry['strokeWidth'] as num?)?.toDouble() ?? 2
+            ..strokeCap = StrokeCap.round
+            ..isAntiAlias = true;
+          for (final raw in rawSegments) {
+            final segment = raw as List;
+            line(
+              vector(segment[0]),
+              vector(segment[1]),
+              paint.color,
+              width: paint.strokeWidth,
+            );
+          }
+          break;
+        }
         final points = (entity.geometry['points'] as List? ?? const [])
             .map(vector)
             .map(project)
@@ -450,8 +654,6 @@ class _CadScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CadScenePainter oldDelegate) =>
-      oldDelegate.scene != scene ||
-      oldDelegate.camera != camera ||
       oldDelegate.style != style ||
       oldDelegate.colors != colors ||
       oldDelegate.showGrid != showGrid;

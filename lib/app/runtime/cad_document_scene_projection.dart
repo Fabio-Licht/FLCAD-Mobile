@@ -34,7 +34,9 @@ class CadDocumentSceneProjection {
     final meshes = displayMeshes;
     final expected = {...document.entities.keys, ..._transient.keys};
     for (final entity in scene.entities.toList()) {
-      if (!expected.contains(entity.id)) scene.remove(entity.id);
+      if (!expected.contains(entity.id)) {
+        scene.remove(entity.id);
+      }
     }
     for (final entity in document.entities.values) {
       final geometry = entity.data['sceneGeometry'];
@@ -67,6 +69,7 @@ class CadDocumentSceneProjection {
         CadSceneEntityKind.mesh,
       CadDocumentEntityKind.import => CadSceneEntityKind.solid,
       CadDocumentEntityKind.reference => CadSceneEntityKind.gizmo,
+      CadDocumentEntityKind.section => CadSceneEntityKind.curve,
       CadDocumentEntityKind.sketch => CadSceneEntityKind.sketch,
       CadDocumentEntityKind.constraint => CadSceneEntityKind.gizmo,
       CadDocumentEntityKind.surface => CadSceneEntityKind.surface,

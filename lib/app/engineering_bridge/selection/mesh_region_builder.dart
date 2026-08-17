@@ -20,7 +20,7 @@ class MeshRegionBuilder {
         normals = <Vector3>[],
         connectivity = <int, Set<int>>{};
     var area = 0.0;
-    final triangleVertices = <int, Set<int>>{};
+    final edgeOwners = <String, List<int>>{};
     for (final triangle in selected) {
       final offset = triangle * 3;
       if (offset + 2 >= triangles.length)
@@ -30,7 +30,14 @@ class MeshRegionBuilder {
         triangles[offset + 1],
         triangles[offset + 2],
       };
-      triangleVertices[triangle] = ids;
+      final ordered = ids.toList()..sort();
+      for (final edge in [
+        (ordered[0], ordered[1]),
+        (ordered[0], ordered[2]),
+        (ordered[1], ordered[2]),
+      ]) {
+        (edgeOwners['${edge.$1}:${edge.$2}'] ??= <int>[]).add(triangle);
+      }
       vertices.addAll(ids);
       final p = ids.map((id) => _point(selection.geometry, id)).toList();
       final cross = (p[1] - p[0]).cross(p[2] - p[0]);
@@ -40,15 +47,11 @@ class MeshRegionBuilder {
       normals.add(cross * (1 / magnitude));
       area += magnitude / 2;
     }
-    for (final first in selected) {
-      connectivity[first] = <int>{};
-      for (final second in selected) {
-        if (first != second &&
-            triangleVertices[first]!
-                    .intersection(triangleVertices[second]!)
-                    .length >=
-                2) {
-          connectivity[first]!.add(second);
+    for (final triangle in selected) connectivity[triangle] = <int>{};
+    for (final owners in edgeOwners.values) {
+      for (final first in owners) {
+        for (final second in owners) {
+          if (first != second) connectivity[first]!.add(second);
         }
       }
     }

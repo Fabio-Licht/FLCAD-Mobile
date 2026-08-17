@@ -9,12 +9,14 @@ class SurfaceGenerationApi {
     : plane = PlaneSurfaceBuilder(engine),
       cylinder = CylinderSurfaceBuilder(engine),
       cone = ConeSurfaceBuilder(engine),
-      sphere = SphereSurfaceBuilder(engine);
+      sphere = SphereSurfaceBuilder(engine),
+      torus = TorusSurfaceBuilder(engine);
   final SurfaceGenerationEngine engine;
   final PlaneSurfaceBuilder plane;
   final CylinderSurfaceBuilder cylinder;
   final ConeSurfaceBuilder cone;
   final SphereSurfaceBuilder sphere;
+  final TorusSurfaceBuilder torus;
   Future<List<SurfaceGenerationResult>> generateApproved(
     SurfacePlan plan,
     Map<String, Map<String, dynamic>> parameters,
@@ -32,6 +34,7 @@ class SurfaceGenerationApi {
             SurfaceKind.cylinder,
             SurfaceKind.cone,
             SurfaceKind.sphere,
+            SurfaceKind.torus,
           }.contains(e.kind),
         );
     final results = <SurfaceGenerationResult>[];

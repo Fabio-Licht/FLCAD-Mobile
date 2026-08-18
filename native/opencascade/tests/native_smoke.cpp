@@ -1,84 +1,101 @@
 #include "flcad_occ_api.h"
-#include <cassert>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
 
+#define CHECK(condition)                                                       \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      std::fprintf(stderr, "CHECK failed at %s:%d: %s; native error: %s\n",   \
+                   __FILE__, __LINE__, #condition, error);                     \
+      return 1;                                                                \
+    }                                                                          \
+  } while (false)
+
 int main() {
   char error[1024] = {}, token[256] = {}, fingerprint[256] = {};
-  assert(flcad_occ_initialize(error, sizeof(error)) == 1);
-  assert(std::strlen(flcad_occ_version()) > 0);
-  assert(std::strstr(flcad_occ_capabilities(), "STEP") != nullptr);
-  assert(std::strstr(flcad_occ_capabilities(), "IGES") != nullptr);
-  assert(std::strstr(flcad_occ_capabilities(), "Loft") != nullptr);
-  assert(flcad_occ_create_vertex(1, 2, 3, token, sizeof(token), fingerprint,
+  CHECK(flcad_occ_initialize(error, sizeof(error)) == 1);
+  CHECK(std::strlen(flcad_occ_version()) > 0);
+  CHECK(std::strstr(flcad_occ_capabilities(), "STEP") != nullptr);
+  CHECK(std::strstr(flcad_occ_capabilities(), "IGES") != nullptr);
+  CHECK(std::strstr(flcad_occ_capabilities(), "Loft") != nullptr);
+  CHECK(flcad_occ_create_vertex(1, 2, 3, token, sizeof(token), fingerprint,
                                  sizeof(fingerprint), error, sizeof(error)) == 1);
-  assert(flcad_occ_shape_count() == 1);
-  assert(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
-  assert(flcad_occ_shape_count() == 0);
+  CHECK(flcad_occ_shape_count() == 1);
+  CHECK(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_shape_count() == 0);
   const double center[3] = {0, 0, 0}, axis[3] = {0, 0, 1};
-  assert(flcad_occ_create_torus(center, axis, 5, 1, token, sizeof(token),
+  CHECK(flcad_occ_create_torus(center, axis, 5, 1, token, sizeof(token),
                                 fingerprint, sizeof(fingerprint), error,
                                 sizeof(error)) == 1);
   char topology[4096] = {};
-  assert(flcad_occ_surface_topology(token, topology, sizeof(topology), error,
+  CHECK(flcad_occ_surface_topology(token, topology, sizeof(topology), error,
                                     sizeof(error)) == 1);
-  assert(std::strstr(topology, "boundaries") != nullptr);
+  CHECK(std::strstr(topology, "boundaries") != nullptr);
   char quality[4096] = {};
-  assert(flcad_occ_surface_quality(token, axis, 100, quality, sizeof(quality),
+  CHECK(flcad_occ_surface_quality(token, axis, 100, quality, sizeof(quality),
                                    error, sizeof(error)) == 1);
-  assert(std::strstr(quality, "meanCurvature") != nullptr);
-  assert(std::strstr(quality, "averageNormal") != nullptr);
-  assert(std::strstr(quality, "draft") != nullptr);
+  CHECK(std::strstr(quality, "meanCurvature") != nullptr);
+  CHECK(std::strstr(quality, "averageNormal") != nullptr);
+  CHECK(std::strstr(quality, "draft") != nullptr);
   char operated[256] = {}, operated_fp[256] = {}, operated_type[64] = {};
-  assert(flcad_occ_surface_operation("NURBS", token, "", nullptr, 0,
+  CHECK(flcad_occ_surface_operation("NURBS", token, "", nullptr, 0,
       operated, sizeof(operated), operated_fp, sizeof(operated_fp),
       operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
-  assert(std::strlen(operated_fp) > 0);
-  assert(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(std::strlen(operated_fp) > 0);
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
   const double trim_values[5] = {0, 3.0, 0, 3.0, 1e-6};
-  assert(flcad_occ_surface_operation("TRIM", token, "", trim_values, 5,
+  CHECK(flcad_occ_surface_operation("TRIM", token, "", trim_values, 5,
       operated, sizeof(operated), operated_fp, sizeof(operated_fp),
       operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
-  assert(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
-  assert(flcad_occ_surface_operation("BOUNDARY", token, "", nullptr, 0,
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_surface_operation("BOUNDARY", token, "", nullptr, 0,
       operated, sizeof(operated), operated_fp, sizeof(operated_fp),
       operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
-  assert(std::strcmp(operated_type, "compound") == 0);
-  assert(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
-  assert(flcad_occ_surface_operation("HEAL", token, "", nullptr, 0,
+  CHECK(std::strcmp(operated_type, "compound") == 0);
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_surface_operation("HEAL", token, "", nullptr, 0,
       operated, sizeof(operated), operated_fp, sizeof(operated_fp),
       operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
-  assert(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
-  assert(flcad_occ_shape_count() == 1);
-  assert(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_surface_operation("HEAL LOCAL", token, "", nullptr, 0,
+      operated, sizeof(operated), operated_fp, sizeof(operated_fp),
+      operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_surface_operation("UNSEW ALL", token, "", nullptr, 0,
+      operated, sizeof(operated), operated_fp, sizeof(operated_fp),
+      operated_type, sizeof(operated_type), error, sizeof(error)) == 1);
+  CHECK(std::strcmp(operated_type, "compound") == 0);
+  CHECK(flcad_occ_destroy_shape(operated, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_shape_count() == 1);
+  CHECK(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
   char plane[256] = {}, cylinder[256] = {}, intersection[4096] = {};
-  assert(flcad_occ_create_plane(center, axis, -10, 10, plane, sizeof(plane),
+  CHECK(flcad_occ_create_plane(center, axis, -10, 10, plane, sizeof(plane),
                                 fingerprint, sizeof(fingerprint), error,
                                 sizeof(error)) == 1);
-  assert(flcad_occ_create_cylinder(center, axis, 3, -1, 1, cylinder,
+  CHECK(flcad_occ_create_cylinder(center, axis, 3, -1, 1, cylinder,
                                    sizeof(cylinder), fingerprint,
                                    sizeof(fingerprint), error,
                                    sizeof(error)) == 1);
-  assert(flcad_occ_intersect_surfaces(plane, cylinder, intersection,
+  CHECK(flcad_occ_intersect_surfaces(plane, cylinder, intersection,
                                       sizeof(intersection), error,
                                       sizeof(error)) == 1);
-  assert(std::strstr(intersection, "edgeCount") != nullptr);
-  assert(flcad_occ_destroy_shape(plane, error, sizeof(error)) == 1);
-  assert(flcad_occ_destroy_shape(cylinder, error, sizeof(error)) == 1);
+  CHECK(std::strstr(intersection, "edgeCount") != nullptr);
+  CHECK(flcad_occ_destroy_shape(plane, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(cylinder, error, sizeof(error)) == 1);
   char exported[256] = {}, imported_fp[256] = {}, imported_type[64] = {};
-  assert(flcad_occ_create_torus(center, axis, 5, 1, exported,
+  CHECK(flcad_occ_create_torus(center, axis, 5, 1, exported,
                                 sizeof(exported), fingerprint,
                                 sizeof(fingerprint), error,
                                 sizeof(error)) == 1);
   const char* step_path = "flcad_native_roundtrip.step";
   const char* iges_path = "flcad_native_roundtrip.iges";
   const char* stl_path = "flcad_native_roundtrip.stl";
-  assert(flcad_occ_export_shape(exported, step_path, "step", error,
+  CHECK(flcad_occ_export_shape(exported, step_path, "step", error,
                                 sizeof(error)) == 1);
-  assert(std::filesystem::file_size(step_path) > 0);
+  CHECK(std::filesystem::file_size(step_path) > 0);
   char roundtrip[256] = {};
-  assert(flcad_occ_import_shape(step_path, "step", roundtrip,
+  CHECK(flcad_occ_import_shape(step_path, "step", roundtrip,
                                 sizeof(roundtrip), imported_fp,
                                 sizeof(imported_fp), imported_type,
                                 sizeof(imported_type), error,
@@ -96,16 +113,16 @@ int main() {
     fprintf(stderr, "transform failed: %s\n", error);
     return 2;
   }
-  assert(std::strlen(transformed_fp) > 0);
-  assert(flcad_occ_destroy_shape(transformed, error, sizeof(error)) == 1);
-  assert(flcad_occ_export_shape(roundtrip, iges_path, "iges", error,
+  CHECK(std::strlen(transformed_fp) > 0);
+  CHECK(flcad_occ_destroy_shape(transformed, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_export_shape(roundtrip, iges_path, "iges", error,
                                 sizeof(error)) == 1);
-  assert(std::filesystem::file_size(iges_path) > 0);
+  CHECK(std::filesystem::file_size(iges_path) > 0);
   int vertices = 0, triangles = 0;
-  assert(flcad_occ_mesh(roundtrip, stl_path, 0.1, &vertices, &triangles,
+  CHECK(flcad_occ_mesh(roundtrip, stl_path, 0.1, &vertices, &triangles,
                         error, sizeof(error)) == 1);
-  assert(vertices > 0 && triangles > 0);
-  assert(std::filesystem::file_size(stl_path) > 84);
+  CHECK(vertices > 0 && triangles > 0);
+  CHECK(std::filesystem::file_size(stl_path) > 84);
   const char* unicode_stl_path = u8"flcad_peça.stl";
   std::filesystem::copy_file(
       stl_path, std::filesystem::u8path(unicode_stl_path),
@@ -114,27 +131,27 @@ int main() {
   int mesh_vertices = 0, mesh_triangles = 0, mesh_degenerates = 0,
       mesh_normals = 0;
   double mesh_bounds[6] = {};
-  assert(flcad_occ_import_stl(
+  CHECK(flcad_occ_import_stl(
              unicode_stl_path, mesh_token, sizeof(mesh_token),
              mesh_fingerprint, sizeof(mesh_fingerprint), &mesh_vertices,
              &mesh_triangles, &mesh_degenerates, mesh_bounds, &mesh_normals,
              error, sizeof(error)) == 1);
-  assert(mesh_vertices > 0 && mesh_triangles > 0);
-  assert(flcad_occ_destroy_mesh(mesh_token, error, sizeof(error)) == 1);
-  assert(flcad_occ_destroy_shape(exported, error, sizeof(error)) == 1);
-  assert(flcad_occ_destroy_shape(roundtrip, error, sizeof(error)) == 1);
+  CHECK(mesh_vertices > 0 && mesh_triangles > 0);
+  CHECK(flcad_occ_destroy_mesh(mesh_token, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(exported, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(roundtrip, error, sizeof(error)) == 1);
   std::filesystem::remove(step_path);
   std::filesystem::remove(iges_path);
   std::filesystem::remove(stl_path);
   std::filesystem::remove(std::filesystem::u8path(unicode_stl_path));
   for (int i = 0; i < 1000; ++i) {
-    assert(flcad_occ_create_vertex(i, i, i, token, sizeof(token), fingerprint,
+    CHECK(flcad_occ_create_vertex(i, i, i, token, sizeof(token), fingerprint,
                                    sizeof(fingerprint), error, sizeof(error)) == 1);
-    assert(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
+    CHECK(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
   }
   // Surface intersection above intentionally remains registered until shutdown.
-  assert(flcad_occ_shape_count() == 1);
+  CHECK(flcad_occ_shape_count() == 1);
   flcad_occ_shutdown();
-  assert(flcad_occ_shape_count() == 0);
+  CHECK(flcad_occ_shape_count() == 0);
   return 0;
 }

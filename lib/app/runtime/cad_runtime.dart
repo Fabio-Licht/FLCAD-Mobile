@@ -256,29 +256,44 @@ class CadRuntime extends ChangeNotifier {
     KernelMeshHandle? mesh,
     Map<String, dynamic> data = const {},
     bool officialShape = false,
-  }) => mutate(
-    command: command,
-    upsert: [
-      CadDocumentEntity(
-        id: entity.id,
-        kind: kind,
-        shape: shape,
-        mesh: mesh,
-        data: {
-          ...data,
-          'collectionId': data['collectionId'] ?? _defaultCollectionFor(kind),
-          'sceneKind': entity.kind.name,
-          'sceneGeometry': entity.geometry,
-          'sceneVisible': entity.visible,
-          'sceneTransparent': entity.transparent,
-        },
-      ),
-    ],
-    officialExportShapeId: officialShape ? entity.id : null,
-  );
+  }) async {
+    if (shape != null) await _persistNativeShape(shape);
+    await mutate(
+      command: command,
+      upsert: [
+        CadDocumentEntity(
+          id: entity.id,
+          kind: kind,
+          shape: shape,
+          mesh: mesh,
+          data: {
+            ...data,
+            'collectionId': data['collectionId'] ?? _defaultCollectionFor(kind),
+            'sceneKind': entity.kind.name,
+            'sceneGeometry': entity.geometry,
+            'sceneVisible': entity.visible,
+            'sceneTransparent': entity.transparent,
+          },
+        ),
+      ],
+      officialExportShapeId: officialShape ? entity.id : null,
+    );
+  }
+
+  /// Resolves a persisted kernel shape into the active native kernel session.
+  Future<ShapeHandle> loadShape(ShapeHandle handle) => _loadedShape(handle);
+
+  Future<void> persistShape(ShapeHandle handle) => _persistNativeShape(handle);
 
   String _defaultCollectionFor(CadDocumentEntityKind kind) => switch (kind) {
     CadDocumentEntityKind.reference => 'collection:references',
+    CadDocumentEntityKind.curve => 'collection:modified',
+    CadDocumentEntityKind.vertex ||
+    CadDocumentEntityKind.edge ||
+    CadDocumentEntityKind.wire ||
+    CadDocumentEntityKind.face ||
+    CadDocumentEntityKind.shell ||
+    CadDocumentEntityKind.solid => 'collection:modified',
     CadDocumentEntityKind.import => 'collection:original',
     CadDocumentEntityKind.collection => 'collection:modified',
     _ => 'collection:modified',
@@ -296,18 +311,27 @@ class CadRuntime extends ChangeNotifier {
     final entity =
         _requireDocument().entities[id] ??
         (throw StateError('Unknown document entity: $id'));
-    await mutate(
-      command: 'display.visibility',
-      upsert: [
-        CadDocumentEntity(
-          id: entity.id,
-          kind: entity.kind,
-          shape: entity.shape,
-          mesh: entity.mesh,
-          data: {...entity.data, 'sceneVisible': visible},
-        ),
-      ],
-    );
+    final sceneEntity = scene.find(id);
+    if (sceneEntity != null && sceneEntity.visible != visible) {
+      scene.upsert(sceneEntity.copyWith(visible: visible));
+    }
+    try {
+      await mutate(
+        command: 'display.visibility',
+        upsert: [
+          CadDocumentEntity(
+            id: entity.id,
+            kind: entity.kind,
+            shape: entity.shape,
+            mesh: entity.mesh,
+            data: {...entity.data, 'sceneVisible': visible},
+          ),
+        ],
+      );
+    } catch (_) {
+      if (sceneEntity != null) scene.upsert(sceneEntity);
+      rethrow;
+    }
   }
 
   Future<void> applyAlignmentTransform(Matrix4 matrix) async {

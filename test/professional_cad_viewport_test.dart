@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:flcad_mobile/app/cad_viewport/camera/cad_camera_controller.dart';
 import 'package:flcad_mobile/app/cad_viewport/professional_cad_viewport_widget.dart';
+import 'package:flcad_mobile/app/cad_viewport/rendering/cad_canvas_normal_pipeline.dart';
+import 'package:flcad_mobile/app/cad_viewport/rendering/cad_tonal_separation.dart';
 import 'package:flcad_mobile/app/cad_viewport/rendering/mesh_scene_adapter.dart';
 import 'package:flcad_mobile/app/cad_viewport/scene/cad_scene_graph.dart';
 import 'package:flcad_mobile/app/cad_viewport/selection/viewport_picking_controller.dart';
@@ -28,10 +30,63 @@ import 'package:flcad_mobile/core/sketch_engine/models/sketch_models.dart';
 import 'package:flcad_mobile/core/storage/local_storage_service.dart';
 import 'package:flcad_mobile/features/projects/data/project_repository.dart';
 import 'package:flcad_mobile/features/projects/domain/project_manager.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('Canvas normals smooth continuity and preserve a hard edge', () {
+    final smooth = CadCanvasNormalPipeline.build(
+      const [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+      const [0, 1, 2, 0, 2, 3],
+    ).single;
+    for (var offset = 0; offset < smooth.normals.length; offset += 3) {
+      expect(smooth.normals[offset].abs(), lessThan(1e-6));
+      expect(smooth.normals[offset + 1].abs(), lessThan(1e-6));
+      expect(smooth.normals[offset + 2], closeTo(1, 1e-6));
+    }
+
+    final hard = CadCanvasNormalPipeline.build(
+      const [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+      const [0, 1, 2, 0, 3, 1],
+    ).single;
+    final first = Vector3(hard.normals[0], hard.normals[1], hard.normals[2]);
+    final second = Vector3(hard.normals[9], hard.normals[10], hard.normals[11]);
+    expect(first.dot(second).abs(), lessThan(1e-6));
+  });
+
+  test('Canvas normals weld duplicated STL positions before smoothing', () {
+    final chunk = CadCanvasNormalPipeline.build(
+      const [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, .8660254, .5],
+      const [0, 1, 2, 3, 4, 5],
+    ).single;
+    final first = Vector3(chunk.normals[0], chunk.normals[1], chunk.normals[2]);
+    final duplicate = Vector3(
+      chunk.normals[9],
+      chunk.normals[10],
+      chunk.normals[11],
+    );
+    expect(first.distanceTo(duplicate), lessThan(1e-6));
+    expect(first.y, lessThan(-.1));
+    expect(first.z, greaterThan(.8));
+  });
+
+  test('RENDER-001 separates geometry tones without producing bands', () {
+    const base = Color(0xff7899ad);
+    final dark = CadTonalSeparation.shade(base, .15);
+    final middle = CadTonalSeparation.shade(base, .5);
+    final light = CadTonalSeparation.shade(base, .85);
+    final adjacentA = CadTonalSeparation.shade(base, .500);
+    final adjacentB = CadTonalSeparation.shade(base, .501);
+
+    double luminance(Color color) => color.computeLuminance();
+    expect(luminance(dark), lessThan(luminance(middle)));
+    expect(luminance(middle), lessThan(luminance(light)));
+    expect(luminance(middle) - luminance(dark), greaterThan(.08));
+    expect(luminance(light) - luminance(middle), greaterThan(.08));
+    expect((luminance(adjacentB) - luminance(adjacentA)).abs(), lessThan(.002));
+  });
+
   const mesh = KernelMeshGeometry(
     nodes: [-1, -1, 0, 1, -1, 0, 0, 1, 0],
     triangles: [0, 1, 2],
@@ -52,6 +107,163 @@ void main() {
     camera.toggleProjection();
     expect(camera.projectionMode, CadProjectionMode.orthographic);
     expect(camera.projectionMatrix.values, isNot(perspective));
+  });
+
+  test('camera zoom cannot cross the target or enter the near plane', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+    );
+    for (var i = 0; i < 100; i++) {
+      camera.zoom(.01);
+    }
+    expect((camera.eye - camera.target).length, greaterThanOrEqualTo(.04));
+    expect(camera.eye.z, greaterThan(0));
+  });
+
+  test('camera zoom can preserve a picked cursor anchor', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 10),
+      target: Vector3.zero,
+    );
+    camera.zoom(.5, anchor: const Vector3(2, 0, 0));
+    expect(camera.eye.distanceTo(const Vector3(1, 0, 5)), lessThan(1e-9));
+    expect(camera.target.distanceTo(const Vector3(1, 0, 0)), lessThan(1e-9));
+    expect(camera.rotationCenter.distanceTo(Vector3.zero), lessThan(1e-9));
+    camera.setRotationCenter(const Vector3(3, 2, 1));
+    expect(
+      camera.rotationCenter.distanceTo(const Vector3(3, 2, 1)),
+      lessThan(1e-9),
+    );
+    expect(camera.target.distanceTo(const Vector3(1, 0, 0)), lessThan(1e-9));
+  });
+
+  test('viewport pan translates eye and target without any rotation', () {
+    for (final orthographic in [false, true]) {
+      final camera = CadCameraController(
+        eye: const Vector3(8, -6, 4),
+        target: const Vector3(1, 2, -3),
+        up: const Vector3(.1, .2, 1),
+      )..resize(1200, 800);
+      if (orthographic) camera.toggleProjection();
+      final eyeBefore = camera.eye;
+      final targetBefore = camera.target;
+      final centerBefore = camera.rotationCenter;
+      final focusBefore = camera.focusPoint;
+      final viewBefore = camera.target - camera.eye;
+
+      camera.panViewportPixels(140, -85);
+
+      final eyeDelta = camera.eye - eyeBefore;
+      final targetDelta = camera.target - targetBefore;
+      final centerDelta = camera.rotationCenter - centerBefore;
+      expect(eyeDelta.length, greaterThan(0));
+      expect(eyeDelta.distanceTo(targetDelta), lessThan(1e-10));
+      expect(eyeDelta.distanceTo(centerDelta), lessThan(1e-10));
+      expect(camera.focusPoint.distanceTo(focusBefore), lessThan(1e-10));
+      expect(
+        (camera.target - camera.eye).distanceTo(viewBefore),
+        lessThan(1e-10),
+      );
+      expect(eyeDelta.dot(viewBefore.normalized).abs(), lessThan(1e-10));
+    }
+  });
+
+  test('continuous pan has zero accumulated angular drift', () {
+    for (final orthographic in [false, true]) {
+      final camera = CadCameraController(
+        eye: const Vector3(100000008, -99999994, 100000004),
+        target: const Vector3(100000001, -100000002, 100000003),
+        up: const Vector3(.1, .2, 1),
+      )..resize(1920, 1080);
+      if (orthographic) camera.toggleProjection();
+      final forwardBefore = (camera.target - camera.eye).normalized;
+      final viewBefore = camera.viewMatrix.values;
+
+      for (var index = 0; index < 5000; index++) {
+        final dx = ((index % 17) - 8) * .37;
+        final dy = ((index % 13) - 6) * .29;
+        camera.panViewportPixels(dx, dy);
+      }
+
+      final forwardAfter = (camera.target - camera.eye).normalized;
+      final viewAfter = camera.viewMatrix.values;
+      expect(forwardAfter.distanceTo(forwardBefore), lessThan(1e-12));
+      for (final index in [0, 1, 2, 4, 5, 6, 8, 9, 10]) {
+        expect(viewAfter[index], closeTo(viewBefore[index], 1e-12));
+      }
+    }
+  });
+
+  test('orbit preserves the explicit rotation center', () {
+    final camera = CadCameraController(
+      eye: const Vector3(6, -6, 4),
+      target: const Vector3(1, 0, 0),
+      rotationCenter: const Vector3(0, 0, 0),
+    );
+    final centerBefore = camera.rotationCenter;
+    final eyeRadius = (camera.eye - centerBefore).length;
+    final targetRadius = (camera.target - centerBefore).length;
+
+    camera.orbit(.4, -.25);
+
+    expect(camera.rotationCenter.distanceTo(centerBefore), lessThan(1e-12));
+    expect((camera.eye - centerBefore).length, closeTo(eyeRadius, 1e-10));
+    expect((camera.target - centerBefore).length, closeTo(targetRadius, 1e-10));
+  });
+
+  test('orbit follows the selected working region', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 10),
+      target: Vector3.zero,
+      rotationCenter: Vector3.zero,
+    );
+    const region = Vector3(2, 0, 0);
+    camera.focusOn(region);
+    final eyeRadius = (camera.eye - region).length;
+    final targetRadius = (camera.target - region).length;
+
+    camera.orbit(.25, .1);
+
+    expect(camera.focusPoint.distanceTo(region), lessThan(1e-12));
+    expect(camera.rotationCenter.distanceTo(Vector3.zero), lessThan(1e-12));
+    expect((camera.eye - region).length, closeTo(eyeRadius, 1e-10));
+    expect((camera.target - region).length, closeTo(targetRadius, 1e-10));
+  });
+
+  test('sketch mode restores the complete professional camera state', () {
+    final camera = CadCameraController(
+      eye: const Vector3(8, -3, 5),
+      target: const Vector3(2, 1, 0),
+      rotationCenter: const Vector3(1, 1, 1),
+      up: const Vector3(0, 0, 1),
+    );
+    camera.viewScale = 23;
+    final before = camera.snapshot();
+
+    camera.enterSketch(
+      origin: const Vector3(10, 20, 30),
+      normal: const Vector3(0, 0, 1),
+      xDirection: const Vector3(1, 0, 0),
+    );
+    expect(
+      camera.rotationCenter.distanceTo(before.rotationCenter),
+      greaterThan(1),
+    );
+    camera.exitSketch();
+
+    expect(camera.eye.distanceTo(before.eye), lessThan(1e-12));
+    expect(camera.target.distanceTo(before.target), lessThan(1e-12));
+    expect(
+      camera.rotationCenter.distanceTo(before.rotationCenter),
+      lessThan(1e-12),
+    );
+    expect(camera.focusPoint.distanceTo(before.focusPoint), lessThan(1e-12));
+    expect(camera.up.distanceTo(before.up), lessThan(1e-12));
+    expect(camera.viewScale, before.viewScale);
+    expect(camera.projectionMode, before.projectionMode);
+    expect(camera.nearPlane, before.nearPlane);
+    expect(camera.farPlane, before.farPlane);
   });
 
   test('mesh adapter is the single kernel-to-scene boundary', () {
@@ -89,6 +301,120 @@ void main() {
     expect(hit?.hit.triangleIndex, 0);
   });
 
+  test('viewport picking recognizes tessellated surfaces and solids', () {
+    for (final kind in [CadSceneEntityKind.surface, CadSceneEntityKind.solid]) {
+      final scene = CadSceneGraph()
+        ..upsert(
+          CadSceneEntity(
+            id: kind.name,
+            kind: kind,
+            geometry: {'nodes': mesh.nodes, 'triangles': mesh.triangles},
+          ),
+        );
+      final camera = CadCameraController(
+        eye: const Vector3(0, 0, 5),
+        target: Vector3.zero,
+        up: const Vector3(0, 1, 0),
+      )..resize(800, 600);
+
+      final hit = ViewportPickingController().pick(
+        position: const Offset(400, 300),
+        camera: camera,
+        scene: scene,
+      );
+
+      expect(hit?.entityId, kind.name);
+    }
+  });
+
+  test('viewport picking prioritizes sketches and selects world planes', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 10),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    )..resize(800, 600);
+    final scene = CadSceneGraph()
+      ..upsert(
+        const CadSceneEntity(
+          id: 'xy-plane',
+          kind: CadSceneEntityKind.plane,
+          geometry: {
+            'origin': [0, 0, 0],
+            'normal': [0, 0, 1],
+            'visualSize': 6,
+          },
+        ),
+      );
+    final picking = ViewportPickingController();
+
+    expect(
+      picking
+          .pick(position: const Offset(400, 300), camera: camera, scene: scene)
+          ?.entityId,
+      'xy-plane',
+    );
+
+    scene.upsert(
+      const CadSceneEntity(
+        id: 'section-curve',
+        kind: CadSceneEntityKind.curve,
+        geometry: {
+          'points': [
+            [-1, 0, 0],
+            [1, 0, 0],
+          ],
+        },
+      ),
+    );
+    expect(
+      picking
+          .pick(position: const Offset(400, 300), camera: camera, scene: scene)
+          ?.entityId,
+      'section-curve',
+    );
+  });
+
+  test(
+    'empty-project world planes use a discrete camera-relative footprint',
+    () {
+      final camera = CadCameraController(
+        eye: const Vector3(0, 0, 10),
+        target: Vector3.zero,
+        up: const Vector3(0, 1, 0),
+      )..resize(800, 600);
+      final scene = CadSceneGraph()
+        ..upsert(
+          const CadSceneEntity(
+            id: 'project:world:xy-plane',
+            kind: CadSceneEntityKind.plane,
+            geometry: {
+              'origin': [0, 0, 0],
+              'normal': [0, 0, 1],
+              'visualSize': 60,
+            },
+          ),
+        );
+      final picking = ViewportPickingController();
+
+      expect(
+        picking.pick(
+          position: const Offset(400, 300),
+          camera: camera,
+          scene: scene,
+        ),
+        isNotNull,
+      );
+      expect(
+        picking.pick(
+          position: const Offset(700, 300),
+          camera: camera,
+          scene: scene,
+        ),
+        isNull,
+      );
+    },
+  );
+
   testWidgets('professional viewport renders scene controls', (tester) async {
     final scene = CadSceneGraph()
       ..upsert(
@@ -111,7 +437,205 @@ void main() {
     await tester.pump();
     expect(find.text('Shaded'), findsOneWidget);
     expect(find.text('Wire'), findsOneWidget);
+    expect(find.byTooltip('Fit View'), findsOneWidget);
     expect(find.byType(CustomPaint), findsWidgets);
+  });
+
+  testWidgets('middle-button drag dispatches pure viewport pan', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        MeshSceneAdapter.fromKernel(
+          id: 'mesh-1',
+          geometry: mesh,
+          bounds: bounds,
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(scene: scene, camera: camera),
+        ),
+      ),
+    );
+    await tester.pump();
+    final viewBefore = camera.target - camera.eye;
+    final eyeBefore = camera.eye;
+    final mouse = TestPointer(7, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      mouse.down(const Offset(400, 300), buttons: kMiddleMouseButton),
+    );
+    await tester.sendEventToBinding(
+      mouse.move(const Offset(470, 340), buttons: kMiddleMouseButton),
+    );
+    await tester.sendEventToBinding(mouse.up());
+    await tester.pump();
+
+    expect(camera.eye.distanceTo(eyeBefore), greaterThan(0));
+    expect(
+      (camera.target - camera.eye).distanceTo(viewBefore),
+      lessThan(1e-10),
+    );
+  });
+
+  testWidgets('CATIA chord transitions continuously from orbit to zoom', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        MeshSceneAdapter.fromKernel(
+          id: 'mesh-1',
+          geometry: mesh,
+          bounds: bounds,
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(scene: scene, camera: camera),
+        ),
+      ),
+    );
+    await tester.pump();
+    const start = Offset(400, 300);
+    const orbitEnd = Offset(460, 330);
+    const zoomEnd = Offset(460, 250);
+    const pointer = 31;
+    const device = 31;
+
+    await tester.sendEventToBinding(
+      const PointerDownEvent(
+        pointer: pointer,
+        device: device,
+        kind: PointerDeviceKind.mouse,
+        position: start,
+        buttons: kMiddleMouseButton,
+      ),
+    );
+    await tester.sendEventToBinding(
+      const PointerMoveEvent(
+        pointer: pointer,
+        device: device,
+        kind: PointerDeviceKind.mouse,
+        position: orbitEnd,
+        delta: Offset(60, 30),
+        buttons: kMiddleMouseButton | kPrimaryMouseButton,
+      ),
+    );
+    final distanceAfterOrbit = (camera.eye - camera.target).length;
+    await tester.sendEventToBinding(
+      const PointerMoveEvent(
+        pointer: pointer,
+        device: device,
+        kind: PointerDeviceKind.mouse,
+        position: zoomEnd,
+        delta: Offset(0, -80),
+        buttons: kMiddleMouseButton,
+      ),
+    );
+
+    expect((camera.eye - camera.target).length, lessThan(distanceAfterOrbit));
+  });
+
+  testWidgets('selection transfers navigation to the selected region', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        MeshSceneAdapter.fromKernel(
+          id: 'mesh-1',
+          geometry: mesh,
+          bounds: bounds,
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      focusPoint: const Vector3(9, 9, 9),
+      up: const Vector3(0, 1, 0),
+    );
+    CadViewportPick? selected;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(
+            scene: scene,
+            camera: camera,
+            onPick: (pick) => selected = pick,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tapAt(const Offset(400, 300));
+    await tester.pump();
+
+    expect(selected?.entityId, 'mesh-1');
+    expect(camera.focusPoint.distanceTo(selected!.hit.point), lessThan(1e-12));
+  });
+
+  testWidgets('a continuous wheel sequence keeps one stable anchor', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        MeshSceneAdapter.fromKernel(
+          id: 'mesh-1',
+          geometry: mesh,
+          bounds: bounds,
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(scene: scene, camera: camera),
+        ),
+      ),
+    );
+    await tester.pump();
+    const firstPosition = Offset(400, 300);
+    const secondPosition = Offset(420, 300);
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: firstPosition,
+        scrollDelta: Offset(0, -120),
+      ),
+    );
+    final firstAnchor = camera.focusPoint;
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: secondPosition,
+        scrollDelta: Offset(0, -120),
+      ),
+    );
+
+    expect(camera.focusPoint.distanceTo(firstAnchor), lessThan(1e-12));
   });
 
   test('operational controller coordinates picking and recognition', () async {

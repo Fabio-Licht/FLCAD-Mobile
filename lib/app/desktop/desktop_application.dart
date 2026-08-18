@@ -8,6 +8,7 @@ import '../../core/cad_kernel/manager/kernel_manager.dart';
 import '../../core/cad_document/cad_document.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
+import '../../core/professional_surface/models/professional_surface_models.dart';
 import '../../core/reference_engine/models/reference_geometry.dart';
 import '../../core/sketch_editor/models/editor_models.dart';
 import '../../features/projects/domain/project_manager.dart';
@@ -15,7 +16,7 @@ import '../../features/projects/models/project.dart';
 import '../bootstrap/app_bootstrap.dart';
 import '../bootstrap/engineering_bootstrap.dart';
 import '../cad_viewport/camera/cad_camera_controller.dart';
-import '../cad_viewport/professional_cad_viewport_widget.dart';
+import '../cad_viewport/native/integrated_native_viewport_widget.dart';
 import '../cad_viewport/scene/cad_scene_graph.dart';
 import '../commands/desktop_command_coordinator.dart';
 import '../engineering_bridge/operational_reverse_engineering_controller.dart';
@@ -1512,6 +1513,41 @@ class _OfficialEngineeringWorkspaceState
                 entity.data['sceneKind'] == 'coordinateSystem',
           )
           .toList(),
+      'Curves': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.curve &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
+      'Vertices': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.vertex &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
+      'Edges': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.edge &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
+      'Wires': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.wire &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
+      'Faces': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.face &&
+                entity.data['deleted'] != true,
+          )
+          .toList(),
       'Sketches': entities
           .where(
             (entity) =>
@@ -1537,9 +1573,17 @@ class _OfficialEngineeringWorkspaceState
       'Bodies': entities
           .where(
             (entity) =>
-                entity.kind == CadDocumentEntityKind.import &&
+                (entity.kind == CadDocumentEntityKind.import ||
+                    entity.kind == CadDocumentEntityKind.solid) &&
                 entity.data['deleted'] != true &&
                 entity.shape != null,
+          )
+          .toList(),
+      'Shells': entities
+          .where(
+            (entity) =>
+                entity.kind == CadDocumentEntityKind.shell &&
+                entity.data['deleted'] != true,
           )
           .toList(),
       'Recycle Bin': entities
@@ -1568,6 +1612,7 @@ class _OfficialEngineeringWorkspaceState
                   'surface' => Icons.layers,
                   'curve' when entity.kind == CadDocumentEntityKind.section =>
                     Icons.polyline,
+                  'curve' => Icons.gesture,
                   'mesh' => Icons.grid_on,
                   _ => Icons.category_outlined,
                 },
@@ -1743,8 +1788,14 @@ class _OfficialEngineeringWorkspaceState
         operational.cancelProfessionalSurface();
         widget.cad.setStatus('Sketch command cancelled.');
       },
-      const SingleActivator(LogicalKeyboardKey.enter): () =>
-          widget.cad.setStatus('Sketch command confirmed.'),
+      const SingleActivator(LogicalKeyboardKey.enter): () {
+        if (operational.professionalSurfacePreview != null &&
+            !operational.busy) {
+          operational.confirmProfessionalSurface();
+        } else {
+          widget.cad.setStatus('Sketch command confirmed.');
+        }
+      },
       const SingleActivator(LogicalKeyboardKey.delete): () {
         final ids = operational.selectedSketchEntityIds;
         if (ids.isNotEmpty) {
@@ -1855,7 +1906,7 @@ class _OfficialEngineeringWorkspaceState
                   ),
                   const VerticalDivider(),
                   Expanded(
-                    child: ProfessionalCadViewportWidget(
+                    child: IntegratedCadViewportWidget(
                       scene: scene,
                       camera: camera,
                       showSketchGrid:
@@ -1878,7 +1929,16 @@ class _OfficialEngineeringWorkspaceState
                                 range: HardwareKeyboard.instance.isShiftPressed,
                               );
                               selectDocument();
-                              await operational.recognizePick(pick: pick);
+                              final picked = widget
+                                  .cad
+                                  .runtime
+                                  .document
+                                  ?.entities[pick.entityId];
+                              if (picked?.mesh != null) {
+                                await operational.recognizePick(pick: pick);
+                              } else {
+                                operational.activePick = pick;
+                              }
                             },
                     ),
                   ),
@@ -1913,6 +1973,102 @@ class _OfficialEngineeringWorkspaceState
                                   Text(
                                     'Kernel shape: ${operational.activeSurface!.handle.persistentId}',
                                   ),
+                                ],
+                                if (operational.professionalSurfacePreview !=
+                                    null) ...[
+                                  const Divider(),
+                                  const Text(
+                                    'Surface Edit Preview',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Operation: ${operational.professionalSurfacePreview!.definition.tool.name}',
+                                  ),
+                                  Text(
+                                    'Status: ${operational.professionalSurfacePreview!.definition.status.name}',
+                                  ),
+                                  Text(
+                                    'Inputs: ${operational.professionalSurfacePreview!.definition.references.length}',
+                                  ),
+                                  Text(
+                                    'Transient ShapeHandle: ${operational.professionalSurfacePreview!.definition.handle?.persistentId ?? '-'}',
+                                  ),
+                                  const Text(
+                                    'Document impact: none until Apply',
+                                  ),
+                                  const Text(
+                                    'Cancel discards the complete preview.',
+                                  ),
+                                  for (final parameter
+                                      in operational
+                                          .professionalSurfacePreview!
+                                          .definition
+                                          .parameters
+                                          .entries
+                                          .where(
+                                            (entry) =>
+                                                entry.key != 'shapeHandles' &&
+                                                entry.key != 'sourceEntityIds',
+                                          ))
+                                    Text(
+                                      '${parameter.key}: ${parameter.value}',
+                                    ),
+                                ],
+                                if (operational
+                                    .professionalSurfaceValidationCompleted) ...[
+                                  const Divider(),
+                                  const Text(
+                                    'BRep Validation',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  if (operational
+                                      .professionalSurfaceValidation
+                                      .isEmpty)
+                                    const Text(
+                                      'Valid: BRepCheck reported no errors.',
+                                    )
+                                  else
+                                    for (final diagnostic
+                                        in operational
+                                            .professionalSurfaceValidation)
+                                      Text(diagnostic),
+                                ],
+                                if (operational
+                                        .professionalSurfaceOperationReport
+                                    case final report?) ...[
+                                  const Divider(),
+                                  const Text(
+                                    'Operation Result',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  Text('State: ${report['state']}'),
+                                  Text(
+                                    'Affected entities: ${report['affectedEntities']}',
+                                  ),
+                                  Text(
+                                    'Boundaries/loops: ${report['boundaries']}/${report['loops']}',
+                                  ),
+                                  Text('Tolerance: ${report['tolerance']}'),
+                                  for (final entry in report.entries.where(
+                                    (entry) => !const {
+                                      'operation',
+                                      'state',
+                                      'affectedEntities',
+                                      'boundaries',
+                                      'loops',
+                                      'tolerance',
+                                      'diagnostics',
+                                      'result',
+                                    }.contains(entry.key),
+                                  ))
+                                    Text('${entry.key}: ${entry.value}'),
+                                  Text('Final diagnostic: ${report['result']}'),
                                 ],
                               ],
                             )
@@ -2154,6 +2310,78 @@ class _OfficialEngineeringWorkspaceState
                                           .first
                                           .evidence)
                                     Text('• ${evidence.description}'),
+                                if (operational.professionalSurfacePreview !=
+                                    null) ...[
+                                  const Divider(),
+                                  const Text(
+                                    'Surface editing guidance',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Preview ${operational.professionalSurfacePreview!.definition.tool.name} is transient. Inspect the viewport before Apply.',
+                                  ),
+                                  Text(switch (operational
+                                      .professionalSurfacePreview!
+                                      .definition
+                                      .tool) {
+                                    ProfessionalSurfaceTool.offset =>
+                                      'Check offset direction, self-intersections and boundary changes.',
+                                    ProfessionalSurfaceTool.offsetWalls =>
+                                      'Review Offset mode, Inside/Outside/Bilateral direction, every Wall/Open boundary choice and the real topological result before Apply.',
+                                    ProfessionalSurfaceTool.extend =>
+                                      'Check the extended side, length and continuity.',
+                                    ProfessionalSurfaceTool.boundaryExtend =>
+                                      'Review the selected boundary, side, extension length or target, and continuity before Apply.',
+                                    ProfessionalSurfaceTool.trim ||
+                                    ProfessionalSurfaceTool.split =>
+                                      'Confirm which region will remain after the cut.',
+                                    ProfessionalSurfaceTool.boundaryTrim =>
+                                      'Confirm the region identified by the yellow Keep Point; ambiguous or open regions must not be applied.',
+                                    ProfessionalSurfaceTool.match =>
+                                      'Compare requested G0/G1/G2 tolerances with the kernel validation before Apply.',
+                                    ProfessionalSurfaceTool.blend =>
+                                      'Review radius, support faces, consumed regions and continuity before Apply.',
+                                    ProfessionalSurfaceTool.heal =>
+                                      'Review every topology correction proposed by ShapeFix.',
+                                    ProfessionalSurfaceTool.healLocal =>
+                                      'Review the local ShapeFix proposal, before/after gaps and every directly affected adjacent entity.',
+                                    ProfessionalSurfaceTool.replaceFace =>
+                                      'Create a Working Copy when appropriate and inspect every replacement-boundary mismatch.',
+                                    ProfessionalSurfaceTool.deleteFace =>
+                                      'Review dependencies and the open Shell that will remain. Delete Face never fills implicitly.',
+                                    ProfessionalSurfaceTool.unsewFace ||
+                                    ProfessionalSurfaceTool.unsewSelected ||
+                                    ProfessionalSurfaceTool.unsewAll =>
+                                      'Review every new open boundary and resulting independent Face group before Apply.',
+                                    ProfessionalSurfaceTool.mergeFaces =>
+                                      'Confirm only same-domain faces are consolidated.',
+                                    ProfessionalSurfaceTool.join =>
+                                      'Review sewing tolerance and remaining open boundaries.',
+                                    _ =>
+                                      'Review geometry and topology before committing.',
+                                  }),
+                                  const Text(
+                                    'Apply persists the result. Cancel preserves the current document.',
+                                  ),
+                                ],
+                                if (operational
+                                        .professionalSurfaceOperationReport
+                                    case final report?) ...[
+                                  const Divider(),
+                                  Text(switch (report['result']) {
+                                    'Critical' =>
+                                      'Critical: do not apply before correcting the reported topology errors.',
+                                    'Attention' =>
+                                      'Attention: review boundaries and tolerances before Apply.',
+                                    _ =>
+                                      'OK: OCCT validation found no critical result problem.',
+                                  }),
+                                  Text(
+                                    '${report['affectedEntities']} input entity/entities affected · tolerance ${report['tolerance']}.',
+                                  ),
+                                ],
                               ],
                             )
                           : module == 'Transform'

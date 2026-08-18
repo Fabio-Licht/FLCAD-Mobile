@@ -32,7 +32,11 @@ class ViewportPickingController {
     for (final entity in scene.entities.where(
       (item) =>
           item.visible &&
-          item.kind == CadSceneEntityKind.mesh &&
+          const {
+            CadSceneEntityKind.mesh,
+            CadSceneEntityKind.surface,
+            CadSceneEntityKind.solid,
+          }.contains(item.kind) &&
           item.geometry['nodes'] is List &&
           item.geometry['triangles'] is List,
     )) {
@@ -83,7 +87,207 @@ class ViewportPickingController {
         nearest = CadViewportPick(entityId: entity.id, hit: hit);
       }
     }
-    return nearest;
+    // Screen-space references intentionally take precedence over the mesh.
+    // This makes thin sketches/sections and translucent world planes usable
+    // even when they are visually superimposed on an imported STL.
+    return _pickReference(position, camera, scene) ?? nearest;
+  }
+
+  CadViewportPick? _pickReference(
+    Offset position,
+    CadCameraController camera,
+    CadSceneGraph scene,
+  ) {
+    CadViewportPick? best;
+    var bestPriority = 1 << 30;
+    var bestDistance = double.infinity;
+    final worldScale = _worldReferenceScale(scene, camera);
+
+    Vector3? vector(Object? value) {
+      if (value is! List || value.length < 3) return null;
+      return Vector3(
+        (value[0] as num).toDouble(),
+        (value[1] as num).toDouble(),
+        (value[2] as num).toDouble(),
+      );
+    }
+
+    Offset project(Vector3 value) {
+      final point = camera.viewProjectionMatrix.transformPoint(value);
+      return Offset(
+        (point.x + 1) * camera.viewportWidth / 2,
+        (1 - point.y) * camera.viewportHeight / 2,
+      );
+    }
+
+    double segmentDistance(Offset point, Offset a, Offset b) {
+      final delta = b - a;
+      final squared = delta.dx * delta.dx + delta.dy * delta.dy;
+      if (squared <= 1e-9) return (point - a).distance;
+      final relative = point - a;
+      final t = ((relative.dx * delta.dx + relative.dy * delta.dy) / squared)
+          .clamp(0.0, 1.0);
+      return (point - (a + delta * t)).distance;
+    }
+
+    void consider(
+      CadSceneEntity entity,
+      int priority,
+      double screenDistance,
+      Vector3 worldPoint,
+    ) {
+      if (screenDistance > 9) return;
+      if (priority > bestPriority ||
+          (priority == bestPriority && screenDistance >= bestDistance)) {
+        return;
+      }
+      bestPriority = priority;
+      bestDistance = screenDistance;
+      best = CadViewportPick(
+        entityId: entity.id,
+        hit: MeshHit(
+          triangleIndex: -1,
+          point: worldPoint,
+          distance: (worldPoint - camera.eye).length,
+        ),
+      );
+    }
+
+    for (final entity in scene.entities.where((item) => item.visible)) {
+      final priority = switch (entity.kind) {
+        CadSceneEntityKind.sketch || CadSceneEntityKind.curve => 0,
+        CadSceneEntityKind.plane => 1,
+        CadSceneEntityKind.axis || CadSceneEntityKind.point => 2,
+        _ => 10,
+      };
+      if (priority == 10) continue;
+
+      final rawSegments = entity.geometry['segments'];
+      if (rawSegments is List) {
+        for (final raw in rawSegments.whereType<List>()) {
+          if (raw.length < 2) continue;
+          final a = vector(raw[0]), b = vector(raw[1]);
+          if (a == null || b == null) continue;
+          consider(
+            entity,
+            priority,
+            segmentDistance(position, project(a), project(b)),
+            a,
+          );
+        }
+        continue;
+      }
+
+      final rawPoints = entity.geometry['points'];
+      if (rawPoints is List) {
+        final points = rawPoints.map(vector).whereType<Vector3>().toList();
+        for (var i = 1; i < points.length; i++) {
+          consider(
+            entity,
+            priority,
+            segmentDistance(
+              position,
+              project(points[i - 1]),
+              project(points[i]),
+            ),
+            points[i],
+          );
+        }
+        continue;
+      }
+
+      final origin = vector(entity.geometry['origin']);
+      if (origin == null) continue;
+      final isWorld = entity.id.contains(':world:');
+      if (entity.kind == CadSceneEntityKind.plane) {
+        final normal = vector(entity.geometry['normal'])?.normalized;
+        if (normal == null) continue;
+        final preferred = vector(entity.geometry['xDirection']);
+        final x =
+            preferred ??
+            normal
+                .cross(
+                  normal.z.abs() < .9
+                      ? const Vector3(0, 0, 1)
+                      : const Vector3(0, 1, 0),
+                )
+                .normalized;
+        final y = normal.cross(x).normalized;
+        final visualSize = isWorld
+            ? worldScale * 1.16
+            : (entity.geometry['visualSize'] as num?)?.toDouble() ?? 60;
+        final half = visualSize / 2;
+        final path = Path()
+          ..addPolygon(
+            [
+              origin - x * half - y * half,
+              origin + x * half - y * half,
+              origin + x * half + y * half,
+              origin - x * half + y * half,
+            ].map(project).toList(),
+            true,
+          );
+        if (path.contains(position)) consider(entity, priority, 0, origin);
+      } else if (entity.kind == CadSceneEntityKind.axis) {
+        final direction = vector(entity.geometry['direction'])?.normalized;
+        if (direction == null) continue;
+        final length = isWorld
+            ? worldScale
+            : (entity.geometry['visualLength'] as num?)?.toDouble() ?? 30;
+        consider(
+          entity,
+          priority,
+          segmentDistance(
+            position,
+            project(isWorld ? origin : origin - direction * (length / 2)),
+            project(
+              isWorld
+                  ? origin + direction * length
+                  : origin + direction * (length / 2),
+            ),
+          ),
+          origin,
+        );
+      } else {
+        consider(
+          entity,
+          priority,
+          (position - project(origin)).distance,
+          origin,
+        );
+      }
+    }
+    return best;
+  }
+
+  double _worldReferenceScale(CadSceneGraph scene, CadCameraController camera) {
+    var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+    var maxZ = double.negativeInfinity;
+    for (final entity in scene.entities.where(
+      (item) => item.visible && !item.id.contains(':world:'),
+    )) {
+      final nodes = entity.geometry['nodes'];
+      if (nodes is! List) continue;
+      for (var i = 0; i + 2 < nodes.length; i += 3) {
+        final x = (nodes[i] as num).toDouble();
+        final y = (nodes[i + 1] as num).toDouble();
+        final z = (nodes[i + 2] as num).toDouble();
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (z < minZ) minZ = z;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+        if (z > maxZ) maxZ = z;
+      }
+    }
+    if (minX.isFinite && maxX.isFinite) {
+      final diagonal = Vector3(maxX - minX, maxY - minY, maxZ - minZ).length;
+      if (diagonal > 1e-9) return diagonal * .12;
+    }
+    final distance = (camera.eye - camera.target).length;
+    return (distance * .075).clamp(.05, double.infinity).toDouble();
   }
 
   Vector3? pointOnPlane({

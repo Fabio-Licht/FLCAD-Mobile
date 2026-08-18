@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_kernel/io/kernel_io_models.dart';
+import '../../core/cad_kernel/models/kernel_models.dart';
 import '../../core/adaptive_surface/models/surface_geometry.dart';
 import '../../core/adaptive_surface/continuity/surface_continuity.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
@@ -17,6 +18,8 @@ import '../../core/professional_recognition/models/professional_recognition_mode
 import '../../core/professional_surface/api/professional_surface_modeling_api.dart';
 import '../../core/professional_surface/models/professional_surface_models.dart';
 import '../../core/professional_surface/repository/professional_surface_repository.dart';
+import '../../core/professional_topology/models/topological_entity.dart';
+import '../../core/professional_wireframe/models/professional_curve.dart';
 import '../../core/reference_engine/api/reference_api.dart';
 import '../../core/reference_engine/models/reference_entity.dart';
 import '../../core/reference_engine/models/reference_geometry.dart';
@@ -150,6 +153,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.read('surface.preview');
   set professionalSurfacePreview(SurfacePreviewState? value) =>
       runtime.write('surface.preview', value);
+  Map<String, dynamic>? get professionalSurfaceAnalysis =>
+      runtime.read('surface.analysis');
+  List<String> get professionalSurfaceValidation =>
+      runtime.read<List<String>>('surface.validation') ?? const [];
+  bool get professionalSurfaceValidationCompleted =>
+      runtime.read<bool>('surface.validation.completed') ?? false;
+  Map<String, dynamic>? get professionalSurfaceOperationReport =>
+      runtime.read<Map<String, dynamic>>('surface.operationReport');
+  ProfessionalSurfaceDefinition? get selectedProfessionalSurface {
+    final document = runtime.document;
+    if (document == null || professionalSurfaceApi == null) return null;
+    for (final id in runtime.selection) {
+      final data = document.entities[id]?.data['professionalSurface'];
+      if (data is Map) {
+        return ProfessionalSurfaceDefinition.fromJson(
+          Map<String, dynamic>.from(data),
+        );
+      }
+    }
+    return null;
+  }
+
   ReferenceEntity? get activeReference => runtime.read('reference.active');
   set activeReference(ReferenceEntity? value) =>
       runtime.write('reference.active', value);
@@ -1825,7 +1850,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   bool canPreviewProfessional(ProfessionalSurfaceTool tool) {
-    final count = geometrySelection.shapeHandles.length;
+    final count = _selectedProfessionalInputCount;
     return switch (tool) {
       ProfessionalSurfaceTool.loft ||
       ProfessionalSurfaceTool.blend => count >= 2,
@@ -1838,7 +1863,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
 
   Future<void> previewProfessionalSurface(ProfessionalSurfaceTool tool) async {
     final api = professionalSurfaceApi;
-    final handles = geometrySelection.shapeHandles;
     if (api == null || !canPreviewProfessional(tool)) {
       throw StateError('Select valid kernel shapes for ${tool.name}.');
     }
@@ -1846,12 +1870,27 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
+      final handles = await _selectedProfessionalInputHandles(tool);
+      final sourceEntityIds = <String>{
+        ...runtime.selection,
+        ..._selectedSketches.map((sketch) => sketch.id),
+      }.toList(growable: false);
       final draft = api.begin(
         tool: tool,
         references: handles.map((item) => item.persistentId).toList(),
         parameters: {
           'shapeHandles': handles.map((item) => item.toJson()).toList(),
+          'sourceEntityIds': sourceEntityIds,
+          if (tool == ProfessionalSurfaceTool.blend) ...{
+            'radius': 1.0,
+            'continuity': 1,
+            'tolerance': 1e-4,
+            'angularTolerance': 1e-3,
+          },
         },
+        continuity: tool == ProfessionalSurfaceTool.blend
+            ? SurfaceContinuity.g1
+            : SurfaceContinuity.g0,
       );
       professionalSurfacePreview = await api.preview(draft.definition.id);
       final handle = professionalSurfacePreview!.definition.handle;
@@ -1863,6 +1902,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           ),
           handle,
         );
+        await _reportProfessionalSurfaceResult(
+          tool: tool,
+          handle: handle,
+          affectedEntities: handles.length,
+          parameters: draft.definition.parameters,
+          state: 'Preview',
+        );
       }
     } catch (value) {
       error = value.toString().replaceFirst('Bad state: ', '');
@@ -1870,6 +1916,543 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _reportProfessionalSurfaceResult({
+    required ProfessionalSurfaceTool tool,
+    required ShapeHandle handle,
+    required int affectedEntities,
+    required Map<String, dynamic> parameters,
+    required String state,
+  }) async {
+    final api = professionalSurfaceApi;
+    if (api == null) return;
+    final diagnostics = await api.kernel.validate(handle, const {
+      'brep',
+      'topology',
+      'tolerance',
+      'manifold',
+    });
+    var boundaries = 0, loops = 0;
+    if (api.kernel is SurfaceTopologyKernelAPI) {
+      try {
+        final topology = await (api.kernel as SurfaceTopologyKernelAPI)
+            .inspectSurfaceTopology(handle);
+        boundaries = topology.boundaries.length;
+        loops = topology.loops.length;
+      } on Object {
+        // A Shell/Solid result is validated by BRepCheck; face-only topology
+        // metrics are intentionally unavailable for that result type.
+      }
+    }
+    final critical = diagnostics.any((item) => item.startsWith('error:'));
+    final attention = diagnostics.any((item) => item.startsWith('warning:'));
+    runtime.write('surface.operationReport', <String, dynamic>{
+      'operation': tool.name,
+      'state': state,
+      'affectedEntities': affectedEntities,
+      'boundaries': boundaries,
+      'loops': loops,
+      'tolerance':
+          parameters['tolerance'] ??
+          parameters['tolerance3d'] ??
+          parameters['distance'] ??
+          '-',
+      'diagnostics': diagnostics,
+      if (tool == ProfessionalSurfaceTool.match) ...{
+        'continuityRequested': parameters['continuity'] ?? 'G1',
+        'distanceTolerance': parameters['tolerance3d'] ?? 1e-4,
+        'angularTolerance': parameters['angularTolerance'] ?? 1e-2,
+        'curvatureTolerance': parameters['curvatureTolerance'] ?? 1e-1,
+        'constraintSamples': parameters['pointsOnCurve'] ?? 10,
+      },
+      if (tool == ProfessionalSurfaceTool.blend) ...{
+        'route': affectedEntities > 2 ? 'general-boundary' : 'shared-edge',
+        'radius': parameters['radius'] ?? 1.0,
+        'continuityRequested': parameters['continuity'] ?? 'G1',
+        'angularTolerance': parameters['angularTolerance'] ?? 1e-3,
+      },
+      if (tool == ProfessionalSurfaceTool.offsetWalls) ...{
+        'signedDistance': parameters['distance'] ?? 0,
+        'offsetMode': parameters['offsetMode'] ?? 'walls',
+        'direction': parameters['direction'] ?? 'outside',
+        'wallBoundaryIds': parameters['wallBoundaryIds'] ?? const [],
+        'openBoundaryIds': parameters['openBoundaryIds'] ?? const [],
+        'join': parameters['join'] ?? 'arc',
+        'closeResult': parameters['closeResult'] ?? true,
+        'topologicalResult': handle.type.name,
+      },
+      if (tool == ProfessionalSurfaceTool.boundaryExtend) ...{
+        'mode': parameters['mode'] ?? 'byLength',
+        'requestedLength': parameters['length'] ?? 0,
+        'continuityRequested': parameters['continuity'] ?? 1,
+        'parametricDirection': parameters['inU'] == true ? 'U' : 'V',
+        'side': parameters['after'] == false ? 'before' : 'after',
+      },
+      if (tool == ProfessionalSurfaceTool.boundaryTrim) ...{
+        'keepPoint': parameters['hasKeepPoint'] == true
+            ? [
+                parameters['keepPointX'],
+                parameters['keepPointY'],
+                parameters['keepPointZ'],
+              ]
+            : null,
+        'cuttingTools': affectedEntities - 1,
+      },
+      if ({
+        ProfessionalSurfaceTool.unsewFace,
+        ProfessionalSurfaceTool.unsewSelected,
+        ProfessionalSurfaceTool.unsewAll,
+      }.contains(tool)) ...{
+        'topologyAction': tool.name,
+        'newOpenBoundariesRequireValidation': true,
+      },
+      if (tool == ProfessionalSurfaceTool.replaceFace) ...{
+        'topologyAction': 'replaceFace',
+        'boundaryCorrespondenceValidated': !critical,
+      },
+      if (tool == ProfessionalSurfaceTool.deleteFace) ...{
+        'topologyAction': 'deleteFace',
+        'resultingShellMayBeOpen': true,
+      },
+      if (tool == ProfessionalSurfaceTool.healLocal) ...{
+        'healScope': 'local',
+        'globalChangesAllowed': false,
+      },
+      'result': critical
+          ? 'Critical'
+          : attention
+          ? 'Attention'
+          : 'OK',
+    });
+  }
+
+  int get _selectedProfessionalInputCount {
+    final ids = <String>{};
+    final document = runtime.document;
+    for (final id in runtime.selection) {
+      final entity = document?.entities[id];
+      if (entity?.shape != null || _isConvertibleSurfaceInput(entity)) {
+        ids.add(id);
+      }
+    }
+    for (final sketch in _selectedSketches) {
+      ids.add(sketch.id);
+    }
+    return ids.length;
+  }
+
+  bool _isConvertibleSurfaceInput(CadDocumentEntity? entity) =>
+      entity != null &&
+      const {
+        CadDocumentEntityKind.section,
+        CadDocumentEntityKind.sketch,
+        CadDocumentEntityKind.curve,
+        CadDocumentEntityKind.boundary,
+        CadDocumentEntityKind.edge,
+        CadDocumentEntityKind.wire,
+      }.contains(entity.kind);
+
+  List<Sketch> get _selectedSketches {
+    final api = sketchApi;
+    if (api == null) return const [];
+    final selected = runtime.selection;
+    final result = api.sketches
+        .where((sketch) => selected.contains(sketch.id))
+        .toList(growable: false);
+    if (result.isNotEmpty) return result;
+    if (selected.isNotEmpty) return const [];
+    final active = activeSketch;
+    return active == null ? const [] : [active];
+  }
+
+  Future<List<ShapeHandle>> _selectedProfessionalInputHandles(
+    ProfessionalSurfaceTool tool,
+  ) async {
+    final result = <ShapeHandle>[];
+    final document = runtime.document;
+    for (final id in runtime.selection) {
+      final entity = document?.entities[id];
+      if (entity == null) continue;
+      ShapeHandle? handle = entity.shape;
+      if (handle == null && entity.kind == CadDocumentEntityKind.section) {
+        handle = await _ensureSectionWire(entity);
+      }
+      if (handle != null &&
+          !result.any((item) => item.persistentId == handle!.persistentId)) {
+        result.add(await runtime.loadShape(handle));
+      }
+    }
+    for (final sketch in _selectedSketches) {
+      final persisted = runtime.document?.entities['curve:${sketch.id}']?.shape;
+      if (persisted != null &&
+          result.any(
+            (handle) => handle.persistentId == persisted.persistentId,
+          )) {
+        continue;
+      }
+      result.add(await _ensureSketchWire(sketch));
+    }
+    return result;
+  }
+
+  Future<ShapeHandle> _ensureSectionWire(CadDocumentEntity section) async {
+    final curveId = 'curve:${section.id}';
+    final existing = runtime.document?.entities[curveId]?.shape;
+    final revision = (section.data['revision'] as num?)?.toInt() ?? 1;
+    if (existing != null && existing.revision == revision) {
+      return runtime.loadShape(existing);
+    }
+    final sectionData = section.data['section'] as Map?;
+    final rawSegments = sectionData?['segments'] as List? ?? const [];
+    final points = <SketchVector>[];
+    for (final raw in rawSegments) {
+      if (raw is! List || raw.length < 2) continue;
+      for (final endpoint in raw.take(2)) {
+        final point = SketchVector.fromJson(endpoint);
+        if (points.isEmpty || _sketchDistance(points.last, point) > 1e-9) {
+          points.add(point);
+        }
+      }
+    }
+    if (points.length < 2) {
+      throw StateError(
+        '${section.data['name'] ?? section.id} has no usable curve.',
+      );
+    }
+    return _createWireFromPoints(
+      sourceId: section.id,
+      sourceName: section.data['name'] as String? ?? section.id,
+      sourceRevision: revision,
+      points: points,
+      curveType: ProfessionalCurveType.section,
+      color: 'sectionBlue',
+    );
+  }
+
+  Future<ShapeHandle> _ensureSketchWire(Sketch sketch) async {
+    final curveId = 'curve:${sketch.id}';
+    final existing = runtime.document?.entities[curveId]?.shape;
+    final hasOfficialWire = runtime.document?.entities.values.any(
+      (entity) =>
+          entity.kind == CadDocumentEntityKind.wire &&
+          (entity.data['topology'] as Map?)?['supportGeometryId'] == curveId,
+    );
+    if (existing != null &&
+        hasOfficialWire == true &&
+        existing.revision == sketch.version &&
+        existing.metadata['sourceEntityId'] == sketch.id) {
+      return runtime.loadShape(existing);
+    }
+    final points = _globalSketchPoints(sketch);
+    if (points.length < 2) {
+      throw StateError('${sketch.name} does not contain a usable curve.');
+    }
+    return _createWireFromPoints(
+      sourceId: sketch.id,
+      sourceName: sketch.name,
+      sourceRevision: sketch.version,
+      points: points,
+      curveType: sketch.entityIds.length == 1
+          ? ProfessionalCurveType.spline3d
+          : ProfessionalCurveType.composite,
+      color: sketch.entityIds.length == 1 ? 'splineMagenta' : 'polylineBlue',
+    );
+  }
+
+  List<SketchVector> _globalSketchPoints(Sketch sketch) {
+    final points = <SketchVector>[];
+    for (final id in sketch.entityIds) {
+      final entity = sketchApi?.entity(id);
+      if (entity == null) continue;
+      final sampled = _surfaceInputPoints(entity);
+      for (final point in sampled) {
+        final global = sketch.coordinates.localToGlobal(point);
+        if (points.isEmpty || _sketchDistance(points.last, global) > 1e-9) {
+          points.add(global);
+        }
+      }
+    }
+    return points;
+  }
+
+  Future<ShapeHandle> _createWireFromPoints({
+    required String sourceId,
+    required String sourceName,
+    required int sourceRevision,
+    required List<SketchVector> points,
+    required ProfessionalCurveType curveType,
+    required String color,
+    bool materializeDocumentEntity = false,
+  }) async {
+    final kernel = runtime.kernels.active;
+    final projectId = runtime.document?.projectId;
+    if (projectId == null) throw StateError('Open a project first.');
+    final transaction = KernelTransaction(
+      'wire-${DateTime.now().microsecondsSinceEpoch}',
+      projectId,
+      kernel.descriptor.id,
+      DateTime.now(),
+      TransactionStatus.active,
+      const [],
+    );
+    await kernel.begin(transaction);
+    try {
+      final vertices = <ShapeHandle>[];
+      for (var index = 0; index < points.length; index++) {
+        final point = points[index];
+        vertices.add(
+          await kernel.create(
+            'CREATE VERTEX',
+            {'x': point.x, 'y': point.y, 'z': point.z},
+            persistentId: '$sourceId:vertex:$index:r$sourceRevision',
+            expectedType: CADShapeType.vertex,
+            transaction: transaction,
+          ),
+        );
+      }
+      final edges = <ShapeHandle>[];
+      for (var index = 0; index + 1 < vertices.length; index++) {
+        edges.add(
+          await kernel.create(
+            'CREATE EDGE',
+            {'start': vertices[index], 'end': vertices[index + 1]},
+            persistentId: '$sourceId:edge:$index:r$sourceRevision',
+            expectedType: CADShapeType.edge,
+            transaction: transaction,
+          ),
+        );
+      }
+      final native = await kernel.create(
+        'CREATE WIRE',
+        {'edges': edges},
+        persistentId: '$sourceId:wire:r$sourceRevision',
+        expectedType: CADShapeType.wire,
+        transaction: transaction,
+      );
+      await kernel.commit(transaction);
+      final wire = ShapeHandle.reference(
+        persistentId: native.persistentId,
+        kernelId: native.kernelId,
+        type: native.type,
+        revision: sourceRevision,
+        fingerprint: native.fingerprint,
+        metadata: {...native.metadata, 'sourceEntityId': sourceId},
+      );
+      final now = DateTime.now().toUtc();
+      final curve = ProfessionalCurve(
+        id: 'curve:$sourceId',
+        name: '$sourceName Curve',
+        type: curveType,
+        points: points.map((point) => point.toJson()).toList(),
+        handle: wire,
+        revision: sourceRevision,
+        sourceEntityId: sourceId,
+        associationState: CurveAssociationState.current,
+        continuity: CurveContinuity.g0,
+        color: color,
+        createdAt: now,
+        updatedAt: now,
+        metadata: {
+          'length': _polylineLength(points),
+          'pointCount': points.length,
+          'sourceRevision': sourceRevision,
+        },
+      );
+      // Geometry Input Resolver materialization is transactional and invisible
+      // to the operator. Only explicitly created Curve/Topology entities and
+      // the accepted surface result belong in CadDocument.
+      if (!materializeDocumentEntity) return wire;
+      final vertexTopologyIds = <String>[];
+      final topologyEntities = <CadDocumentEntity>[];
+      for (var index = 0; index < vertices.length; index++) {
+        final handle = vertices[index];
+        await runtime.persistShape(handle);
+        final topology = TopologicalEntity(
+          id: 'vertex:${handle.persistentId}',
+          name: '${curve.name} Vertex ${index + 1}',
+          type: TopologicalEntityType.vertex,
+          handle: handle,
+          revision: sourceRevision,
+          supportGeometryId: curve.id,
+          tolerance: 1e-7,
+          createdAt: now,
+          updatedAt: now,
+          metadata: {'position': points[index].toJson()},
+        );
+        vertexTopologyIds.add(topology.id);
+        topologyEntities.add(
+          CadDocumentEntity(
+            id: topology.id,
+            kind: CadDocumentEntityKind.vertex,
+            shape: handle,
+            data: {
+              'name': topology.name,
+              'topology': topology.toJson(),
+              'sceneKind': 'point',
+              'sceneVisible': false,
+              'sceneGeometry': {'position': points[index].toJson()},
+            },
+          ),
+        );
+      }
+      final edgeTopologyIds = <String>[];
+      for (var index = 0; index < edges.length; index++) {
+        final handle = edges[index];
+        await runtime.persistShape(handle);
+        final topology = TopologicalEntity(
+          id: 'edge:${handle.persistentId}',
+          name: '${curve.name} Edge ${index + 1}',
+          type: TopologicalEntityType.edge,
+          handle: handle,
+          revision: sourceRevision,
+          vertexIds: [vertexTopologyIds[index], vertexTopologyIds[index + 1]],
+          supportGeometryId: curve.id,
+          tolerance: 1e-7,
+          createdAt: now,
+          updatedAt: now,
+        );
+        edgeTopologyIds.add(topology.id);
+        topologyEntities.add(
+          CadDocumentEntity(
+            id: topology.id,
+            kind: CadDocumentEntityKind.edge,
+            shape: handle,
+            data: {
+              'name': topology.name,
+              'topology': topology.toJson(),
+              'sceneKind': 'curve',
+              'sceneVisible': false,
+              'sceneGeometry': {
+                'points': [points[index].toJson(), points[index + 1].toJson()],
+              },
+            },
+          ),
+        );
+      }
+      final wireTopology = TopologicalEntity(
+        id: 'wire:${wire.persistentId}',
+        name: '${curve.name} Wire',
+        type: TopologicalEntityType.wire,
+        handle: wire,
+        revision: sourceRevision,
+        vertexIds: vertexTopologyIds,
+        edgeIds: edgeTopologyIds,
+        supportGeometryId: curve.id,
+        closed: _sketchDistance(points.first, points.last) <= 1e-7,
+        manifold: true,
+        tolerance: 1e-7,
+        createdAt: now,
+        updatedAt: now,
+      );
+      topologyEntities.add(
+        CadDocumentEntity(
+          id: wireTopology.id,
+          kind: CadDocumentEntityKind.wire,
+          shape: wire,
+          data: {
+            'name': wireTopology.name,
+            'topology': wireTopology.toJson(),
+            'sceneKind': 'curve',
+            'sceneVisible': false,
+            'sceneGeometry': {'points': curve.points, 'handle': wire.toJson()},
+          },
+        ),
+      );
+      await runtime.mutate(
+        command: 'topology.materialize-wire',
+        upsert: topologyEntities,
+      );
+      await runtime.upsertEntity(
+        command: 'wireframe.from-sketch',
+        kind: CadDocumentEntityKind.curve,
+        entity: CadSceneEntity(
+          id: curve.id,
+          kind: CadSceneEntityKind.curve,
+          geometry: {
+            'handle': wire.toJson(),
+            'points': curve.points,
+            'displayColor': curve.color,
+            'strokeWidth': 2.5,
+          },
+        ),
+        shape: wire,
+        data: {
+          'name': curve.name,
+          'group': 'Curves',
+          'curve': curve.toJson(),
+          'sourceEntityId': sourceId,
+          'associationState': curve.associationState.name,
+        },
+      );
+      runtime.select({curve.id});
+      return wire;
+    } catch (_) {
+      await kernel.rollback(transaction);
+      rethrow;
+    }
+  }
+
+  List<SketchVector> _surfaceInputPoints(SketchEntity entity) =>
+      switch (entity) {
+        SketchPoint() => [SketchVector.fromJson(entity.parameters['point'])],
+        SketchLine() => [
+          SketchVector.fromJson(entity.parameters['start']),
+          SketchVector.fromJson(entity.parameters['end']),
+        ],
+        SketchSpline() =>
+          ((entity.parameters['sampledPoints'] ?? entity.parameters['points'])
+                  as List)
+              .map(SketchVector.fromJson)
+              .toList(growable: false),
+        SketchCircle() => _sampleSketchEllipse(entity, circular: true),
+        SketchEllipse() => _sampleSketchEllipse(entity),
+        SketchArc() => _sampleSketchArc(entity),
+        _ => const [],
+      };
+
+  List<SketchVector> _sampleSketchEllipse(
+    SketchEntity entity, {
+    bool circular = false,
+  }) {
+    final center = SketchVector.fromJson(entity.parameters['center']);
+    final rx = (entity.parameters[circular ? 'radius' : 'radiusX'] as num)
+        .toDouble();
+    final ry = circular ? rx : (entity.parameters['radiusY'] as num).toDouble();
+    return List.generate(65, (index) {
+      final angle = math.pi * 2 * index / 64;
+      return SketchVector(
+        center.x + rx * math.cos(angle),
+        center.y + ry * math.sin(angle),
+      );
+    });
+  }
+
+  List<SketchVector> _sampleSketchArc(SketchEntity entity) {
+    final center = SketchVector.fromJson(entity.parameters['center']);
+    final radius = (entity.parameters['radius'] as num).toDouble();
+    final start = (entity.parameters['startAngle'] as num).toDouble();
+    final end = (entity.parameters['endAngle'] as num).toDouble();
+    return List.generate(33, (index) {
+      final angle = start + (end - start) * index / 32;
+      return SketchVector(
+        center.x + radius * math.cos(angle),
+        center.y + radius * math.sin(angle),
+      );
+    });
+  }
+
+  double _sketchDistance(SketchVector a, SketchVector b) {
+    final dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  double _polylineLength(List<SketchVector> points) {
+    var length = 0.0;
+    for (var index = 0; index + 1 < points.length; index++) {
+      length += _sketchDistance(points[index], points[index + 1]);
+    }
+    return length;
   }
 
   Future<void> confirmProfessionalSurface() async {
@@ -1887,7 +2470,68 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         confirmed,
         command: 'surface.professional.confirm',
       );
+      if (confirmed.tool == ProfessionalSurfaceTool.offsetWalls &&
+          confirmed.parameters['offsetMode'] == 'replace') {
+        final sources =
+            (confirmed.parameters['sourceEntityIds'] as List? ?? const [])
+                .whereType<String>()
+                .where((id) => id != confirmed.id)
+                .toList(growable: false);
+        if (sources.isNotEmpty) {
+          await runtime.mutate(
+            command: 'surface.offset.replace-source',
+            remove: sources,
+          );
+        }
+      }
+      final report = professionalSurfaceOperationReport;
+      if (report != null) {
+        runtime.write('surface.operationReport', {
+          ...report,
+          'state': 'Applied',
+        });
+      }
       professionalSurfacePreview = null;
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateProfessionalSurfacePreview({
+    Map<String, dynamic> parameters = const {},
+    SurfaceContinuity? continuity,
+  }) async {
+    final api = professionalSurfaceApi;
+    final current = professionalSurfacePreview;
+    if (api == null || current == null) return;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      runtime.hideTransient('preview:${current.definition.id}');
+      final updated = await api.preview(
+        current.definition.id,
+        parameters: {...current.definition.parameters, ...parameters},
+        continuity: continuity,
+      );
+      professionalSurfacePreview = updated;
+      final handle = updated.definition.handle;
+      if (handle != null) {
+        await runtime.showTransientShape(
+          _professionalSurfaceVisual(updated.definition, preview: true),
+          handle,
+        );
+        await _reportProfessionalSurfaceResult(
+          tool: updated.definition.tool,
+          handle: handle,
+          affectedEntities: updated.definition.references.length,
+          parameters: updated.definition.parameters,
+          state: 'Preview',
+        );
+      }
     } catch (value) {
       error = value.toString().replaceFirst('Bad state: ', '');
     } finally {
@@ -1901,8 +2545,254 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (preview == null || professionalSurfaceApi == null) return;
     professionalSurfaceApi!.cancel(preview.definition.id);
     runtime.hideTransient('preview:${preview.definition.id}');
+    final report = professionalSurfaceOperationReport;
+    if (report != null) {
+      runtime.write('surface.operationReport', {
+        ...report,
+        'state': 'Cancelled',
+      });
+    }
     professionalSurfacePreview = null;
     notifyListeners();
+  }
+
+  Future<void> previewProfessionalSurfaceEdit(
+    ProfessionalSurfaceTool tool,
+  ) async {
+    final api = professionalSurfaceApi;
+    final selected = selectedProfessionalSurface;
+    if (api == null || selected?.handle == null) {
+      throw StateError('Select a committed Surface before ${tool.name}.');
+    }
+    final references = <ShapeHandle>[
+      await runtime.loadShape(selected!.handle!),
+    ];
+    if ({
+      ProfessionalSurfaceTool.match,
+      ProfessionalSurfaceTool.split,
+      ProfessionalSurfaceTool.join,
+      ProfessionalSurfaceTool.offsetWalls,
+      ProfessionalSurfaceTool.boundaryExtend,
+      ProfessionalSurfaceTool.boundaryTrim,
+      ProfessionalSurfaceTool.unsewFace,
+      ProfessionalSurfaceTool.unsewSelected,
+      ProfessionalSurfaceTool.unsewAll,
+      ProfessionalSurfaceTool.replaceFace,
+      ProfessionalSurfaceTool.deleteFace,
+    }.contains(tool)) {
+      for (final handle in geometrySelection.shapeHandles) {
+        if (handle.persistentId != selected.handle!.persistentId) {
+          references.add(await runtime.loadShape(handle));
+        }
+      }
+      if ({
+            ProfessionalSurfaceTool.match,
+            ProfessionalSurfaceTool.split,
+            ProfessionalSurfaceTool.join,
+            ProfessionalSurfaceTool.boundaryTrim,
+            ProfessionalSurfaceTool.unsewFace,
+            ProfessionalSurfaceTool.unsewSelected,
+            ProfessionalSurfaceTool.replaceFace,
+            ProfessionalSurfaceTool.deleteFace,
+          }.contains(tool) &&
+          references.length < 2) {
+        throw StateError('${tool.name} requires a target and a tool shape.');
+      }
+      if (tool == ProfessionalSurfaceTool.replaceFace &&
+          references.length < 3) {
+        throw StateError(
+          'Replace Face requires owner, Face to replace and replacement Face.',
+        );
+      }
+      if ({
+            ProfessionalSurfaceTool.unsewFace,
+            ProfessionalSurfaceTool.unsewSelected,
+            ProfessionalSurfaceTool.deleteFace,
+          }.contains(tool) &&
+          references.length < 2) {
+        throw StateError('${tool.name} requires selected Face topology.');
+      }
+    }
+    final parameters = <String, dynamic>{
+      'shapeHandles': references.map((item) => item.toJson()).toList(),
+      if (tool == ProfessionalSurfaceTool.extend) ...{
+        'length': 10.0,
+        'continuity': 1,
+        'inU': true,
+        'after': true,
+      },
+      if (tool == ProfessionalSurfaceTool.trim) ...{
+        'uMin': 0.0,
+        'uMax': 0.9,
+        'vMin': 0.0,
+        'vMax': 0.9,
+      },
+      if (tool == ProfessionalSurfaceTool.offset) 'distance': 2.0,
+      if (tool == ProfessionalSurfaceTool.offsetWalls) ...{
+        'distance': 2.0,
+        'tolerance': 1e-4,
+        'join': 'arc',
+        'offsetMode': 'walls',
+        'direction': 'outside',
+        'insideDistance': 2.0,
+        'outsideDistance': 2.0,
+        'wallBoundaryIds': const <String>[],
+        'openBoundaryIds': references
+            .skip(1)
+            .map((handle) => handle.persistentId)
+            .toList(growable: false),
+        'closeResult': false,
+      },
+      if (tool == ProfessionalSurfaceTool.boundaryExtend) ...{
+        'mode': references.length > 1 ? 'upToGeometry' : 'byLength',
+        'length': 10.0,
+        'continuity': 1,
+        'inU': true,
+        'after': true,
+        'tolerance': 1e-6,
+      },
+      if (tool == ProfessionalSurfaceTool.boundaryTrim) ...{
+        'tolerance': 1e-7,
+        'keepPointX': activePick?.hit.point.x ?? 0,
+        'keepPointY': activePick?.hit.point.y ?? 0,
+        'keepPointZ': activePick?.hit.point.z ?? 0,
+        'hasKeepPoint': activePick != null,
+      },
+      if (tool == ProfessionalSurfaceTool.match) ...{
+        'continuity': 1,
+        'pointsOnCurve': 10,
+        'tolerance3d': 1e-4,
+        'angularTolerance': 1e-2,
+        'curvatureTolerance': 1e-1,
+      },
+    };
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final draft = api.begin(
+        tool: tool,
+        references: references.map((item) => item.persistentId).toList(),
+        parameters: parameters,
+        continuity: tool == ProfessionalSurfaceTool.match
+            ? SurfaceContinuity.g1
+            : SurfaceContinuity.g0,
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle;
+      if (handle != null) {
+        await runtime.showTransientShape(
+          _professionalSurfaceVisual(
+            professionalSurfacePreview!.definition,
+            preview: true,
+          ),
+          handle,
+        );
+        await _reportProfessionalSurfaceResult(
+          tool: tool,
+          handle: handle,
+          affectedEntities: references.length,
+          parameters: parameters,
+          state: 'Preview',
+        );
+      }
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> analyzeSelectedProfessionalSurface(
+    SurfaceAnalysisMode mode,
+  ) async {
+    final api = professionalSurfaceApi;
+    final selected = selectedProfessionalSurface;
+    if (api == null || selected == null) {
+      throw StateError('Select a committed Surface for analysis.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final analysis = await api.analyze(selected.id, {mode});
+      runtime.write('surface.analysis', analysis);
+      final visual = runtime.scene.find(selected.id);
+      if (visual != null) {
+        runtime.scene.upsert(
+          CadSceneEntity(
+            id: visual.id,
+            kind: visual.kind,
+            geometry: {
+              ...visual.geometry,
+              'surfaceAnalysisMode': mode.name,
+              'surfaceAnalysis': analysis,
+            },
+            visible: visual.visible,
+            selected: visual.selected,
+            transparent: visual.transparent,
+          ),
+        );
+      }
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  void clearProfessionalSurfaceAnalysis() {
+    final selected = selectedProfessionalSurface;
+    if (selected == null) return;
+    final visual = runtime.scene.find(selected.id);
+    if (visual != null) {
+      final geometry = Map<String, dynamic>.from(visual.geometry)
+        ..remove('surfaceAnalysisMode')
+        ..remove('surfaceAnalysis');
+      runtime.scene.upsert(
+        CadSceneEntity(
+          id: visual.id,
+          kind: visual.kind,
+          geometry: geometry,
+          visible: visual.visible,
+          selected: visual.selected,
+          transparent: visual.transparent,
+        ),
+      );
+    }
+    runtime.write('surface.analysis', null);
+    notifyListeners();
+  }
+
+  Future<void> validateSelectedProfessionalSurface() async {
+    final api = professionalSurfaceApi;
+    final selected = selectedProfessionalSurface;
+    if (api == null || selected?.handle == null) {
+      throw StateError('Select a committed Surface for validation.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final handle = await runtime.loadShape(selected!.handle!);
+      runtime.write(
+        'surface.validation',
+        await api.kernel.validate(handle, const {
+          'brep',
+          'topology',
+          'tolerance',
+          'manifold',
+        }),
+      );
+      runtime.write('surface.validation.completed', true);
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   Future<void> undo() async {
@@ -2590,14 +3480,93 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Future<void> _upsertProfessionalSurface(
     ProfessionalSurfaceDefinition value, {
     required String command,
-  }) => runtime.upsertEntity(
-    command: command,
-    kind: CadDocumentEntityKind.surface,
-    entity: _professionalSurfaceVisual(value),
-    shape: value.handle,
-    officialShape: value.handle != null,
-    data: {'professionalSurface': value.toJson()},
-  );
+  }) async {
+    final recordedSources =
+        (value.parameters['sourceEntityIds'] as List? ?? const [])
+            .whereType<String>()
+            .toSet();
+    final sourceIds = recordedSources.isNotEmpty
+        ? recordedSources.toList(growable: false)
+        : runtime.document?.entities.values
+                  .where(
+                    (entity) =>
+                        entity.shape != null &&
+                        value.references.contains(entity.shape!.persistentId),
+                  )
+                  .map((entity) => entity.id)
+                  .toSet()
+                  .toList(growable: false) ??
+              const <String>[];
+    await runtime.upsertEntity(
+      command: command,
+      kind: CadDocumentEntityKind.surface,
+      entity: _professionalSurfaceVisual(value),
+      shape: value.handle,
+      officialShape: value.handle != null,
+      data: {
+        'name': value.name,
+        'professionalSurface': value.toJson(),
+        'sourceEntityIds': sourceIds,
+        'associationState': 'current',
+      },
+    );
+    final handle = value.handle;
+    if (handle == null) return;
+    final now = DateTime.now().toUtc();
+    final outerWireIds = sourceIds
+        .where((id) {
+          final kind = runtime.document?.entities[id]?.kind;
+          return kind == CadDocumentEntityKind.wire ||
+              kind == CadDocumentEntityKind.boundary ||
+              kind == CadDocumentEntityKind.curve;
+        })
+        .toList(growable: false);
+    final topologyType = switch (handle.type) {
+      CADShapeType.solid => TopologicalEntityType.solid,
+      CADShapeType.shell => TopologicalEntityType.shell,
+      _ => TopologicalEntityType.face,
+    };
+    final documentKind = switch (topologyType) {
+      TopologicalEntityType.solid => CadDocumentEntityKind.solid,
+      TopologicalEntityType.shell => CadDocumentEntityKind.shell,
+      _ => CadDocumentEntityKind.face,
+    };
+    final topologyPrefix = topologyType.name;
+    final face = TopologicalEntity(
+      id: '$topologyPrefix:${value.id}',
+      name: '${value.name} ${topologyType.name}',
+      type: topologyType,
+      handle: handle,
+      revision: value.revision,
+      supportGeometryId: value.id,
+      outerWireId: topologyType == TopologicalEntityType.face
+          ? outerWireIds.firstOrNull
+          : null,
+      continuity: switch (value.continuity) {
+        SurfaceContinuity.g0 => TopologicalContinuity.g0,
+        SurfaceContinuity.g1 => TopologicalContinuity.g1,
+        SurfaceContinuity.g2 => TopologicalContinuity.g2,
+      },
+      createdAt: value.createdAt,
+      updatedAt: now,
+      metadata: {'sourceEntityIds': sourceIds, 'tool': value.tool.name},
+    );
+    await runtime.upsertEntity(
+      command: '$command.face',
+      kind: documentKind,
+      entity: CadSceneEntity(
+        id: face.id,
+        kind: CadSceneEntityKind.surface,
+        geometry: {'handle': handle.toJson(), 'surfaceId': value.id},
+      ),
+      shape: handle,
+      data: {
+        'name': face.name,
+        'topology': face.toJson(),
+        'sceneVisible': false,
+      },
+    );
+  }
 
   Future<void> _upsertSurface(
     GeneratedSurface surface, {

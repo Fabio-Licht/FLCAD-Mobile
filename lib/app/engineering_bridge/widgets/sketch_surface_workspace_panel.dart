@@ -34,6 +34,11 @@ class _SketchSurfaceWorkspacePanelState
   bool snapSketch = true;
   bool snapReferences = true;
   bool snapGrid = true;
+  double categoryBValue = 1;
+  SurfaceContinuity categoryBContinuity = SurfaceContinuity.g1;
+  SurfaceOffsetMode offsetMode = SurfaceOffsetMode.walls;
+  SurfaceOffsetDirection offsetDirection = SurfaceOffsetDirection.outside;
+  final Set<String> wallBoundaryIds = {};
 
   OperationalReverseEngineeringController get controller => widget.controller;
 
@@ -220,11 +225,20 @@ class _SketchSurfaceWorkspacePanelState
             title: Text('CAD Surface generated'),
             subtitle: Text('Registered, persisted and visible in the scene.'),
           ),
-        if (controller.geometrySelection.shapeHandles.isNotEmpty) ...[
+        if (controller.activeSketch != null ||
+            controller.geometrySelection.shapeHandles.isNotEmpty) ...[
           const Divider(),
-          Text(
-            '${controller.geometrySelection.shapeHandles.length} kernel shape(s) selected',
+          const ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.auto_awesome_motion),
+            title: Text('Professional Surface'),
+            subtitle: Text('Create · Loft · Sweep · Fill · Patch'),
           ),
+          Text(
+            '${controller.geometrySelection.shapeHandles.length} kernel shape(s) · ${controller.activeSketch == null ? 0 : 1} active Sketch',
+          ),
+          const Text('Create', style: TextStyle(fontWeight: FontWeight.w600)),
           Wrap(
             spacing: 6,
             runSpacing: 6,
@@ -236,19 +250,216 @@ class _SketchSurfaceWorkspacePanelState
                 ProfessionalSurfaceTool.patch,
                 ProfessionalSurfaceTool.blend,
               ])
-                if (controller.canPreviewProfessional(tool))
+                OutlinedButton.icon(
+                  icon: Icon(switch (tool) {
+                    ProfessionalSurfaceTool.loft => Icons.view_in_ar,
+                    ProfessionalSurfaceTool.sweep => Icons.route,
+                    ProfessionalSurfaceTool.fill => Icons.format_color_fill,
+                    ProfessionalSurfaceTool.patch => Icons.grid_4x4,
+                    ProfessionalSurfaceTool.blend => Icons.rounded_corner,
+                    _ => Icons.layers,
+                  }),
+                  onPressed:
+                      controller.busy ||
+                          !controller.canPreviewProfessional(tool)
+                      ? null
+                      : () => controller.previewProfessionalSurface(tool),
+                  label: Text(
+                    tool.name[0].toUpperCase() + tool.name.substring(1),
+                  ),
+                ),
+            ],
+          ),
+          if (controller.selectedProfessionalSurface != null) ...[
+            const SizedBox(height: 10),
+            const Text('Edit', style: TextStyle(fontWeight: FontWeight.w600)),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tool in const [
+                  ProfessionalSurfaceTool.extend,
+                  ProfessionalSurfaceTool.trim,
+                  ProfessionalSurfaceTool.offset,
+                  ProfessionalSurfaceTool.offsetWalls,
+                  ProfessionalSurfaceTool.boundaryExtend,
+                  ProfessionalSurfaceTool.boundaryTrim,
+                  ProfessionalSurfaceTool.match,
+                  ProfessionalSurfaceTool.heal,
+                  ProfessionalSurfaceTool.mergeFaces,
+                ])
                   OutlinedButton(
                     onPressed: controller.busy
                         ? null
-                        : () => controller.previewProfessionalSurface(tool),
+                        : () => controller.previewProfessionalSurfaceEdit(tool),
                     child: Text(
-                      tool.name[0].toUpperCase() + tool.name.substring(1),
+                      tool == ProfessionalSurfaceTool.mergeFaces
+                          ? 'Merge Faces'
+                          : tool == ProfessionalSurfaceTool.offsetWalls
+                          ? 'Offset + Walls'
+                          : tool == ProfessionalSurfaceTool.boundaryExtend
+                          ? 'Boundary Extend'
+                          : tool == ProfessionalSurfaceTool.boundaryTrim
+                          ? 'Boundary Trim'
+                          : tool == ProfessionalSurfaceTool.match
+                          ? 'Match Surface'
+                          : tool.name[0].toUpperCase() + tool.name.substring(1),
                     ),
                   ),
-            ],
-          ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Topology',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tool in const [
+                  ProfessionalSurfaceTool.split,
+                  ProfessionalSurfaceTool.join,
+                  ProfessionalSurfaceTool.unsewFace,
+                  ProfessionalSurfaceTool.unsewSelected,
+                  ProfessionalSurfaceTool.unsewAll,
+                  ProfessionalSurfaceTool.replaceFace,
+                  ProfessionalSurfaceTool.deleteFace,
+                  ProfessionalSurfaceTool.healLocal,
+                ])
+                  OutlinedButton(
+                    onPressed: controller.busy
+                        ? null
+                        : () => controller.previewProfessionalSurfaceEdit(tool),
+                    child: Text(
+                      tool == ProfessionalSurfaceTool.join
+                          ? 'Sew'
+                          : tool == ProfessionalSurfaceTool.unsewFace
+                          ? 'Unsew Face'
+                          : tool == ProfessionalSurfaceTool.unsewSelected
+                          ? 'Unsew Selected'
+                          : tool == ProfessionalSurfaceTool.unsewAll
+                          ? 'Unsew All'
+                          : tool == ProfessionalSurfaceTool.replaceFace
+                          ? 'Replace Face'
+                          : tool == ProfessionalSurfaceTool.deleteFace
+                          ? 'Delete Face'
+                          : tool == ProfessionalSurfaceTool.healLocal
+                          ? 'Heal Local'
+                          : tool.name[0].toUpperCase() + tool.name.substring(1),
+                    ),
+                  ),
+                OutlinedButton.icon(
+                  onPressed: controller.busy
+                      ? null
+                      : controller.validateSelectedProfessionalSurface,
+                  icon: const Icon(Icons.fact_check_outlined, size: 18),
+                  label: const Text('Validate'),
+                ),
+              ],
+            ),
+            if (controller.professionalSurfaceValidation.isNotEmpty)
+              Text(controller.professionalSurfaceValidation.join('\n')),
+            const SizedBox(height: 8),
+            const Text(
+              'Analysis',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final mode in const [
+                  SurfaceAnalysisMode.zebra,
+                  SurfaceAnalysisMode.reflection,
+                  SurfaceAnalysisMode.curvature,
+                  SurfaceAnalysisMode.gaussian,
+                  SurfaceAnalysisMode.draft,
+                ])
+                  OutlinedButton(
+                    onPressed: controller.busy
+                        ? null
+                        : () => controller.analyzeSelectedProfessionalSurface(
+                            mode,
+                          ),
+                    child: Text(
+                      mode.name[0].toUpperCase() + mode.name.substring(1),
+                    ),
+                  ),
+                TextButton(
+                  onPressed: controller.clearProfessionalSurfaceAnalysis,
+                  child: const Text('Close Analysis'),
+                ),
+              ],
+            ),
+          ],
         ],
-        if (controller.professionalSurfacePreview != null)
+        if (controller.professionalSurfacePreview != null) ...[
+          _CategoryBTaskPanel(
+            preview: controller.professionalSurfacePreview!,
+            value: categoryBValue,
+            continuity: categoryBContinuity,
+            busy: controller.busy,
+            onValueChanged: (value) => setState(() => categoryBValue = value),
+            onValueCommitted: (value) {
+              final tool =
+                  controller.professionalSurfacePreview!.definition.tool;
+              controller.updateProfessionalSurfacePreview(
+                parameters: {
+                  if (tool == ProfessionalSurfaceTool.blend) 'radius': value,
+                  if (tool == ProfessionalSurfaceTool.offsetWalls)
+                    'distance': value,
+                  if (tool == ProfessionalSurfaceTool.boundaryExtend)
+                    'length': value,
+                  if (tool == ProfessionalSurfaceTool.boundaryTrim)
+                    'keepRegionIndex': value.round(),
+                  if (tool == ProfessionalSurfaceTool.match)
+                    'tolerance3d': value,
+                },
+              );
+            },
+            onContinuityChanged: (value) {
+              setState(() => categoryBContinuity = value);
+              controller.updateProfessionalSurfacePreview(continuity: value);
+            },
+            offsetMode: offsetMode,
+            offsetDirection: offsetDirection,
+            onOffsetModeChanged: (value) {
+              setState(() => offsetMode = value);
+              controller.updateProfessionalSurfacePreview(
+                parameters: {
+                  'offsetMode': value.name,
+                  'closeResult': value == SurfaceOffsetMode.close,
+                },
+              );
+            },
+            onOffsetDirectionChanged: (value) {
+              setState(() => offsetDirection = value);
+              controller.updateProfessionalSurfacePreview(
+                parameters: {'direction': value.name},
+              );
+            },
+            wallBoundaryIds: wallBoundaryIds,
+            onWallBoundaryChanged: (id, enabled) {
+              setState(() {
+                enabled ? wallBoundaryIds.add(id) : wallBoundaryIds.remove(id);
+              });
+              final available = controller
+                  .professionalSurfacePreview!
+                  .definition
+                  .references
+                  .skip(1)
+                  .toSet();
+              controller.updateProfessionalSurfacePreview(
+                parameters: {
+                  'wallBoundaryIds': wallBoundaryIds.toList(),
+                  'openBoundaryIds': available
+                      .difference(wallBoundaryIds)
+                      .toList(),
+                },
+              );
+            },
+          ),
           Row(
             children: [
               Expanded(
@@ -256,7 +467,7 @@ class _SketchSurfaceWorkspacePanelState
                   onPressed: controller.busy
                       ? null
                       : controller.confirmProfessionalSurface,
-                  child: const Text('Confirm Surface'),
+                  child: const Text('Apply'),
                 ),
               ),
               TextButton(
@@ -267,6 +478,7 @@ class _SketchSurfaceWorkspacePanelState
               ),
             ],
           ),
+        ],
         const Divider(),
         Wrap(
           spacing: 6,
@@ -292,6 +504,205 @@ class _SketchSurfaceWorkspacePanelState
       ],
     ),
   );
+}
+
+class _CategoryBTaskPanel extends StatelessWidget {
+  const _CategoryBTaskPanel({
+    required this.preview,
+    required this.value,
+    required this.continuity,
+    required this.busy,
+    required this.onValueChanged,
+    required this.onValueCommitted,
+    required this.onContinuityChanged,
+    required this.offsetMode,
+    required this.offsetDirection,
+    required this.onOffsetModeChanged,
+    required this.onOffsetDirectionChanged,
+    required this.wallBoundaryIds,
+    required this.onWallBoundaryChanged,
+  });
+
+  final SurfacePreviewState preview;
+  final double value;
+  final SurfaceContinuity continuity;
+  final bool busy;
+  final ValueChanged<double> onValueChanged, onValueCommitted;
+  final ValueChanged<SurfaceContinuity> onContinuityChanged;
+  final SurfaceOffsetMode offsetMode;
+  final SurfaceOffsetDirection offsetDirection;
+  final ValueChanged<SurfaceOffsetMode> onOffsetModeChanged;
+  final ValueChanged<SurfaceOffsetDirection> onOffsetDirectionChanged;
+  final Set<String> wallBoundaryIds;
+  final void Function(String id, bool enabled) onWallBoundaryChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final tool = preview.definition.tool;
+    if (!const {
+      ProfessionalSurfaceTool.match,
+      ProfessionalSurfaceTool.blend,
+      ProfessionalSurfaceTool.offsetWalls,
+      ProfessionalSurfaceTool.boundaryExtend,
+      ProfessionalSurfaceTool.boundaryTrim,
+    }.contains(tool)) {
+      return const SizedBox.shrink();
+    }
+    final (
+      title,
+      selection,
+      parameter,
+      minimum,
+      maximum,
+      divisions,
+    ) = switch (tool) {
+      ProfessionalSurfaceTool.match => (
+        'Match Surface',
+        'Surface → Boundary → Target Surface',
+        'Tolerance',
+        0.00001,
+        0.01,
+        100,
+      ),
+      ProfessionalSurfaceTool.blend => (
+        'Blend Surface',
+        'Shared Edge, or Surface 1 → Boundary 1 → Surface 2 → Boundary 2',
+        'Radius',
+        0.1,
+        100.0,
+        999,
+      ),
+      ProfessionalSurfaceTool.offsetWalls => (
+        'Offset + Walls',
+        'Shape → Opening Faces → Distance/Direction',
+        'Distance',
+        -100.0,
+        100.0,
+        400,
+      ),
+      ProfessionalSurfaceTool.boundaryExtend => (
+        'Boundary Extend',
+        'Surface → Boundary → Side or Target',
+        'Length',
+        0.1,
+        100.0,
+        999,
+      ),
+      ProfessionalSurfaceTool.boundaryTrim => (
+        'Boundary Trim',
+        'Surface → Boundary → Cutting Tool → Region to Keep',
+        'Region',
+        0.0,
+        20.0,
+        20,
+      ),
+      _ => throw StateError('Not a Category B tool'),
+    };
+    final safeValue = value.clamp(minimum, maximum).toDouble();
+    return Card(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(selection, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Text('$parameter: ${safeValue.toStringAsPrecision(4)}'),
+            Slider(
+              value: safeValue,
+              min: minimum,
+              max: maximum,
+              divisions: divisions,
+              onChanged: busy ? null : onValueChanged,
+              onChangeEnd: busy ? null : onValueCommitted,
+            ),
+            if (tool == ProfessionalSurfaceTool.offsetWalls) ...[
+              DropdownButtonFormField<SurfaceOffsetMode>(
+                initialValue: offsetMode,
+                decoration: const InputDecoration(labelText: 'Offset mode'),
+                items: SurfaceOffsetMode.values
+                    .map(
+                      (item) => DropdownMenuItem(
+                        value: item,
+                        child: Text(switch (item) {
+                          SurfaceOffsetMode.offset => 'Offset',
+                          SurfaceOffsetMode.replace => 'Replace',
+                          SurfaceOffsetMode.walls => 'Offset + Walls',
+                          SurfaceOffsetMode.close => 'Offset + Close',
+                        }),
+                      ),
+                    )
+                    .toList(growable: false),
+                onChanged: busy
+                    ? null
+                    : (value) {
+                        if (value != null) onOffsetModeChanged(value);
+                      },
+              ),
+              DropdownButtonFormField<SurfaceOffsetDirection>(
+                initialValue: offsetDirection,
+                decoration: const InputDecoration(labelText: 'Direction'),
+                items: SurfaceOffsetDirection.values
+                    .map(
+                      (item) =>
+                          DropdownMenuItem(value: item, child: Text(item.name)),
+                    )
+                    .toList(growable: false),
+                onChanged: busy
+                    ? null
+                    : (value) {
+                        if (value != null) onOffsetDirectionChanged(value);
+                      },
+              ),
+              const Text(
+                'Choose every Boundary explicitly. No wall is created implicitly.',
+                style: TextStyle(fontSize: 11),
+              ),
+              for (final id in preview.definition.references.skip(1))
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(id, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(
+                    wallBoundaryIds.contains(id) ? 'Wall' : 'Open',
+                  ),
+                  value: wallBoundaryIds.contains(id),
+                  onChanged: busy
+                      ? null
+                      : (value) => onWallBoundaryChanged(id, value ?? false),
+                ),
+            ],
+            if (tool == ProfessionalSurfaceTool.match ||
+                tool == ProfessionalSurfaceTool.blend)
+              DropdownButtonFormField<SurfaceContinuity>(
+                initialValue: continuity,
+                decoration: const InputDecoration(labelText: 'Continuity'),
+                items: SurfaceContinuity.values
+                    .map(
+                      (item) => DropdownMenuItem(
+                        value: item,
+                        child: Text(item.name.toUpperCase()),
+                      ),
+                    )
+                    .toList(growable: false),
+                onChanged: busy
+                    ? null
+                    : (value) {
+                        if (value != null) onContinuityChanged(value);
+                      },
+              ),
+            const SizedBox(height: 4),
+            const Text(
+              'Orange: preview · Cyan: modified · Green: target · Red: invalid',
+              style: TextStyle(fontSize: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ProfessionalSketchToolbar extends StatelessWidget {

@@ -1,0 +1,19 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Label,Segoe UI,34,&H00FFFFFF,&H00FFFFFF,&H00101820,&H90081018,-1,0,0,0,100,100,0,0,3,1,0,7,32,32,72,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.20,Label,,0,0,0,,ABERTURA DO FLCAD RENDER LAB
+Dialogue: 0,0:00:02.20,0:00:11.20,Label,,0,0,0,,IMPORTAÇÃO E CARREGAMENTO DA STL
+Dialogue: 0,0:00:11.20,0:00:14.20,Label,,0,0,0,,ORBIT
+Dialogue: 0,0:00:14.20,0:00:16.50,Label,,0,0,0,,PAN
+Dialogue: 0,0:00:16.50,0:00:19.30,Label,,0,0,0,,ZOOM
+Dialogue: 0,0:00:19.30,0:00:21.40,Label,,0,0,0,,FIT VIEW
+Dialogue: 0,0:00:21.40,0:00:25.20,Label,,0,0,0,,REDIMENSIONAMENTO DA JANELA
+Dialogue: 0,0:00:25.20,0:00:28.00,Label,,0,0,0,,ESTABILIDADE E FPS

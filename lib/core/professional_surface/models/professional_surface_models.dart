@@ -13,9 +13,19 @@ enum ProfessionalSurfaceTool {
   split,
   join,
   offset,
+  offsetWalls,
   boundary,
+  boundaryExtend,
+  boundaryTrim,
   match,
   heal,
+  healLocal,
+  mergeFaces,
+  unsewFace,
+  unsewSelected,
+  unsewAll,
+  replaceFace,
+  deleteFace,
   fair,
   morph,
 }
@@ -23,6 +33,10 @@ enum ProfessionalSurfaceTool {
 enum SurfaceFeatureStatus { editing, preview, committed, cancelled }
 
 enum SurfaceContinuity { g0, g1, g2 }
+
+enum SurfaceOffsetMode { offset, replace, walls, close }
+
+enum SurfaceOffsetDirection { inside, outside, bilateral }
 
 enum SurfaceAnalysisMode {
   zebra,

@@ -193,8 +193,9 @@ class ProfessionalSurfaceModelingApi {
 
   Future<ProfessionalSurfaceDefinition> confirm(String id) async {
     final current = _require(id);
-    final handle =
-        current.handle ?? await _executeKernel(current, preview: false);
+    // Preview handles are transient inspection results. Apply always asks the
+    // official kernel for a definitive, separately identified ShapeHandle.
+    final handle = await _executeKernel(current, preview: false);
     final committed = current.copyWith(
       handle: handle,
       status: SurfaceFeatureStatus.committed,
@@ -345,12 +346,39 @@ class ProfessionalSurfaceModelingApi {
                 (item) => ShapeHandle.fromJson(Map<String, dynamic>.from(item)),
               )
               .toList(growable: false);
+      final editing = !{
+        ProfessionalSurfaceTool.loft,
+        ProfessionalSurfaceTool.sweep,
+        ProfessionalSurfaceTool.fill,
+        ProfessionalSurfaceTool.patch,
+        ProfessionalSurfaceTool.nurbs,
+      }.contains(value.tool);
+      final kernelReferences = editing
+          ? persistedHandles
+                .skip(1)
+                .where((handle) {
+                  if (value.tool != ProfessionalSurfaceTool.offsetWalls) {
+                    return true;
+                  }
+                  final explicitOpen =
+                      (value.parameters['openBoundaryIds'] as List? ?? const [])
+                          .whereType<String>()
+                          .toSet();
+                  return !value.parameters.containsKey('openBoundaryIds') ||
+                      explicitOpen.contains(handle.persistentId);
+                })
+                .toList(growable: false)
+          : persistedHandles;
       final handle = await kernel.create(
         _operation(value.tool),
         {
           ...value.parameters,
+          if (editing && persistedHandles.isNotEmpty)
+            'source': persistedHandles.first,
           'references': persistedHandles.isEmpty
               ? value.references
+              : editing
+              ? kernelReferences
               : persistedHandles,
           'continuity': value.continuity.name.toUpperCase(),
           'preview': preview,
@@ -415,6 +443,30 @@ class ProfessionalSurfaceModelingApi {
         if (references.isEmpty && !parameters.containsKey('controlPoints')) {
           throw ArgumentError('NURBS requires a source or control points');
         }
+      case ProfessionalSurfaceTool.offsetWalls:
+        if (references.isEmpty) {
+          throw ArgumentError('Offset requires a source Surface or Shape');
+        }
+        final mode = parameters['offsetMode'] as String? ?? 'walls';
+        if ((mode == 'walls' || mode == 'close') && references.length < 2) {
+          throw ArgumentError(
+            '$mode requires explicit Boundary selections for Wall/Open choices',
+          );
+        }
+        if (mode == 'walls' || mode == 'close') {
+          final declared = <String>{
+            ...(parameters['wallBoundaryIds'] as List? ?? const [])
+                .whereType<String>(),
+            ...(parameters['openBoundaryIds'] as List? ?? const [])
+                .whereType<String>(),
+          };
+          final expected = references.skip(1).toSet();
+          if (!declared.containsAll(expected)) {
+            throw ArgumentError(
+              'Every Boundary must be explicitly classified as Wall or Open',
+            );
+          }
+        }
       default:
         if (references.isEmpty) {
           throw ArgumentError('${_title(tool)} requires a target surface');
@@ -435,6 +487,16 @@ class ProfessionalSurfaceModelingApi {
     ProfessionalSurfaceTool.patch => 'CREATE SURFACE PATCH',
     ProfessionalSurfaceTool.blend => 'CREATE SURFACE BLEND',
     ProfessionalSurfaceTool.nurbs => 'CREATE OR EDIT NURBS SURFACE',
+    ProfessionalSurfaceTool.mergeFaces => 'EDIT SURFACE MERGE FACES',
+    ProfessionalSurfaceTool.healLocal => 'EDIT SURFACE HEAL LOCAL',
+    ProfessionalSurfaceTool.unsewFace => 'EDIT SURFACE UNSEW FACE',
+    ProfessionalSurfaceTool.unsewSelected => 'EDIT SURFACE UNSEW SELECTED',
+    ProfessionalSurfaceTool.unsewAll => 'EDIT SURFACE UNSEW ALL',
+    ProfessionalSurfaceTool.replaceFace => 'EDIT SURFACE REPLACE FACE',
+    ProfessionalSurfaceTool.deleteFace => 'EDIT SURFACE DELETE FACE',
+    ProfessionalSurfaceTool.offsetWalls => 'EDIT SURFACE OFFSET WALLS',
+    ProfessionalSurfaceTool.boundaryExtend => 'EDIT SURFACE BOUNDARY EXTEND',
+    ProfessionalSurfaceTool.boundaryTrim => 'EDIT SURFACE BOUNDARY TRIM',
     _ => 'EDIT SURFACE ${tool.name.toUpperCase()}',
   };
 

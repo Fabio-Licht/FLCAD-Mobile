@@ -25,6 +25,13 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  native_viewport_registrar_ =
+      std::make_unique<flutter::PluginRegistrarWindows>(
+          flutter_controller_->engine()->GetRegistrarForPlugin(
+              "FLCADNativeViewportHost"));
+  native_viewport_host_ = std::make_unique<NativeViewportHost>(
+      native_viewport_registrar_->messenger(),
+      native_viewport_registrar_->texture_registrar());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   // The production shell must remain visible even when Dart fails before its
@@ -45,6 +52,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  native_viewport_host_.reset();
+  native_viewport_registrar_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

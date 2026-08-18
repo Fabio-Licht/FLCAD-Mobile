@@ -585,9 +585,15 @@ class OpenCascadeKernelAdapter
   ) {
     double number(String key, double fallback) =>
         (parameters[key] as num?)?.toDouble() ?? fallback;
+    double continuity() => switch (parameters['continuity']) {
+      'G2' || 'g2' || 2 => 2,
+      'G1' || 'g1' || 1 => 1,
+      'G0' || 'g0' || 0 => 0,
+      _ => 1,
+    };
     return switch (operation) {
       'LOFT' => [number('tolerance', 1e-6)],
-      'FILL' || 'PATCH' || 'BLEND' || 'MATCH' => [
+      'FILL' || 'PATCH' => [
         number('degree', 3),
         number('pointsOnCurve', 15),
         number('iterations', 2),
@@ -596,8 +602,47 @@ class OpenCascadeKernelAdapter
         number('angularTolerance', 1e-3),
         number('curvatureTolerance', .1),
         number('maximumDegree', 8),
+        ..._boundaryValues(parameters),
+      ],
+      'BLEND' => [
+        number('radius', 1),
+        continuity(),
+        number('tolerance', 1e-4),
+        number('angularTolerance', 1e-3),
+      ],
+      'MATCH' => [
+        continuity(),
+        number('pointsOnCurve', 10),
+        number('tolerance3d', 1e-4),
+        number('angularTolerance', 1e-2),
+        number('curvatureTolerance', 1e-1),
+        number('degree', 3),
+        number('iterations', 3),
+        number('tolerance2d', 1e-5),
+        number('maximumSegments', 100),
+        number('maximumDegree', 8),
       ],
       'OFFSET' => [number('distance', 0), number('tolerance', 1e-4)],
+      'OFFSET WALLS' => [
+        number('distance', 0),
+        number('tolerance', 1e-4),
+        parameters['intersection'] == true ? 1 : 0,
+        parameters['join'] == 'intersection' ? 1 : 0,
+        parameters['removeInternalEdges'] == true ? 1 : 0,
+        switch (parameters['offsetMode']) {
+          'replace' => 1,
+          'walls' => 2,
+          'close' => 3,
+          _ => 0,
+        },
+        switch (parameters['direction']) {
+          'inside' => -1,
+          'bilateral' => 2,
+          _ => 1,
+        },
+        number('insideDistance', number('distance', 0).abs()),
+        number('outsideDistance', number('distance', 0).abs()),
+      ],
       'EXTEND' => [
         number('length', 0),
         number('continuity', 1),
@@ -618,14 +663,58 @@ class OpenCascadeKernelAdapter
         number('vMax', 1),
         number('tolerance', 1e-6),
       ],
+      'BOUNDARY EXTEND' => [
+        number('length', 0),
+        number('continuity', 1),
+        parameters['inU'] == true ? 1 : 0,
+        parameters['after'] == false ? 0 : 1,
+        number('tolerance', 1e-6),
+      ],
+      'BOUNDARY TRIM' => [
+        number('tolerance', 1e-7),
+        number('keepPointX', 0),
+        number('keepPointY', 0),
+        number('keepPointZ', 0),
+        parameters['hasKeepPoint'] == true ? 1 : 0,
+      ],
       'JOIN' || 'SEW' => [number('tolerance', 1e-4)],
       _ => const [],
     };
   }
 
+  static List<double> _boundaryValues(Map<String, dynamic> parameters) {
+    final continuity = parameters['boundaryContinuities'] as List? ?? const [];
+    final influence = parameters['boundaryInfluences'] as List? ?? const [];
+    final count = continuity.length > influence.length
+        ? continuity.length
+        : influence.length;
+    return [
+      for (var index = 0; index < count; index++) ...[
+        switch (index < continuity.length ? continuity[index] : 'g0') {
+          'g2' || 'G2' || 2 => 2.0,
+          'g1' || 'G1' || 1 => 1.0,
+          _ => 0.0,
+        },
+        index < influence.length
+            ? ((influence[index] as num).toDouble()).clamp(0, 1)
+            : 1.0,
+      ],
+    ];
+  }
+
   static String? _professionalOperation(String value) {
     final normalized = value.toUpperCase().replaceAll('_', ' ');
     for (final operation in const [
+      'BOUNDARY EXTEND',
+      'BOUNDARY TRIM',
+      'OFFSET WALLS',
+      'MERGE FACES',
+      'HEAL LOCAL',
+      'UNSEW FACE',
+      'UNSEW SELECTED',
+      'UNSEW ALL',
+      'REPLACE FACE',
+      'DELETE FACE',
       'LOFT',
       'SWEEP',
       'FILL',

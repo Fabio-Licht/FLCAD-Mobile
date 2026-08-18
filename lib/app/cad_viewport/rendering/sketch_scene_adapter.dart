@@ -19,7 +19,7 @@ class SketchSceneAdapter {
               : entity is SketchSpline
               ? 'splineMagenta'
               : 'sketchGreen',
-          'strokeWidth': entity is SketchSpline ? 2.5 : 2.0,
+          'strokeWidth': entity is SketchSpline ? 1.7 : 1.35,
           'construction': entity.construction,
           'reference': entity.reference,
         },

@@ -112,6 +112,14 @@ class CadDocumentSceneProjection {
         CadSceneEntityKind.mesh,
       CadDocumentEntityKind.import => CadSceneEntityKind.solid,
       CadDocumentEntityKind.reference => CadSceneEntityKind.gizmo,
+      CadDocumentEntityKind.curve ||
+      CadDocumentEntityKind.boundary => CadSceneEntityKind.curve,
+      CadDocumentEntityKind.vertex => CadSceneEntityKind.point,
+      CadDocumentEntityKind.edge ||
+      CadDocumentEntityKind.wire => CadSceneEntityKind.curve,
+      CadDocumentEntityKind.face => CadSceneEntityKind.surface,
+      CadDocumentEntityKind.shell ||
+      CadDocumentEntityKind.solid => CadSceneEntityKind.solid,
       CadDocumentEntityKind.section => CadSceneEntityKind.curve,
       CadDocumentEntityKind.sketch => CadSceneEntityKind.sketch,
       CadDocumentEntityKind.constraint => CadSceneEntityKind.gizmo,

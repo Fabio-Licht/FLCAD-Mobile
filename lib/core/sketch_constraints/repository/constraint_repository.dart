@@ -33,12 +33,22 @@ class ConstraintRepository {
     required ConstraintAnalytics analytics,
   }) async {
     await initialize();
-    for (final c in constraints) {
+    final constraintList = constraints.toList(growable: false);
+    final dimensionList = dimensions.toList(growable: false);
+    await _removeStaleJson(
+      _dir(paths[0]),
+      constraintList.map((value) => value.id),
+    );
+    await _removeStaleJson(
+      _dir(paths[4]),
+      dimensionList.map((value) => value.id),
+    );
+    for (final c in constraintList) {
       await File(
         '${_dir(paths[0]).path}${Platform.pathSeparator}${_safe(c.id)}.json',
       ).writeAsString(jsonEncode(c.toJson()));
     }
-    for (final d in dimensions) {
+    for (final d in dimensionList) {
       await File(
         '${_dir(paths[4]).path}${Platform.pathSeparator}${_safe(d.id)}.json',
       ).writeAsString(jsonEncode(d.toJson()));
@@ -54,6 +64,19 @@ class ConstraintRepository {
     await File(
       '${_dir(paths[3]).path}${Platform.pathSeparator}analytics.json',
     ).writeAsString(jsonEncode(analytics.toJson()));
+  }
+
+  Future<void> _removeStaleJson(
+    Directory directory,
+    Iterable<String> ids,
+  ) async {
+    final expected = ids.map((id) => '${_safe(id)}.json').toSet();
+    await for (final entry in directory.list()) {
+      if (entry is File && entry.path.endsWith('.json')) {
+        final name = entry.uri.pathSegments.last;
+        if (!expected.contains(name)) await entry.delete();
+      }
+    }
   }
 
   Future<List<SketchConstraint>> loadConstraints() async {

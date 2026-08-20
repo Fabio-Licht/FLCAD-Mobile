@@ -1,4 +1,4 @@
-# FLCAD Render Lab - R2-004
+# FLCAD Render Lab - R2-008 Navigation Benchmark
 
 Protótipo independente Win32/Direct3D 11. Não depende do Flutter, do Runtime,
 do CadDocument, do SceneGraph ou do Geometry Kernel do FLCAD.
@@ -24,6 +24,12 @@ o tipo da subentidade e seu ID; o passe reutiliza o mesmo depth buffer do
 viewport visual. Face, aresta e vértice da STL possuem picking real, hover e
 seleção persistente. O contrato reserva ainda Curve, Section, Sketch e Preview,
 que serão alimentados quando o SceneGraph for integrado ao Render Engine.
+
+R2-008 isola a navegação atual para comparação direta com o Geomagic. O
+executável permanece Win32/D3D11 puro: STL, câmera, Render Engine e mouse. O
+Pan usa a correspondência entre pixels e o plano focal considerando o FOV e a
+altura efetiva do viewport. Picking e integrações da Plataforma não participam
+do experimento.
 
 ## Build
 
@@ -55,14 +61,10 @@ Métrica sintética de draw com exatamente 1 milhão de triângulos (repete os
 
 Controles:
 
-- clique curto com o botão esquerdo: selecionar;
 - arraste com o botão esquerdo: Orbit;
 - botão do meio: Pan;
 - roda: Zoom;
 - `F` ou `Home`: Fit.
-- `1`: filtro de faces;
-- `2`: filtro de arestas;
-- `3`: filtro de vértices.
 
 ## Limites intencionais do protótipo
 

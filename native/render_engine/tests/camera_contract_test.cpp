@@ -63,6 +63,55 @@ int main() {
       std::abs(lab_clip_value.z - native_clip_value.z) <= 1e-5f &&
       std::abs(lab_clip_value.w - native_clip_value.w) <= 1e-5f;
 
+  CadCameraSystem pan_benchmark;
+  pan_benchmark.Fit(minimum, maximum);
+  XMFLOAT3 pan_eye_before, pan_target_before, pan_up_before;
+  XMStoreFloat3(&pan_eye_before, pan_benchmark.Eye());
+  XMStoreFloat3(&pan_target_before, pan_benchmark.Target());
+  XMStoreFloat3(&pan_up_before, pan_benchmark.Up());
+  pan_benchmark.PanViewportPixels(160.0f, -75.0f, 720.0f);
+  XMFLOAT3 pan_eye_after, pan_target_after, pan_up_after;
+  XMStoreFloat3(&pan_eye_after, pan_benchmark.Eye());
+  XMStoreFloat3(&pan_target_after, pan_benchmark.Target());
+  XMStoreFloat3(&pan_up_after, pan_benchmark.Up());
+  const XMVECTOR direction_before = XMVectorSubtract(
+      XMLoadFloat3(&pan_target_before), XMLoadFloat3(&pan_eye_before));
+  const XMVECTOR direction_after = XMVectorSubtract(
+      XMLoadFloat3(&pan_target_after), XMLoadFloat3(&pan_eye_after));
+  const bool pan_rigid = XMVectorGetX(XMVector3Length(
+      XMVectorSubtract(direction_before, direction_after))) <= 1e-4f;
+  const bool pan_up_constant =
+      std::abs(pan_up_before.x - pan_up_after.x) <= 1e-6f &&
+      std::abs(pan_up_before.y - pan_up_after.y) <= 1e-6f &&
+      std::abs(pan_up_before.z - pan_up_after.z) <= 1e-6f;
+
+  CadCameraSystem projection_pan;
+  projection_pan.SetProjectionOffset(0.25f, -0.15f);
+  const auto shifted_frame = projection_pan.BuildFrame(16.0f / 9.0f);
+  const XMVECTOR near_vertex = XMVectorSet(0.5f, 0.2f, 0.0f, 1.0f);
+  const XMVECTOR far_vertex = XMVectorSet(0.5f, 0.2f, 1.0f, 1.0f);
+  const auto unshifted_frame = CadCameraSystem().BuildFrame(16.0f / 9.0f);
+  XMFLOAT4 shifted_near, shifted_far, unshifted_near, unshifted_far;
+  XMStoreFloat4(&shifted_near, XMVector4Transform(
+      near_vertex, shifted_frame.world_view_projection));
+  XMStoreFloat4(&shifted_far, XMVector4Transform(
+      far_vertex, shifted_frame.world_view_projection));
+  XMStoreFloat4(&unshifted_near, XMVector4Transform(
+      near_vertex, unshifted_frame.world_view_projection));
+  XMStoreFloat4(&unshifted_far, XMVector4Transform(
+      far_vertex, unshifted_frame.world_view_projection));
+  const float near_shift_x = shifted_near.x / shifted_near.w -
+                             unshifted_near.x / unshifted_near.w;
+  const float far_shift_x = shifted_far.x / shifted_far.w -
+                            unshifted_far.x / unshifted_far.w;
+  const float near_shift_y = shifted_near.y / shifted_near.w -
+                             unshifted_near.y / unshifted_near.w;
+  const float far_shift_y = shifted_far.y / shifted_far.w -
+                            unshifted_far.y / unshifted_far.w;
+  const bool projection_pan_rigid =
+      std::abs(near_shift_x - far_shift_x) <= 1e-5f &&
+      std::abs(near_shift_y - far_shift_y) <= 1e-5f;
+
   CadCameraSystem platform_sequence;
   CadCameraSystem native_sequence;
   platform_sequence.Fit(minimum, maximum);
@@ -106,9 +155,14 @@ int main() {
   std::cout << "World=" << world_equal << " View=" << view_equal
             << " Projection=" << projection_equal << " WVP=" << wvp_equal
             << " Clip=" << clip_equal << " Frames1To100=" << sequence_equal
-            << " MaxPixelDifference=" << maximum_pixel_difference << '\n';
+            << " MaxPixelDifference=" << maximum_pixel_difference
+            << " PanRigid=" << pan_rigid
+            << " PanUpConstant=" << pan_up_constant
+            << " ProjectionPanRigid=" << projection_pan_rigid << '\n';
   return world_equal && view_equal && projection_equal && wvp_equal &&
-                 clip_equal && sequence_equal && maximum_pixel_difference <= 0.001f
+                 clip_equal && sequence_equal &&
+                 maximum_pixel_difference <= 0.001f && pan_rigid &&
+                 pan_up_constant && projection_pan_rigid
              ? 0
              : 1;
 }

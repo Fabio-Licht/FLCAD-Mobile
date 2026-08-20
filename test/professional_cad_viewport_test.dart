@@ -13,6 +13,7 @@ import 'package:flcad_mobile/app/desktop/desktop_cad_controller.dart';
 import 'package:flcad_mobile/app/engineering_bridge/operational_reverse_engineering_controller.dart';
 import 'package:flcad_mobile/app/engineering_bridge/contracts/bridge_selection.dart';
 import 'package:flcad_mobile/app/engineering_bridge/contracts/bridge_context.dart';
+import 'package:flcad_mobile/core/cad_document/cad_document.dart';
 import 'package:flcad_mobile/core/cad_kernel/io/kernel_io_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/api/geometry_kernel_api.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
@@ -109,6 +110,66 @@ void main() {
     expect(camera.projectionMatrix.values, isNot(perspective));
   });
 
+  test('Fit always clears temporary navigation displacement and recovers', () {
+    final camera = CadCameraController(
+      eye: const Vector3(4, -6, 8),
+      target: Vector3.zero,
+      up: const Vector3(0, 0, 1),
+    )..resize(1000, 700);
+    const minimum = Vector3(-2, -1, -3);
+    const maximum = Vector3(6, 5, 1);
+    camera.translateOperationalScene(const Vector3(500, -350, 0));
+    expect(camera.presentationOffsetNdcX.abs(), greaterThan(1));
+
+    camera.fit(minimum, maximum);
+
+    final center = (minimum + maximum) / 2;
+    final projectedCenter = camera.viewProjectionMatrix.transformPoint(center);
+    expect(camera.presentationTranslation, Vector3.zero);
+    expect(camera.presentationOffsetNdcX, 0);
+    expect(camera.presentationOffsetNdcY, 0);
+    expect(projectedCenter.x, closeTo(0, 1e-10));
+    expect(projectedCenter.y, closeTo(0, 1e-10));
+  });
+
+  test('all standard views preserve center, projection and safe framing', () {
+    const minimum = Vector3(-4, -2, -3);
+    const maximum = Vector3(6, 8, 5);
+    final center = (minimum + maximum) / 2;
+    final expectedDirections = <CadStandardView, Vector3>{
+      CadStandardView.perspective: const Vector3(1, -1, .75).normalized,
+      CadStandardView.top: const Vector3(0, 0, 1),
+      CadStandardView.bottom: const Vector3(0, 0, -1),
+      CadStandardView.front: const Vector3(0, -1, 0),
+      CadStandardView.back: const Vector3(0, 1, 0),
+      CadStandardView.right: const Vector3(1, 0, 0),
+      CadStandardView.left: const Vector3(-1, 0, 0),
+      CadStandardView.isometric: const Vector3(1, -1, 1).normalized,
+    };
+
+    for (final entry in expectedDirections.entries) {
+      final camera = CadCameraController()..resize(1000, 700);
+      final projectionBefore = camera.projectionMode;
+      camera.translateOperationalScene(const Vector3(50, -30, 0));
+
+      camera.setStandardView(entry.key, minimum, maximum);
+
+      final direction = (camera.eye - center).normalized;
+      final projectedCenter = camera.viewProjectionMatrix.transformPoint(
+        center,
+      );
+      expect(direction.dot(entry.value), greaterThan(.999999));
+      expect(camera.target.distanceTo(center), lessThan(1e-12));
+      expect(camera.rotationCenter.distanceTo(center), lessThan(1e-12));
+      expect(camera.focusPoint.distanceTo(center), lessThan(1e-12));
+      expect(camera.projectionMode, projectionBefore);
+      expect(projectedCenter.x, closeTo(0, 1e-10));
+      expect(projectedCenter.y, closeTo(0, 1e-10));
+      expect(camera.presentationOffsetNdcX, 0);
+      expect(camera.presentationOffsetNdcY, 0);
+    }
+  });
+
   test('camera zoom cannot cross the target or enter the near plane', () {
     final camera = CadCameraController(
       eye: const Vector3(0, 0, 5),
@@ -160,7 +221,8 @@ void main() {
       expect(eyeDelta.length, greaterThan(0));
       expect(eyeDelta.distanceTo(targetDelta), lessThan(1e-10));
       expect(eyeDelta.distanceTo(centerDelta), lessThan(1e-10));
-      expect(camera.focusPoint.distanceTo(focusBefore), lessThan(1e-10));
+      final focusDelta = camera.focusPoint - focusBefore;
+      expect(eyeDelta.distanceTo(focusDelta), lessThan(1e-10));
       expect(
         (camera.target - camera.eye).distanceTo(viewBefore),
         lessThan(1e-10),
@@ -193,6 +255,65 @@ void main() {
         expect(viewAfter[index], closeTo(viewBefore[index], 1e-12));
       }
     }
+  });
+
+  test('pan result depends only on total gesture displacement', () {
+    final single = CadCameraController()..resize(1200, 800);
+    final stepped = CadCameraController()..resize(1200, 800);
+    final singleBaseline = single.snapshot();
+    final steppedBaseline = stepped.snapshot();
+
+    single.panViewportPixelsFrom(singleBaseline, 240, -125);
+    for (var step = 1; step <= 200; step++) {
+      stepped.panViewportPixelsFrom(
+        steppedBaseline,
+        240 * step / 200,
+        -125 * step / 200,
+      );
+    }
+
+    expect(stepped.eye.distanceTo(single.eye), lessThan(1e-12));
+    expect(stepped.target.distanceTo(single.target), lessThan(1e-12));
+    expect(
+      stepped.rotationCenter.distanceTo(single.rotationCenter),
+      lessThan(1e-12),
+    );
+    expect(stepped.focusPoint.distanceTo(single.focusPoint), lessThan(1e-12));
+    expect(stepped.up.distanceTo(singleBaseline.up), lessThan(1e-12));
+    expect(
+      (stepped.target - stepped.eye).distanceTo(
+        singleBaseline.target - singleBaseline.eye,
+      ),
+      lessThan(1e-12),
+    );
+    expect(stepped.viewScale, singleBaseline.viewScale);
+    expect(stepped.fieldOfViewRadians, singleBaseline.fieldOfViewRadians);
+    expect(stepped.nearPlane, singleBaseline.nearPlane);
+    expect(stepped.farPlane, singleBaseline.farPlane);
+  });
+
+  test('surface anchored pan keeps the captured point under the cursor', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 10),
+      target: Vector3.zero,
+    )..resize(1000, 800);
+    const anchor = Vector3(1.2, -.7, 2.5);
+    final baseline = camera.snapshot();
+
+    Offset screenPoint(Vector3 point) {
+      final projected = camera.viewProjectionMatrix.transformPoint(point);
+      return Offset(
+        (projected.x + 1) * camera.viewportWidth / 2,
+        (1 - projected.y) * camera.viewportHeight / 2,
+      );
+    }
+
+    final before = screenPoint(anchor);
+    camera.panViewportPixelsFrom(baseline, 175, -90, surfaceAnchor: anchor);
+    final after = screenPoint(anchor);
+
+    expect(after.dx - before.dx, closeTo(175, 1e-9));
+    expect(after.dy - before.dy, closeTo(-90, 1e-9));
   });
 
   test('orbit preserves the explicit rotation center', () {
@@ -231,6 +352,29 @@ void main() {
     expect((camera.target - region).length, closeTo(targetRadius, 1e-10));
   });
 
+  test('continuous orbit keeps the perceptive pivot fixed on screen', () {
+    final camera = CadCameraController(
+      eye: const Vector3(7, -5, 6),
+      target: const Vector3(1, .5, 0),
+      rotationCenter: const Vector3(1, .5, 0),
+      focusPoint: const Vector3(2.2, -.4, 1.1),
+      up: const Vector3(0, 0, 1),
+    )..resize(1280, 720);
+    camera.translateOperationalScene(const Vector3(.8, -.35, .2));
+    final before = camera.viewProjectionMatrix.transformPoint(
+      camera.focusPoint,
+    );
+
+    for (var frame = 0; frame < 240; frame++) {
+      camera.orbit(.004, -.0015);
+    }
+
+    final after = camera.viewProjectionMatrix.transformPoint(camera.focusPoint);
+    expect(after.x, closeTo(before.x, 1e-10));
+    expect(after.y, closeTo(before.y, 1e-10));
+    expect(camera.focusPoint, const Vector3(2.2, -.4, 1.1));
+  });
+
   test('sketch mode restores the complete professional camera state', () {
     final camera = CadCameraController(
       eye: const Vector3(8, -3, 5),
@@ -239,6 +383,10 @@ void main() {
       up: const Vector3(0, 0, 1),
     );
     camera.viewScale = 23;
+    camera.fieldOfViewRadians = .81;
+    camera.presentationTranslation = const Vector3(3, -2, 1);
+    camera.presentationOffsetNdcX = .18;
+    camera.presentationOffsetNdcY = -.12;
     final before = camera.snapshot();
 
     camera.enterSketch(
@@ -250,6 +398,9 @@ void main() {
       camera.rotationCenter.distanceTo(before.rotationCenter),
       greaterThan(1),
     );
+    camera.translateOperationalScene(const Vector3(14, -9, 0));
+    camera.presentationOffsetNdcX = -.6;
+    camera.presentationOffsetNdcY = .4;
     camera.exitSketch();
 
     expect(camera.eye.distanceTo(before.eye), lessThan(1e-12));
@@ -264,6 +415,13 @@ void main() {
     expect(camera.projectionMode, before.projectionMode);
     expect(camera.nearPlane, before.nearPlane);
     expect(camera.farPlane, before.farPlane);
+    expect(camera.fieldOfViewRadians, before.fieldOfViewRadians);
+    expect(
+      camera.presentationTranslation.distanceTo(before.presentationTranslation),
+      lessThan(1e-12),
+    );
+    expect(camera.presentationOffsetNdcX, before.presentationOffsetNdcX);
+    expect(camera.presentationOffsetNdcY, before.presentationOffsetNdcY);
   });
 
   test('mesh adapter is the single kernel-to-scene boundary', () {
@@ -366,12 +524,14 @@ void main() {
         },
       ),
     );
-    expect(
-      picking
-          .pick(position: const Offset(400, 300), camera: camera, scene: scene)
-          ?.entityId,
-      'section-curve',
+    final curveHit = picking.pick(
+      position: const Offset(400, 300),
+      camera: camera,
+      scene: scene,
     );
+    expect(curveHit?.entityId, 'section-curve');
+    expect(curveHit!.hit.point.x, closeTo(0, 1e-9));
+    expect(curveHit.hit.point.y, closeTo(0, 1e-9));
   });
 
   test(
@@ -438,10 +598,93 @@ void main() {
     expect(find.text('Shaded'), findsOneWidget);
     expect(find.text('Wire'), findsOneWidget);
     expect(find.byTooltip('Fit View'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('professional-view-cube')),
+      findsOneWidget,
+    );
     expect(find.byType(CustomPaint), findsWidgets);
   });
 
-  testWidgets('middle-button drag dispatches pure viewport pan', (
+  testWidgets(
+    'ViewCube ISO uses the shared camera and fits the visible scene',
+    (tester) async {
+      final scene = CadSceneGraph()
+        ..upsert(
+          MeshSceneAdapter.fromKernel(
+            id: 'mesh-1',
+            geometry: mesh,
+            bounds: bounds,
+          ),
+        );
+      final camera = CadCameraController(
+        eye: const Vector3(0, 0, 5),
+        target: Vector3.zero,
+        up: const Vector3(0, 1, 0),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 800,
+            height: 600,
+            child: ProfessionalCadViewportWidget(scene: scene, camera: camera),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('professional-view-cube')));
+      await tester.pump();
+
+      final direction = (camera.eye - camera.target).normalized;
+      expect(direction.x, closeTo(0.5773502691896258, 1e-9));
+      expect(direction.y, closeTo(-0.5773502691896258, 1e-9));
+      expect(direction.z, closeTo(0.5773502691896258, 1e-9));
+      final projectedCenter = camera.viewProjectionMatrix.transformPoint(
+        Vector3.zero,
+      );
+      expect(projectedCenter.x, closeTo(0, 1e-9));
+      expect(projectedCenter.y, closeTo(0, 1e-9));
+    },
+  );
+
+  testWidgets('dragging the ViewCube continuously orients the shared camera', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        MeshSceneAdapter.fromKernel(
+          id: 'mesh-1',
+          geometry: mesh,
+          bounds: bounds,
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(scene: scene, camera: camera),
+        ),
+      ),
+    );
+    final before = (camera.eye - camera.target).normalized;
+
+    await tester.drag(
+      find.byKey(const ValueKey('professional-view-cube')),
+      const Offset(36, 24),
+    );
+    await tester.pump();
+
+    final after = (camera.eye - camera.target).normalized;
+    expect((after - before).length, greaterThan(0.01));
+    expect((camera.eye - camera.target).length, closeTo(5, 1e-9));
+  });
+
+  testWidgets('object test translates presentation, not CAD camera state', (
     tester,
   ) async {
     final scene = CadSceneGraph()
@@ -469,6 +712,7 @@ void main() {
     await tester.pump();
     final viewBefore = camera.target - camera.eye;
     final eyeBefore = camera.eye;
+    final presentationBefore = camera.presentationTranslation;
     final mouse = TestPointer(7, PointerDeviceKind.mouse);
     await tester.sendEventToBinding(
       mouse.down(const Offset(400, 300), buttons: kMiddleMouseButton),
@@ -479,7 +723,11 @@ void main() {
     await tester.sendEventToBinding(mouse.up());
     await tester.pump();
 
-    expect(camera.eye.distanceTo(eyeBefore), greaterThan(0));
+    expect(camera.eye.distanceTo(eyeBefore), lessThan(1e-12));
+    expect(
+      camera.presentationTranslation.distanceTo(presentationBefore),
+      greaterThan(0),
+    );
     expect(
       (camera.target - camera.eye).distanceTo(viewBefore),
       lessThan(1e-10),
@@ -592,6 +840,212 @@ void main() {
     expect(camera.focusPoint.distanceTo(selected!.hit.point), lessThan(1e-12));
   });
 
+  testWidgets(
+    'active Sketch tool receives click independently of picking and blocks navigation',
+    (tester) async {
+      final scene = CadSceneGraph();
+      final camera = CadCameraController(
+        eye: const Vector3(0, 0, 5),
+        target: Vector3.zero,
+        up: const Vector3(0, 1, 0),
+      );
+      Offset? sketchClick;
+      var sketchFinished = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 800,
+            height: 600,
+            child: ProfessionalCadViewportWidget(
+              scene: scene,
+              camera: camera,
+              enablePicking: false,
+              onSketchTap: (position) => sketchClick = position,
+              onSketchSecondaryTap: () => sketchFinished = true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final eyeBefore = camera.eye;
+      final targetBefore = camera.target;
+      await tester.tapAt(const Offset(400, 300));
+      await tester.pump();
+
+      expect(sketchClick, isNotNull);
+
+      await tester.tapAt(
+        const Offset(420, 320),
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pump();
+      expect(sketchFinished, isTrue);
+
+      final mouse = TestPointer(41, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        mouse.down(const Offset(400, 300), buttons: kMiddleMouseButton),
+      );
+      await tester.sendEventToBinding(
+        mouse.move(const Offset(470, 340), buttons: kMiddleMouseButton),
+      );
+      await tester.sendEventToBinding(mouse.up());
+      await tester.pump();
+
+      expect(camera.eye.distanceTo(eyeBefore), lessThan(1e-12));
+      expect(camera.target.distanceTo(targetBefore), lessThan(1e-12));
+    },
+  );
+
+  testWidgets(
+    'active Sketch command prioritizes an existing entity for selection',
+    (tester) async {
+      final scene = CadSceneGraph()
+        ..upsert(
+          const CadSceneEntity(
+            id: 'line-1',
+            kind: CadSceneEntityKind.sketch,
+            geometry: {
+              'points': [
+                [-1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+              ],
+            },
+          ),
+        );
+      final camera = CadCameraController(
+        eye: const Vector3(0, 0, 5),
+        target: Vector3.zero,
+        up: const Vector3(0, 1, 0),
+      );
+      Offset? creationClick;
+      CadViewportPick? entityPick;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 800,
+            height: 600,
+            child: ProfessionalCadViewportWidget(
+              scene: scene,
+              camera: camera,
+              onSketchTap: (position) => creationClick = position,
+              onSketchEntityPick: (pick) {
+                entityPick = pick;
+                scene.select({pick.entityId});
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tapAt(const Offset(400, 300));
+      await tester.pump();
+
+      expect(entityPick?.entityId, 'line-1');
+      expect(creationClick, isNull);
+      expect(scene.find('line-1')!.selected, isTrue);
+    },
+  );
+
+  testWidgets('double click on a graphical dimension opens its editor route', (
+    tester,
+  ) async {
+    final scene = CadSceneGraph()
+      ..upsert(
+        const CadSceneEntity(
+          id: 'dimension-1',
+          kind: CadSceneEntityKind.sketch,
+          geometry: {
+            'points': [
+              [-1.0, 0.0, 0.0],
+              [1.0, 0.0, 0.0],
+            ],
+            'dimensionLabel': '10.000',
+            'labelPosition': [0.0, 0.0, 0.0],
+          },
+        ),
+      );
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 5),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    );
+    CadViewportPick? doublePick;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 800,
+          height: 600,
+          child: ProfessionalCadViewportWidget(
+            scene: scene,
+            camera: camera,
+            onSketchEntityDoublePick: (pick) => doublePick = pick,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tapAt(const Offset(400, 300));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tapAt(const Offset(400, 300));
+    await tester.pumpAndSettle();
+
+    expect(doublePick?.entityId, 'dimension-1');
+  });
+
+  testWidgets(
+    'Sketch support selection picks a plane without changing camera state',
+    (tester) async {
+      final scene = CadSceneGraph()
+        ..upsert(
+          const CadSceneEntity(
+            id: 'project:world:xy-plane',
+            kind: CadSceneEntityKind.plane,
+            geometry: {
+              'type': 'plane',
+              'origin': [0, 0, 0],
+              'normal': [0, 0, 1],
+              'visualSize': 60,
+            },
+          ),
+        );
+      final camera = CadCameraController(
+        eye: const Vector3(4, -6, 8),
+        target: Vector3.zero,
+        up: const Vector3(0, 0, 1),
+      )..resize(800, 600);
+      final before = camera.snapshot();
+      CadViewportPick? support;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 800,
+            height: 600,
+            child: ProfessionalCadViewportWidget(
+              scene: scene,
+              camera: camera,
+              enablePicking: false,
+              onSketchSupportPick: (pick) => support = pick,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tapAt(const Offset(400, 300));
+      await tester.pump();
+
+      expect(support?.entityId, 'project:world:xy-plane');
+      expect(camera.eye.distanceTo(before.eye), lessThan(1e-12));
+      expect(camera.target.distanceTo(before.target), lessThan(1e-12));
+      expect(camera.up.distanceTo(before.up), lessThan(1e-12));
+      expect(camera.viewScale, before.viewScale);
+      expect(camera.projectionMode, before.projectionMode);
+    },
+  );
+
   testWidgets('a continuous wheel sequence keeps one stable anchor', (
     tester,
   ) async {
@@ -667,7 +1121,7 @@ void main() {
     const document = ImportedCadDocument(
       id: 'document',
       projectId: 'project',
-      sourcePath: 'part.stl',
+      sourcePath: r'C:\Imports\CALOTA_INOXX.StL',
       format: CadImportFormat.stl,
       registeredPath: 'CAD/part.stl',
       validation: [],
@@ -679,6 +1133,9 @@ void main() {
     addTearDown(() => runtimeDirectory.delete(recursive: true));
     await cad.runtime.open('project', runtimeDirectory);
     await cad.runtime.registerImport(document, geometry: mesh);
+    final importedEntity = cad.runtime.document!.entities['document']!;
+    expect(importedEntity.data['name'], 'CALOTA_INOXX.StL');
+    expect(importedEntity.data['originalFileName'], 'CALOTA_INOXX.StL');
     await controller.recognizePick(
       pick: const CadViewportPick(
         entityId: 'mesh-1',
@@ -690,6 +1147,22 @@ void main() {
     final id = controller.hypotheses.first.recognition.id;
     controller.decide(id, RecognitionDecision.accepted);
     expect(controller.decisions[id], RecognitionDecision.accepted);
+    await cad.runtime.registerImport(document, geometry: mesh);
+    final importNames = cad.runtime.document!.entities.values
+        .where((entity) => entity.kind == CadDocumentEntityKind.import)
+        .map((entity) => entity.data['name'])
+        .toList();
+    expect(
+      importNames,
+      containsAll(['CALOTA_INOXX.StL', 'CALOTA_INOXX 1.StL']),
+    );
+    expect(
+      cad.runtime.document!.entities.values
+          .where((entity) => entity.kind == CadDocumentEntityKind.import)
+          .map((entity) => entity.data['originalFileName'])
+          .toSet(),
+      {'CALOTA_INOXX.StL'},
+    );
   });
 
   test('operational controller completes rectangle to CAD surface', () async {
@@ -728,6 +1201,12 @@ void main() {
       projects: ProjectManager.instance,
       repository: projects,
     );
+    expect(
+      commands.registry.commands.map((command) => command.id),
+      contains('workspace.sketch'),
+    );
+    await commands.dispatch('workspace.sketch');
+    expect(commands.workspace.state.workspace, 'Sketch');
     await cad.restoreProjectGeometry('project');
     expect(cad.document?.isMesh, isTrue);
     expect(cad.meshGeometry?.triangles, [0, 1, 2]);

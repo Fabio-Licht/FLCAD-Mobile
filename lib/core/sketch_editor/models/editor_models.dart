@@ -41,6 +41,31 @@ enum SketchToolType {
   unlock,
 }
 
+enum SketchCircleMode {
+  centerRadius,
+  centerDiameter,
+  twoPoints,
+  threePoints,
+  tangentRadius,
+  tangentTangentRadius,
+  threeTangencies,
+}
+
+extension SketchCircleModeContract on SketchCircleMode {
+  bool get implemented => index <= SketchCircleMode.threePoints.index;
+  int get requiredPoints => switch (this) {
+    SketchCircleMode.threePoints => 3,
+    _ => 2,
+  };
+}
+
+enum SketchArcMode { center, threePoints, tangent }
+
+extension SketchArcModeContract on SketchArcMode {
+  bool get implemented => this != SketchArcMode.tangent;
+  int get requiredPoints => 3;
+}
+
 enum SketchVisualState {
   normal,
   construction,

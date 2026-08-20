@@ -30,15 +30,27 @@ class NativeViewportHost {
 
  private:
   struct Vertex { float x, y, z, nx, ny, nz; };
+  struct PickVertex { float x, y, z; uint32_t id; };
+  struct PickResult {
+    uint32_t kind = 0;
+    uint32_t id = 0;
+    std::string entity_id;
+    float point[3]{};
+    bool valid() const { return kind != 0 && !entity_id.empty(); }
+  };
   struct SceneEntity {
     std::string id;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> index_buffer;
+    std::vector<PickVertex> edge_vertices;
+    std::vector<PickVertex> point_vertices;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> edge_buffer;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> point_buffer;
     bool visible = true;
   };
-  struct Constants { float matrix[16]; float color[4]; };
+  struct Constants { float matrix[16]; float color[4]; uint32_t pick[4]{}; };
 
   void HandleMethod(const flutter::MethodCall<flutter::EncodableValue>& call,
                     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
@@ -54,6 +66,8 @@ class NativeViewportHost {
   void Zoom(double factor);
   void SetCamera(const flutter::EncodableMap& arguments);
   void RenderTextureProbe();
+  PickResult Pick(int x, int y);
+  flutter::EncodableMap EncodePick(const PickResult& pick) const;
   flutter::EncodableMap Stats() const;
   void CreateDevice();
   void CreatePipeline();
@@ -80,7 +94,27 @@ class NativeViewportHost {
   Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
   Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
   Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth_state_;
+  Microsoft::WRL::ComPtr<ID3D11DepthStencilState> pick_overlay_depth_state_;
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> pick_texture_;
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> pick_readback_;
+  Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pick_target_;
+  Microsoft::WRL::ComPtr<ID3D11VertexShader> pick_face_vs_;
+  Microsoft::WRL::ComPtr<ID3D11VertexShader> pick_subentity_vs_;
+  Microsoft::WRL::ComPtr<ID3D11PixelShader> pick_face_ps_;
+  Microsoft::WRL::ComPtr<ID3D11PixelShader> pick_edge_ps_;
+  Microsoft::WRL::ComPtr<ID3D11PixelShader> pick_vertex_ps_;
+  Microsoft::WRL::ComPtr<ID3D11PixelShader> hover_ps_;
+  Microsoft::WRL::ComPtr<ID3D11InputLayout> pick_input_layout_;
+  Microsoft::WRL::ComPtr<ID3D11Buffer> operational_hover_index_buffer_;
+  std::string operational_hover_entity_id_;
+  std::string operational_hover_id_;
+  uint32_t operational_hover_index_count_ = 0;
+  Microsoft::WRL::ComPtr<ID3D11Buffer> operational_selection_index_buffer_;
+  std::string operational_selection_entity_id_;
+  std::string operational_selection_id_;
+  uint32_t operational_selection_index_count_ = 0;
   std::unordered_map<std::string, SceneEntity> entities_;
+  PickResult hover_;
   FlutterDesktopGpuSurfaceDescriptor surface_descriptor_{};
   uint32_t width_ = 1, height_ = 1;
   flcad::render::CadCameraSystem camera_;

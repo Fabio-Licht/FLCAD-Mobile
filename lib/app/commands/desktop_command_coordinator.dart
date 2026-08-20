@@ -142,7 +142,7 @@ class DesktopCommandCoordinator {
       module: 'Project',
       validator: CommandValidation.projectRequired,
       execute: (_, _) async {
-        await cad.runtime.save();
+        await cad.runtime.save(recordLifecycle: true);
         await repository.save(projects.current!);
         return 'Project saved';
       },
@@ -206,6 +206,10 @@ class DesktopCommandCoordinator {
       'Interactive Assistant',
       'Engineering Knowledge',
       'Sketch & Surface',
+      'Sketch',
+      'Reference',
+      'Curves',
+      'Surfaces',
       'Sections',
       'Transform',
     ];

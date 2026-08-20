@@ -9,6 +9,8 @@ class ConstraintApi {
   final ConstraintBuilders builders;
   List<SketchConstraint> get constraints =>
       List.unmodifiable(engine.constraints.values);
+  List<SketchDimension> get dimensions =>
+      List.unmodifiable(engine.dimensions.values);
   Future<ConstraintSolveResult> solve({Iterable<String>? only}) =>
       engine.solve(only: only);
   Future<ConstraintSolveResult> rebuild() => engine.rebuild();
@@ -18,4 +20,50 @@ class ConstraintApi {
   void enable(String id) => engine.enable(id);
   void disable(String id) => engine.disable(id);
   void suppress(String id) => engine.suppress(id);
+  void setVisible(String id, bool visible) => engine.setVisible(id, visible);
+  SketchDimension updateDimension(
+    String id, {
+    double? value,
+    double? labelX,
+    double? labelY,
+    String? anchorReference,
+  }) => engine.updateDimension(
+    id,
+    value: value,
+    labelX: labelX,
+    labelY: labelY,
+    anchorReference: anchorReference,
+  );
+  void deleteDimension(String id) => engine.deleteDimension(id);
+  SketchDimension createDrivingDimension({
+    required SketchDimensionType type,
+    required List<String> references,
+    required double value,
+    String? anchorReference,
+    double labelX = 0,
+    double labelY = 0,
+  }) => engine.createDrivingDimension(
+    type: type,
+    references: references,
+    value: value,
+    anchorReference: anchorReference,
+    labelX: labelX,
+    labelY: labelY,
+  );
+  SketchDimension driveDimension(
+    String id,
+    double value, {
+    String? anchorReference,
+  }) => engine.driveDimension(id, value, anchorReference: anchorReference);
+  bool undoDimensionEdit() {
+    final constraintUndone = engine.undo();
+    final sketchUndone = engine.sketch.engine.undo();
+    return constraintUndone && sketchUndone;
+  }
+
+  bool redoDimensionEdit() {
+    final constraintRedone = engine.redo();
+    final sketchRedone = engine.sketch.engine.redo();
+    return constraintRedone && sketchRedone;
+  }
 }

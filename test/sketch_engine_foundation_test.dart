@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flcad_mobile/app/bootstrap/engineering_bootstrap.dart';
+import 'package:flcad_mobile/app/engineering_bridge/adapters/sketch_bridge.dart';
 import 'package:flcad_mobile/core/engineering_studio/properties/property_inspector.dart';
 import 'package:flcad_mobile/core/fel/commands/fel_command.dart';
 import 'package:flcad_mobile/core/sketch_engine/analytics/sketch_analytics.dart';
@@ -16,6 +17,8 @@ import 'package:flcad_mobile/core/sketch_engine/repository/sketch_repository.dar
 import 'package:flcad_mobile/core/sketch_engine/runtime/sketch_runtime.dart';
 import 'package:flcad_mobile/core/sketch_engine/selection/sketch_selection_engine.dart';
 import 'package:flcad_mobile/core/sketch_engine/snapping/sketch_snapping.dart';
+import 'package:flcad_mobile/core/reference_engine/models/reference_geometry.dart';
+import 'package:flcad_mobile/core/smart_regions/models/geometry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -50,6 +53,40 @@ void main() {
     expect(api.engine.analytics.entities, 8);
     expect(api.engine.analytics.constructionRatio, 1 / 8);
     expect(api.engine.analytics.referenceRatio, 1 / 8);
+  });
+
+  test('opens Sketch on world supports without any Mesh context', () {
+    final bridge = SketchBridge(api);
+    final supports = <SketchPlaneType, PlaneGeometry>{
+      SketchPlaneType.xy: const PlaneGeometry(
+        Vec3(0, 0, 0),
+        Vec3(0, 0, 1),
+        xDirection: Vec3(1, 0, 0),
+      ),
+      SketchPlaneType.yz: const PlaneGeometry(
+        Vec3(0, 0, 0),
+        Vec3(1, 0, 0),
+        xDirection: Vec3(0, 1, 0),
+      ),
+      SketchPlaneType.zx: const PlaneGeometry(
+        Vec3(0, 0, 0),
+        Vec3(0, 1, 0),
+        xDirection: Vec3(1, 0, 0),
+      ),
+    };
+
+    for (final entry in supports.entries) {
+      final sketch = bridge.openOnSupport(
+        referenceId: 'world:${entry.key.name}',
+        geometry: entry.value,
+        name: '${entry.key.name.toUpperCase()} Sketch',
+        planeType: entry.key,
+      );
+      expect(sketch.plane.type, entry.key);
+      expect(sketch.plane.parameters['referenceId'], 'world:${entry.key.name}');
+    }
+
+    expect(api.sketches, hasLength(3));
   });
 
   test('transaction rollback is atomic and undo redo preserve entities', () {

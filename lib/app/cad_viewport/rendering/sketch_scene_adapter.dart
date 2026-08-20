@@ -6,26 +6,35 @@ import '../scene/cad_scene_graph.dart';
 
 class SketchSceneAdapter {
   const SketchSceneAdapter();
+  static const double technicalStrokeWidth = 2.0;
 
-  CadSceneEntity adapt(SketchEntity entity, {bool preview = false}) =>
-      CadSceneEntity(
-        id: entity.id,
-        kind: preview ? CadSceneEntityKind.preview : CadSceneEntityKind.sketch,
-        geometry: {
-          'points': _points(entity).map((point) => point.toJson()).toList(),
-          'entityType': entity.type.name,
-          'displayColor': preview
-              ? 'previewOrange'
-              : entity is SketchSpline
-              ? 'splineMagenta'
-              : 'sketchGreen',
-          'strokeWidth': entity is SketchSpline ? 1.7 : 1.35,
-          'construction': entity.construction,
-          'reference': entity.reference,
-        },
-        selected: entity.selectionState == SketchSelectionState.selected,
-        transparent: preview,
-      );
+  CadSceneEntity adapt(
+    SketchEntity entity, {
+    bool preview = false,
+    SketchCoordinateSystem? coordinates,
+  }) => CadSceneEntity(
+    id: entity.id,
+    kind: preview ? CadSceneEntityKind.preview : CadSceneEntityKind.sketch,
+    geometry: {
+      'points': _points(entity)
+          .map((point) => coordinates?.localToGlobal(point) ?? point)
+          .map((point) => point.toJson())
+          .toList(),
+      'entityType': entity.type.name,
+      'displayColor': preview
+          ? 'previewOrange'
+          : entity is SketchSpline
+          ? 'splineMagenta'
+          : 'sketchGreen',
+      // Screen-space width: sketch readability must not depend on zoom or on
+      // the angle of its support plane.
+      'strokeWidth': technicalStrokeWidth,
+      'construction': entity.construction,
+      'reference': entity.reference,
+    },
+    selected: entity.selectionState == SketchSelectionState.selected,
+    transparent: preview,
+  );
 
   List<SketchVector> _points(SketchEntity entity) => switch (entity) {
     SketchPoint() => [SketchVector.fromJson(entity.parameters['point'])],

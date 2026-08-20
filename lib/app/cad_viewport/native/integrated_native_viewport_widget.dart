@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../camera/cad_camera_controller.dart';
+import '../camera/camera_pan_audit.dart';
 import '../professional_cad_viewport_widget.dart';
 import '../scene/cad_scene_graph.dart';
 import '../selection/viewport_picking_controller.dart';
+import '../../operational_entities/operational_entity.dart';
+import '../../operational_entities/operational_entity_resolver.dart';
 import 'native_viewport_bridge.dart';
 
 class IntegratedCadViewportWidget extends StatefulWidget {
@@ -16,15 +19,31 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     required this.scene,
     required this.camera,
     this.onPick,
+    this.onSketchSupportPick,
+    this.onSketchEntityPick,
+    this.onSketchEntityDoublePick,
     this.onSketchTap,
+    this.onSketchSecondaryTap,
+    this.onSketchHover,
     this.showSketchGrid = false,
+    this.operationalEntities,
+    this.operationalResolver,
+    this.operationalSelection,
   });
 
   final CadSceneGraph scene;
   final CadCameraController camera;
   final ValueChanged<CadViewportPick>? onPick;
+  final ValueChanged<CadViewportPick>? onSketchSupportPick;
+  final ValueChanged<CadViewportPick>? onSketchEntityPick;
+  final ValueChanged<CadViewportPick>? onSketchEntityDoublePick;
   final ValueChanged<Offset>? onSketchTap;
+  final VoidCallback? onSketchSecondaryTap;
+  final ValueChanged<Offset>? onSketchHover;
   final bool showSketchGrid;
+  final OperationalEntityRegistry? operationalEntities;
+  final OperationalEntityResolver? operationalResolver;
+  final OperationalSelectionManager? operationalSelection;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -34,19 +53,79 @@ class IntegratedCadViewportWidget extends StatefulWidget {
 class _IntegratedCadViewportWidgetState
     extends State<IntegratedCadViewportWidget> {
   final NativeViewportBridge native = NativeViewportBridge();
+  late final OperationalEntityRegistry operationalEntities;
+  late final OperationalEntityResolver operationalResolver;
+  late final OperationalSelectionManager operationalSelection;
+  bool _ownsOperationalState = false;
   ViewportBackend backend = Platform.isWindows
       ? ViewportBackend.nativeGpu
       : ViewportBackend.flutterCanvas;
   Size? _nativeSize;
   bool _initializing = false;
   Timer? _deltaDebounce;
+  NativeViewportPick? _nativeHover;
+  OperationalResolution? _operationalHover;
+  bool _hoverRequestActive = false;
+  bool _nativeNavigating = false;
+  Offset? _pendingHover;
+  Offset? _lastHoverPosition;
+
+  Future<void> _updateNativeHover(Offset position) async {
+    _lastHoverPosition = position;
+    _pendingHover = position;
+    if (_hoverRequestActive || !native.available || _nativeNavigating) return;
+    _hoverRequestActive = true;
+    while (_pendingHover != null && native.available) {
+      final current = _pendingHover!;
+      _pendingHover = null;
+      final result = await native.pick(current.dx, current.dy);
+      final resolved = result == null
+          ? null
+          : await operationalResolver.resolve(result, widget.scene);
+      if (_pendingHover != null || _nativeNavigating) continue;
+      if (resolved == null) {
+        await native.clearHover();
+      } else {
+        await native.setOperationalHover(
+          operationalEntityId: resolved.entity.id,
+          entityId: resolved.entity.ownerId,
+          triangleIndices: resolved.triangleIndices,
+        );
+      }
+      if (mounted) {
+        setState(() {
+          _nativeHover = result;
+          _operationalHover = resolved;
+        });
+      }
+    }
+    _hoverRequestActive = false;
+  }
+
+  MouseCursor get _nativeCursor => switch (_nativeHover?.kind) {
+    NativePickKind.vertex => SystemMouseCursors.precise,
+    NativePickKind.edge => SystemMouseCursors.click,
+    NativePickKind.face => SystemMouseCursors.click,
+    _ => MouseCursor.defer,
+  };
 
   @override
   void initState() {
     super.initState();
     native.addListener(_changed);
+    operationalEntities =
+        widget.operationalEntities ?? OperationalEntityRegistry();
+    operationalResolver =
+        widget.operationalResolver ??
+        OperationalEntityResolver(operationalEntities);
+    operationalSelection =
+        widget.operationalSelection ??
+        OperationalSelectionManager(operationalEntities);
+    _ownsOperationalState = widget.operationalEntities == null;
     widget.scene.addListener(_sceneChanged);
     widget.camera.addListener(_cameraChanged);
+    operationalSelection.addListener(_operationalSelectionChanged);
+    operationalResolver.prepare(widget.scene);
   }
 
   @override
@@ -68,6 +147,7 @@ class _IntegratedCadViewportWidgetState
   }
 
   void _sceneChanged() {
+    operationalResolver.prepare(widget.scene);
     if (!native.available) return;
     _deltaDebounce?.cancel();
     _deltaDebounce = Timer(const Duration(milliseconds: 16), () {
@@ -76,7 +156,38 @@ class _IntegratedCadViewportWidgetState
   }
 
   void _cameraChanged() {
-    if (native.available) native.setCamera(widget.camera);
+    CameraPanAudit.record(
+      'Componente IntegratedCadViewportWidget._cameraChanged consome\n'
+      '${widget.camera.auditState()}',
+    );
+    if (native.available) {
+      CameraPanAudit.record(
+        'NativeViewportBridge.setCamera() publica sem modificar\n'
+        '${widget.camera.auditState()}',
+      );
+      native.setCamera(widget.camera);
+      CameraPanAudit.record(
+        'NativeViewportHost.SetCamera() -> Render solicitado',
+      );
+    } else {
+      CameraPanAudit.record('Render Flutter Canvas');
+    }
+  }
+
+  void _operationalSelectionChanged() {
+    final activeId = operationalSelection.activeId;
+    final presentation = activeId == null
+        ? null
+        : operationalResolver.presentation(activeId);
+    if (presentation == null) {
+      native.clearOperationalSelection();
+      return;
+    }
+    native.setOperationalSelection(
+      operationalEntityId: presentation.entity.id,
+      entityId: presentation.entity.ownerId,
+      triangleIndices: presentation.triangleIndices,
+    );
   }
 
   Future<void> _ensureNative(Size size) async {
@@ -94,6 +205,7 @@ class _IntegratedCadViewportWidgetState
     if (ready) {
       await native.sendInitial(widget.scene);
       await native.setCamera(widget.camera);
+      _operationalSelectionChanged();
     } else if (mounted) {
       setState(() => backend = ViewportBackend.flutterCanvas);
     }
@@ -106,7 +218,12 @@ class _IntegratedCadViewportWidgetState
     widget.scene.removeListener(_sceneChanged);
     widget.camera.removeListener(_cameraChanged);
     native.removeListener(_changed);
+    operationalSelection.removeListener(_operationalSelectionChanged);
     native.dispose();
+    if (_ownsOperationalState) {
+      operationalSelection.dispose();
+      operationalEntities.dispose();
+    }
     super.dispose();
   }
 
@@ -121,108 +238,198 @@ class _IntegratedCadViewportWidgetState
       }
       final useNative =
           backend == ViewportBackend.nativeGpu && native.available;
-      return Stack(
-        children: [
-          Positioned.fill(
-            child: useNative
-                ? Texture(
-                    textureId: native.textureId!,
-                    filterQuality: FilterQuality.none,
-                  )
-                : const SizedBox.shrink(),
-          ),
-          Positioned.fill(
-            child: ProfessionalCadViewportWidget(
-              scene: widget.scene,
-              camera: widget.camera,
-              onPick: widget.onPick,
-              onSketchTap: widget.onSketchTap,
-              showSketchGrid: widget.showSketchGrid,
-              renderMeshes: !useNative,
-              paintBackground: !useNative,
-            ),
-          ),
-          Positioned(
-            top: 10,
-            left: 290,
-            child: SegmentedButton<ViewportBackend>(
-              showSelectedIcon: false,
-              segments: const [
-                ButtonSegment(
-                  value: ViewportBackend.flutterCanvas,
-                  label: Text('Flutter Canvas'),
-                ),
-                ButtonSegment(
-                  value: ViewportBackend.nativeGpu,
-                  label: Text('Native GPU'),
-                ),
-              ],
-              selected: {backend},
-              onSelectionChanged: (selection) {
-                final next = selection.first;
-                setState(() => backend = next);
-                if (next == ViewportBackend.nativeGpu) _ensureNative(size);
-              },
-            ),
-          ),
-          if (kDebugMode && useNative)
-            Positioned(
-              left: 10,
-              top: 60,
-              child: _DiagnosticPanel(
-                stats: native.stats,
-                onProbe: native.textureProbe,
+      return MouseRegion(
+        cursor: widget.onSketchTap != null || widget.onSketchSupportPick != null
+            ? SystemMouseCursors.precise
+            : useNative
+            ? _nativeCursor
+            : MouseCursor.defer,
+        onHover: useNative || widget.onSketchHover != null
+            ? (event) {
+                widget.onSketchHover?.call(event.localPosition);
+                if (useNative) _updateNativeHover(event.localPosition);
+              }
+            : null,
+        onExit: useNative
+            ? (_) {
+                _pendingHover = null;
+                native.clearHover();
+                setState(() {
+                  _nativeHover = null;
+                  _operationalHover = null;
+                });
+              }
+            : null,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTapUp: useNative && _operationalHover != null
+              ? (_) => operationalSelection.select(
+                  _operationalHover!.entity.id,
+                  additive: HardwareKeyboard.instance.isShiftPressed,
+                  toggle: HardwareKeyboard.instance.isControlPressed,
+                )
+              : null,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: useNative
+                    ? Texture(
+                        textureId: native.textureId!,
+                        filterQuality: FilterQuality.none,
+                      )
+                    : const SizedBox.shrink(),
               ),
-            ),
-        ],
+              Positioned.fill(
+                child: ProfessionalCadViewportWidget(
+                  scene: widget.scene,
+                  camera: widget.camera,
+                  onPick: widget.onPick,
+                  onSketchSupportPick: widget.onSketchSupportPick,
+                  onSketchEntityPick: widget.onSketchEntityPick,
+                  onSketchEntityDoublePick: widget.onSketchEntityDoublePick,
+                  onSketchTap: widget.onSketchTap,
+                  onSketchSecondaryTap: widget.onSketchSecondaryTap,
+                  onSketchHover: widget.onSketchHover,
+                  showSketchGrid: widget.showSketchGrid,
+                  renderMeshes: !useNative,
+                  paintBackground: !useNative,
+                  enablePicking:
+                      !useNative || widget.onSketchSupportPick != null,
+                  onNavigationChanged: useNative
+                      ? (navigating) {
+                          _nativeNavigating = navigating;
+                          if (navigating) {
+                            _pendingHover = null;
+                            native.clearHover();
+                            if (_nativeHover != null) {
+                              setState(() {
+                                _nativeHover = null;
+                                _operationalHover = null;
+                              });
+                            }
+                          } else if (_lastHoverPosition != null) {
+                            _updateNativeHover(_lastHoverPosition!);
+                          }
+                        }
+                      : null,
+                ),
+              ),
+              Positioned(
+                top: 10,
+                left: 290,
+                child: SegmentedButton<ViewportBackend>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: ViewportBackend.flutterCanvas,
+                      label: Text('Flutter Canvas'),
+                    ),
+                    ButtonSegment(
+                      value: ViewportBackend.nativeGpu,
+                      label: Text('Native GPU'),
+                    ),
+                  ],
+                  selected: {backend},
+                  onSelectionChanged: (selection) {
+                    final next = selection.first;
+                    setState(() => backend = next);
+                    if (next == ViewportBackend.nativeGpu) _ensureNative(size);
+                  },
+                ),
+              ),
+              if (useNative &&
+                  !_nativeNavigating &&
+                  _operationalHover != null &&
+                  _lastHoverPosition != null)
+                Positioned(
+                  left: (_lastHoverPosition!.dx + 16)
+                      .clamp(
+                        8.0,
+                        (size.width - 236).clamp(8.0, double.infinity),
+                      )
+                      .toDouble(),
+                  top: (_lastHoverPosition!.dy + 18)
+                      .clamp(
+                        8.0,
+                        (size.height - 112).clamp(8.0, double.infinity),
+                      )
+                      .toDouble(),
+                  child: IgnorePointer(
+                    child: _OperationalHoverCard(
+                      entity: _operationalHover!.entity,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       );
     },
   );
 }
 
-class _DiagnosticPanel extends StatelessWidget {
-  const _DiagnosticPanel({required this.stats, required this.onProbe});
-  final NativeViewportStats stats;
-  final VoidCallback onProbe;
+class _OperationalHoverCard extends StatelessWidget {
+  const _OperationalHoverCard({required this.entity});
+  final OperationalEntity entity;
+
+  String get _typeLabel => switch (entity.type) {
+    OperationalEntityType.meshRegion => 'Mesh Region',
+    OperationalEntityType.plane => 'Plane',
+    OperationalEntityType.cylinder => 'Cylinder',
+    OperationalEntityType.cone => 'Cone',
+    OperationalEntityType.sphere => 'Sphere',
+    OperationalEntityType.fillet => 'Fillet',
+    OperationalEntityType.freeformRegion => 'Freeform Region',
+    OperationalEntityType.cadFace => 'CAD Face',
+    OperationalEntityType.topologicalEdge => 'Topological Edge',
+    OperationalEntityType.topologicalVertex => 'Topological Vertex',
+    OperationalEntityType.sketchEntity => 'Sketch Entity',
+    OperationalEntityType.curve => 'Curve',
+    OperationalEntityType.section => 'Section',
+    OperationalEntityType.surface => 'Surface',
+  };
+
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: Colors.black.withValues(alpha: .72),
-      borderRadius: BorderRadius.circular(5),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.all(8),
+  Widget build(BuildContext context) {
+    final capabilities = entity.capabilities
+        .take(3)
+        .map((capability) => capability.name)
+        .join(' · ');
+    return Container(
+      width: 220,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xEE111923),
+        border: Border.all(color: const Color(0x6659D8F5)),
+        borderRadius: BorderRadius.circular(5),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x55000000),
+            blurRadius: 6,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
       child: DefaultTextStyle(
-        style: const TextStyle(color: Colors.white70, fontSize: 11),
+        style: const TextStyle(color: Color(0xFFD8E6F0), fontSize: 11),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '${stats.fps.toStringAsFixed(1)} FPS  ${stats.drawCalls} draws  '
-              '${stats.triangles} triangles\n'
-              'camera=${stats.setCameraCalls} render=${stats.renderCalls} '
-              'CB=${stats.constantBufferUpdates} drawIndexed=${stats.drawIndexedCalls}\n'
-              'fit=${stats.fitCalls} d=${stats.cameraDistance.toStringAsFixed(6)} '
-              'r=${stats.cameraRadius.toStringAsFixed(6)} '
-              'near=${stats.cameraNear.toStringAsFixed(6)} '
-              'far=${stats.cameraFar.toStringAsFixed(3)}\n'
-              'texture=${stats.textureId} registered=${stats.textureRegistered} '
-              'callbacks=${stats.textureCallbacks} '
-              '${stats.textureCallbackHz.toStringAsFixed(1)}/s\n'
-              'marks=${stats.successfulFrameMarks}/${stats.frameMarks} '
-              'request=${stats.requestedWidth}x${stats.requestedHeight} '
-              'clear=0x${stats.sampledClearBgra.toRadixString(16).padLeft(8, '0')} '
-              'draw=0x${stats.sampledBgra.toRadixString(16).padLeft(8, '0')}\n'
-              '${stats.gpu}',
+              _typeLabel,
+              style: const TextStyle(
+                color: Color(0xFF64DDF5),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            const SizedBox(height: 6),
-            OutlinedButton(
-              onPressed: onProbe,
-              child: const Text('D3D texture probe'),
-            ),
+            Text('Owner: ${entity.ownerDomain}'),
+            Text(entity.available ? 'Available' : 'Unavailable'),
+            if (capabilities.isNotEmpty) Text(capabilities),
           ],
         ),
       ),
-    ),
-  );
+    );
+  }
 }

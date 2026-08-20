@@ -63,14 +63,27 @@ class _SketchSurfaceWorkspacePanelState
             controller.error!,
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
-        if (controller.stage == SketchSurfaceStage.idle)
+        if (controller.stage == SketchSurfaceStage.idle) ...[
+          const Text(
+            'Create a Sketch on a world plane or on selected planar geometry.',
+          ),
+          const SizedBox(height: 8),
           FilledButton.icon(
+            onPressed: controller.busy
+                ? null
+                : (widget.onOpenSketch ?? controller.openSketch),
+            icon: const Icon(Icons.edit_note),
+            label: const Text('New Sketch'),
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
             onPressed: controller.busy
                 ? null
                 : controller.createRecognizedPlane,
             icon: const Icon(Icons.layers_outlined),
-            label: const Text('Create approved plane'),
+            label: const Text('Create recognized plane'),
           ),
+        ],
         if (controller.stage == SketchSurfaceStage.referenceReady) ...[
           Wrap(
             spacing: 6,
@@ -196,26 +209,34 @@ class _SketchSurfaceWorkspacePanelState
             label: const Text('Finish Sketch'),
           ),
         ],
-        if (controller.stage == SketchSurfaceStage.sketchFinished)
+        if (controller.stage == SketchSurfaceStage.sketchFinished) ...[
           FilledButton.icon(
-            onPressed: controller.busy ? null : controller.previewPlanarSurface,
+            onPressed: controller.busy || !controller.sketchReadyForSurface
+                ? null
+                : controller.previewPlanarSurface,
             icon: const Icon(Icons.visibility_outlined),
-            label: const Text('Generate Surface Preview'),
+            label: const Text('Preview Surface'),
           ),
+          if (!controller.sketchReadyForSurface)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                controller.sketchSurfaceBlockReason,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+              ),
+            ),
+        ],
         if (controller.stage == SketchSurfaceStage.surfacePreview) ...[
-          if (controller.surfacePlan != null) ...[
-            Text(
-              'Quality: ${(controller.surfacePlan!.candidates.first.quality * 100).toStringAsFixed(1)}%',
+          const ListTile(
+            dense: true,
+            leading: Icon(Icons.layers_outlined, color: Colors.lightBlueAccent),
+            title: Text('Dynamic Surface Preview'),
+            subtitle: Text(
+              'Temporary translucent film. Editing the Sketch updates it immediately.',
             ),
-            Text(
-              'Continuity: ${controller.surfacePlan!.candidates.first.predictedContinuity.name}',
-            ),
-            Text(controller.surfacePlan!.candidates.first.justification),
-          ],
-          FilledButton.icon(
-            onPressed: controller.busy ? null : controller.confirmSurface,
-            icon: const Icon(Icons.check_circle_outline),
-            label: const Text('Confirm Surface'),
           ),
         ],
         if (controller.stage == SketchSurfaceStage.surfaceGenerated)

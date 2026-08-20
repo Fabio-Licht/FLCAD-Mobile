@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 
@@ -8,6 +10,8 @@ import '../../core/cad_kernel/api/geometry_kernel_api.dart';
 import '../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../core/cad_kernel/models/kernel_models.dart';
 import '../../core/cad_kernel/manager/kernel_manager.dart';
+import '../../core/feature_lifecycle/feature_lifecycle.dart';
+import '../../core/feature_lifecycle/feature_lifecycle_projector.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/geometric_kernel/linear_algebra/matrices.dart';
 import '../../core/import_export/api/import_export_api.dart';
@@ -16,6 +20,8 @@ import '../commands/command_manager.dart';
 import 'cad_document_scene_projection.dart';
 import '../cad_viewport/rendering/kernel_display_mesh_pipeline.dart';
 import '../engineering_bridge/selection/geometry_selection_manager.dart';
+import '../operational_entities/operational_entity.dart';
+import '../operational_entities/operational_entity_resolver.dart';
 import 'world_coordinate_system.dart';
 
 class CadRuntime extends ChangeNotifier {
@@ -26,6 +32,9 @@ class CadRuntime extends ChangeNotifier {
        scene = CadSceneGraph() {
     projection = CadDocumentSceneProjection(scene);
     geometrySelection = GeometrySelectionManager(scene);
+    operationalEntities = OperationalEntityRegistry();
+    operationalResolver = OperationalEntityResolver(operationalEntities);
+    operationalSelection = OperationalSelectionManager(operationalEntities);
   }
 
   final CadDocumentRepository _repository;
@@ -33,10 +42,14 @@ class CadRuntime extends ChangeNotifier {
   final CadSceneGraph scene;
   late final CadDocumentSceneProjection projection;
   late final GeometrySelectionManager geometrySelection;
+  late final OperationalEntityRegistry operationalEntities;
+  late final OperationalEntityResolver operationalResolver;
+  late final OperationalSelectionManager operationalSelection;
   CadDocument? _document;
   Directory? _projectDirectory;
   ImportedCadDocument? _activeImport;
   KernelMeshGeometry? _activeMeshGeometry;
+  KernelBounds? _workspaceBounds;
   KernelDisplayMeshPipeline? _displayMeshes;
   final List<CadDocument> _undo = [], _redo = [];
   CommandManager? _commands;
@@ -46,6 +59,7 @@ class CadRuntime extends ChangeNotifier {
   CadDocument? get document => _document;
   ImportedCadDocument? get activeImport => _activeImport;
   KernelMeshGeometry? get activeMeshGeometry => _activeMeshGeometry;
+  KernelBounds? get workspaceBounds => _workspaceBounds;
   bool get canUndo => _undo.isNotEmpty;
   bool get canRedo => _redo.isNotEmpty;
   Set<String> get selection => geometrySelection.selectedIds;
@@ -117,13 +131,39 @@ class CadRuntime extends ChangeNotifier {
   }
 
   Future<void> open(String projectId, Directory directory) async {
+    // A project boundary is also a hard boundary for every interaction-only
+    // state. None of these values belongs to the durable CAD document.
+    projection.clearTransient();
+    geometrySelection.clear();
+    operationalSelection.clear();
+    operationalEntities.clear();
+    recognitionSession = sketchSession = surfaceSession = null;
+    _state.clear();
+    _workspaceBounds = null;
+    scene.clear();
+
+    // 1. Load permanent document geometry and engineering entities.
     _projectDirectory = directory;
     _document = await _repository.load(projectId, directory);
+    final sanitized = _sanitizeLegacyWorkspaceState(_document!);
+    if (!identical(sanitized, _document)) {
+      _document = sanitized;
+      await _repository.save(_document!, directory);
+    }
     final initialized = _ensureProfessionalCollections(
       WorldCoordinateSystem.ensure(_document!),
     );
     if (!identical(initialized, _document)) {
       _document = initialized;
+      await _repository.save(_document!, directory);
+    }
+    final lifecycleDocument = FeatureLifecycleProjector.normalize(
+      _document!,
+      command: 'project.open.lifecycle-migration',
+    );
+    if (jsonEncode(lifecycleDocument.toJson()) !=
+        jsonEncode(_document!.toJson())) {
+      _document = lifecycleDocument;
       await _repository.save(_document!, directory);
     }
     final history = await _repository.loadHistory(directory);
@@ -134,7 +174,19 @@ class CadRuntime extends ChangeNotifier {
       scene: scene,
     );
     _restoreActiveImport();
+
+    // 2. Rebuild the complete SceneGraph before publishing the project.
     await projection.synchronize(_document!, displayMeshes: _displayMeshes);
+
+    // 3. Never trust a persisted display bound for camera recovery. Derive it
+    // again from the rebuilt, permanent scene geometry.
+    _workspaceBounds = _recalculateWorkspaceBounds();
+
+    // 4. Enforce an empty transient layer after reconstruction as well. This
+    // prevents a producer invoked during loading from leaking a preview.
+    projection.clearTransient();
+    geometrySelection.clear();
+    operationalSelection.clear();
     _undo
       ..clear()
       ..addAll(history.undo.where((item) => item.projectId == projectId));
@@ -151,12 +203,129 @@ class CadRuntime extends ChangeNotifier {
     _activeImport = null;
     _activeMeshGeometry = null;
     _displayMeshes = null;
+    _workspaceBounds = null;
     geometrySelection.clear();
     recognitionSession = sketchSession = surfaceSession = null;
     _state.clear();
     projection.clearTransient();
     await projection.synchronize(CadDocument.empty('closed'));
     notifyListeners();
+  }
+
+  KernelBounds? _recalculateWorkspaceBounds() {
+    var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+    var maxZ = double.negativeInfinity;
+
+    void include(Object? raw) {
+      if (raw is! List || raw.length < 3) return;
+      final x = (raw[0] as num?)?.toDouble();
+      final y = (raw[1] as num?)?.toDouble();
+      final z = (raw[2] as num?)?.toDouble();
+      if (x == null ||
+          y == null ||
+          z == null ||
+          !x.isFinite ||
+          !y.isFinite ||
+          !z.isFinite) {
+        return;
+      }
+      minX = math.min(minX, x);
+      minY = math.min(minY, y);
+      minZ = math.min(minZ, z);
+      maxX = math.max(maxX, x);
+      maxY = math.max(maxY, y);
+      maxZ = math.max(maxZ, z);
+    }
+
+    for (final entity in scene.entities) {
+      if (!entity.visible ||
+          entity.id.contains(':world:') ||
+          entity.kind == CadSceneEntityKind.preview) {
+        continue;
+      }
+      final geometry = entity.geometry;
+      final nodes = geometry['nodes'];
+      if (nodes is List) {
+        for (var index = 0; index + 2 < nodes.length; index += 3) {
+          include([nodes[index], nodes[index + 1], nodes[index + 2]]);
+        }
+      }
+      final points = geometry['points'];
+      if (points is List) {
+        for (final point in points) {
+          include(point);
+        }
+      }
+      final segments = geometry['segments'];
+      if (segments is List) {
+        for (final segment in segments.whereType<List>()) {
+          for (final point in segment) {
+            include(point);
+          }
+        }
+      }
+    }
+    if (!minX.isFinite || !maxX.isFinite) return null;
+    return KernelBounds(minX, minY, minZ, maxX, maxY, maxZ);
+  }
+
+  CadDocument _sanitizeLegacyWorkspaceState(CadDocument document) {
+    var changed = false;
+
+    Object? sanitize(Object? value) {
+      if (value is List) return value.map(sanitize).toList(growable: false);
+      if (value is! Map) return value;
+      final output = <String, dynamic>{};
+      for (final entry in value.entries) {
+        final key = entry.key.toString();
+        if (const {
+          'sketchState',
+          'sketchOffset',
+          'presentationOffset',
+          'presentationOffsetNdcX',
+          'presentationOffsetNdcY',
+          'presentationTranslation',
+          'temporaryCameraState',
+          'dynamicTransformPreview',
+          'hoverState',
+        }.contains(key)) {
+          changed = true;
+          continue;
+        }
+        if (key == 'selectionState' && entry.value != 'none') {
+          output[key] = 'none';
+          changed = true;
+          continue;
+        }
+        output[key] = sanitize(entry.value);
+      }
+      return output;
+    }
+
+    final entities = <String, CadDocumentEntity>{};
+    for (final entity in document.entities.values) {
+      final data = Map<String, dynamic>.from(sanitize(entity.data)! as Map);
+      entities[entity.id] = CadDocumentEntity(
+        id: entity.id,
+        kind: entity.kind,
+        data: data,
+        shape: entity.shape,
+        mesh: entity.mesh,
+      );
+    }
+    final parameters = Map<String, dynamic>.from(
+      sanitize(document.parameters)! as Map,
+    );
+    if (!changed) return document;
+    return CadDocument(
+      projectId: document.projectId,
+      entities: Map.unmodifiable(entities),
+      revisions: document.revisions,
+      parameters: parameters,
+      officialExportShapeId: document.officialExportShapeId,
+    );
   }
 
   Future<void> registerImport(
@@ -177,11 +346,32 @@ class CadRuntime extends ChangeNotifier {
       _state.remove(key);
     }
     final current = _requireDocument();
-    final replacedImports = current.entities.values
+    final existingImports = current.entities.values
         .where((entity) => entity.kind == CadDocumentEntityKind.import)
-        .map((entity) => entity.id)
-        .where((id) => id != imported.id)
         .toList();
+    final originalFileName = path.basename(imported.sourcePath);
+    final extension = path.extension(originalFileName);
+    final stem = path.basenameWithoutExtension(originalFileName);
+    final occupiedNames = existingImports
+        .map(
+          (entity) =>
+              (entity.data['name'] as String? ??
+                      path.basename(entity.data['sourcePath'] as String? ?? ''))
+                  .toLowerCase(),
+        )
+        .toSet();
+    var displayName = originalFileName;
+    var copyNumber = 1;
+    while (occupiedNames.contains(displayName.toLowerCase())) {
+      displayName = '$stem $copyNumber$extension';
+      copyNumber++;
+    }
+    var entityId = imported.id;
+    var idCopyNumber = 1;
+    while (current.entities.containsKey(entityId)) {
+      entityId = '${imported.id}:import-$idCopyNumber';
+      idCopyNumber++;
+    }
     final sceneGeometry = geometry == null
         ? <String, dynamic>{}
         : {
@@ -193,11 +383,13 @@ class CadRuntime extends ChangeNotifier {
       command: 'import.${imported.format.name}',
       upsert: [
         CadDocumentEntity(
-          id: imported.id,
+          id: entityId,
           kind: CadDocumentEntityKind.import,
           shape: imported.shape,
           mesh: imported.mesh,
           data: {
+            'name': displayName,
+            'originalFileName': originalFileName,
             'sourcePath': imported.sourcePath,
             'registeredPath': imported.registeredPath,
             'format': imported.format.name,
@@ -211,13 +403,13 @@ class CadRuntime extends ChangeNotifier {
           },
         ),
       ],
-      remove: replacedImports,
       officialExportShapeId: imported.shape == null
           ? current.officialExportShapeId
           : imported.id,
     );
     _activeImport = imported;
     _activeMeshGeometry = geometry;
+    _workspaceBounds = _recalculateWorkspaceBounds();
     notifyListeners();
   }
 
@@ -227,21 +419,83 @@ class CadRuntime extends ChangeNotifier {
     Iterable<String> remove = const [],
     String? officialExportShapeId,
   }) async {
-    final changed = upsert.toList(growable: false);
+    final requested = upsert.toList(growable: false);
     final removed = remove.toList(growable: false);
     final before = _requireDocument();
+    final touchedIds = requested
+        .where((entity) {
+          final previous = before.entities[entity.id];
+          return previous == null ||
+              _definitionJson(previous) != _definitionJson(entity);
+        })
+        .map((entity) => entity.id)
+        .toSet();
     _undo.add(before);
     _redo.clear();
-    _document = before.mutate(
+    final mutated = before.mutate(
       command: command,
-      upsert: changed,
+      upsert: requested,
       remove: removed,
       officialExportShapeId: officialExportShapeId,
     );
+    _document = FeatureLifecycleProjector.normalize(
+      mutated,
+      command: command,
+      previousDocument: before,
+      touchedIds: touchedIds,
+    );
+    final changed = _document!.entities.values
+        .where((entity) {
+          final previous = before.entities[entity.id];
+          return previous == null ||
+              jsonEncode(previous.toJson()) != jsonEncode(entity.toJson());
+        })
+        .toList(growable: false);
     await projection.synchronizeChanges(
       _document!,
       upsert: changed,
       remove: removed,
+      displayMeshes: _displayMeshes,
+    );
+    await save();
+    notifyListeners();
+  }
+
+  Future<void> transitionFeature(
+    String id,
+    FeatureLifecycleState state, {
+    required String command,
+  }) async {
+    final current =
+        _requireDocument().entities[id] ??
+        (throw StateError('Unknown Feature: $id'));
+    if (!FeatureLifecycleContract.appliesTo(current)) {
+      throw StateError(
+        '$id does not implement the Feature Lifecycle Contract.',
+      );
+    }
+    final before = _requireDocument();
+    _undo.add(before);
+    _redo.clear();
+    final mutated = before.mutate(command: command, upsert: [current]);
+    _document = FeatureLifecycleProjector.normalize(
+      mutated,
+      command: command,
+      previousDocument: before,
+      touchedIds: {id},
+      stateOverrides: {id: state},
+    );
+    final changed = _document!.entities.values
+        .where((entity) {
+          final previous = before.entities[entity.id];
+          return previous == null ||
+              jsonEncode(previous.toJson()) != jsonEncode(entity.toJson());
+        })
+        .toList(growable: false);
+    await projection.synchronizeChanges(
+      _document!,
+      upsert: changed,
+      remove: const [],
       displayMeshes: _displayMeshes,
     );
     await save();
@@ -315,8 +569,14 @@ class CadRuntime extends ChangeNotifier {
     if (sceneEntity != null && sceneEntity.visible != visible) {
       scene.upsert(sceneEntity.copyWith(visible: visible));
     }
+    final before = _requireDocument();
     try {
-      await mutate(
+      // Visibility is a display-state delta. Do not route it through the
+      // general projection synchronizer: that path may republish/tessellate a
+      // native shape even though no geometry changed.
+      _undo.add(before);
+      _redo.clear();
+      _document = before.mutate(
         command: 'display.visibility',
         upsert: [
           CadDocumentEntity(
@@ -328,7 +588,11 @@ class CadRuntime extends ChangeNotifier {
           ),
         ],
       );
+      await save();
+      notifyListeners();
     } catch (_) {
+      _document = before;
+      if (_undo.isNotEmpty && identical(_undo.last, before)) _undo.removeLast();
       if (sceneEntity != null) scene.upsert(sceneEntity);
       rethrow;
     }
@@ -836,6 +1100,38 @@ class CadRuntime extends ChangeNotifier {
             ),
       );
     }
+    if (visible != null && name == null && locked == null && active == null) {
+      final before = _requireDocument();
+      _undo.add(before);
+      _redo.clear();
+      try {
+        _document = before.mutate(
+          command: 'collection.visibility',
+          upsert: updates,
+        );
+        for (final update in updates.skip(1)) {
+          final visual = scene.find(update.id);
+          if (visual != null && visual.visible != visible) {
+            scene.upsert(visual.copyWith(visible: visible));
+          }
+        }
+        await save();
+        notifyListeners();
+      } catch (_) {
+        _document = before;
+        if (_undo.isNotEmpty && identical(_undo.last, before)) {
+          _undo.removeLast();
+        }
+        for (final update in updates.skip(1)) {
+          final visual = scene.find(update.id);
+          if (visual != null && visual.visible == visible) {
+            scene.upsert(visual.copyWith(visible: !visible));
+          }
+        }
+        rethrow;
+      }
+      return;
+    }
     await mutate(command: 'collection.update', upsert: updates);
   }
 
@@ -1003,8 +1299,12 @@ class CadRuntime extends ChangeNotifier {
 
   Future<void> undoDocument() async {
     if (_undo.isEmpty) return;
-    _redo.add(_requireDocument());
-    _document = _undo.removeLast();
+    final current = _requireDocument();
+    _redo.add(current);
+    _document = FeatureLifecycleProjector.normalize(
+      _undo.removeLast(),
+      command: 'document.undo.lifecycle-restore',
+    );
     _restoreActiveImport();
     await projection.synchronize(_document!, displayMeshes: _displayMeshes);
     await save();
@@ -1013,17 +1313,36 @@ class CadRuntime extends ChangeNotifier {
 
   Future<void> redoDocument() async {
     if (_redo.isEmpty) return;
-    _undo.add(_requireDocument());
-    _document = _redo.removeLast();
+    final current = _requireDocument();
+    _undo.add(current);
+    _document = FeatureLifecycleProjector.normalize(
+      _redo.removeLast(),
+      command: 'document.redo.lifecycle-restore',
+    );
     _restoreActiveImport();
     await projection.synchronize(_document!, displayMeshes: _displayMeshes);
     await save();
     notifyListeners();
   }
 
-  Future<void> save() async {
-    final document = _document, directory = _projectDirectory;
+  Future<void> save({bool recordLifecycle = false}) async {
+    var document = _document;
+    final directory = _projectDirectory;
     if (document != null && directory != null) {
+      if (recordLifecycle) {
+        final featureIds = document.entities.values
+            .where(FeatureLifecycleContract.appliesTo)
+            .map((entity) => entity.id)
+            .toSet();
+        document = FeatureLifecycleProjector.normalize(
+          document,
+          command: 'project.save',
+          previousDocument: document,
+          touchedIds: featureIds,
+          actionOverrides: {for (final id in featureIds) id: 'saved'},
+        );
+        _document = document;
+      }
       await _repository.save(document, directory);
       await _repository.saveHistory(directory, undo: _undo, redo: _redo);
     }
@@ -1036,6 +1355,14 @@ class CadRuntime extends ChangeNotifier {
 
   CadDocument _requireDocument() =>
       _document ?? (throw StateError('CadRuntime has no active document.'));
+
+  String _definitionJson(CadDocumentEntity entity) {
+    final json = entity.toJson();
+    final data = Map<String, dynamic>.from(json['data'] as Map)
+      ..remove(FeatureLifecycleContract.dataKey);
+    json['data'] = data;
+    return jsonEncode(json);
+  }
 
   void _restoreActiveImport() {
     _activeImport = null;
@@ -1069,6 +1396,8 @@ class CadRuntime extends ChangeNotifier {
 
   @override
   void dispose() {
+    operationalSelection.dispose();
+    operationalEntities.dispose();
     geometrySelection.dispose();
     scene.dispose();
     super.dispose();

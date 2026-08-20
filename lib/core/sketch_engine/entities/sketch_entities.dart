@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../../utils/id_generator.dart';
 import '../models/sketch_models.dart';
 
@@ -52,6 +54,18 @@ abstract class SketchEntity {
   final Map<String, dynamic> metadata;
   final List<String> diagnostics;
   final Map<String, dynamic> parameters;
+
+  /// Keeps non-authoritative Inspector/HUD values synchronized after every
+  /// edit path (numeric, move, rotate, scale or constraint solving).
+  void refreshDerivedParameters() {
+    if (this is SketchLine) {
+      final start = SketchVector.fromJson(parameters['start']);
+      final end = SketchVector.fromJson(parameters['end']);
+      parameters
+        ..clear()
+        ..addAll(SketchLine.parametersFor(start, end));
+    }
+  }
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -152,10 +166,26 @@ class SketchPoint extends SketchEntity {
 
 class SketchLine extends SketchEntity {
   SketchLine(SketchVector start, SketchVector end, {super.id})
-    : super(
-        type: SketchEntityType.line,
-        parameters: {'start': start.toJson(), 'end': end.toJson()},
-      );
+    : super(type: SketchEntityType.line, parameters: parametersFor(start, end));
+
+  static Map<String, dynamic> parametersFor(
+    SketchVector start,
+    SketchVector end,
+  ) {
+    final dx = end.x - start.x;
+    final dy = end.y - start.y;
+    final dz = end.z - start.z;
+    final length = math.sqrt(dx * dx + dy * dy + dz * dz);
+    return {
+      'start': start.toJson(),
+      'end': end.toJson(),
+      'length': length,
+      'direction': length <= 1e-12
+          ? const [0.0, 0.0, 0.0]
+          : [dx / length, dy / length, dz / length],
+      'angleDegrees': math.atan2(dy, dx) * 180 / math.pi,
+    };
+  }
 }
 
 class SketchCircle extends SketchEntity {

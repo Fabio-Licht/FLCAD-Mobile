@@ -23,11 +23,13 @@ class EditorSnapSettings {
   EditorSnapSettings({
     Set<EditorSnapType>? enabled,
     this.tolerance = 8,
+    this.gridSpacing = 1,
     Map<EditorSnapType, int>? priority,
   }) : enabled = enabled ?? EditorSnapType.values.toSet(),
        priority = priority ?? <EditorSnapType, int>{};
   final Set<EditorSnapType> enabled;
   double tolerance;
+  double gridSpacing;
   final Map<EditorSnapType, int> priority;
 }
 
@@ -60,19 +62,43 @@ class EditorSnappingEngine {
           const SketchVector(0, 0),
           _distance(cursor, const SketchVector(0, 0)),
         ),
+      if (settings.enabled.contains(EditorSnapType.grid) &&
+          settings.gridSpacing > 0)
+        SnapCandidate(
+          EditorSnapType.grid,
+          SketchVector(
+            (cursor.x / settings.gridSpacing).round() * settings.gridSpacing,
+            (cursor.y / settings.gridSpacing).round() * settings.gridSpacing,
+          ),
+          _distance(
+            cursor,
+            SketchVector(
+              (cursor.x / settings.gridSpacing).round() * settings.gridSpacing,
+              (cursor.y / settings.gridSpacing).round() * settings.gridSpacing,
+            ),
+          ),
+        ),
     ];
     for (final e in entities) {
       candidates.addAll(_entityCandidates(cursor, e));
     }
     candidates.removeWhere(
       (c) =>
-          c.distance > settings.tolerance || !settings.enabled.contains(c.type),
+          (c.type != EditorSnapType.grid && c.distance > settings.tolerance) ||
+          !settings.enabled.contains(c.type),
     );
     candidates.sort((a, b) {
       final p = (settings.priority[b.type] ?? 0).compareTo(
         settings.priority[a.type] ?? 0,
       );
-      return p != 0 ? p : a.distance.compareTo(b.distance);
+      if (p != 0) return p;
+      if (a.type == EditorSnapType.grid && b.type != EditorSnapType.grid) {
+        return 1;
+      }
+      if (b.type == EditorSnapType.grid && a.type != EditorSnapType.grid) {
+        return -1;
+      }
+      return a.distance.compareTo(b.distance);
     });
     preview = candidates.firstOrNull;
     analytics.snapCount++;
@@ -132,6 +158,36 @@ class EditorSnappingEngine {
           entityId: e.id,
         ),
       );
+      if (e is SketchArc) {
+        final radius = (e.parameters['radius'] as num).toDouble();
+        final startAngle = (e.parameters['startAngle'] as num).toDouble();
+        final endAngle = (e.parameters['endAngle'] as num).toDouble();
+        final start = SketchVector(
+          p.x + radius * math.cos(startAngle),
+          p.y + radius * math.sin(startAngle),
+        );
+        final end = SketchVector(
+          p.x + radius * math.cos(endAngle),
+          p.y + radius * math.sin(endAngle),
+        );
+        result
+          ..add(
+            SnapCandidate(
+              EditorSnapType.endpoint,
+              start,
+              _distance(cursor, start),
+              entityId: e.id,
+            ),
+          )
+          ..add(
+            SnapCandidate(
+              EditorSnapType.endpoint,
+              end,
+              _distance(cursor, end),
+              entityId: e.id,
+            ),
+          );
+      }
     }
     if (e.reference) {
       final p = e.parameters['point'];

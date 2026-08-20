@@ -120,14 +120,24 @@ class ViewportPickingController {
       );
     }
 
-    double segmentDistance(Offset point, Offset a, Offset b) {
+    ({double distance, double parameter}) segmentProjection(
+      Offset point,
+      Offset a,
+      Offset b,
+    ) {
       final delta = b - a;
       final squared = delta.dx * delta.dx + delta.dy * delta.dy;
-      if (squared <= 1e-9) return (point - a).distance;
+      if (squared <= 1e-9) {
+        return (distance: (point - a).distance, parameter: 0);
+      }
       final relative = point - a;
       final t = ((relative.dx * delta.dx + relative.dy * delta.dy) / squared)
           .clamp(0.0, 1.0);
-      return (point - (a + delta * t)).distance;
+      return (distance: (point - (a + delta * t)).distance, parameter: t);
+    }
+
+    double segmentDistance(Offset point, Offset a, Offset b) {
+      return segmentProjection(point, a, b).distance;
     }
 
     void consider(
@@ -168,11 +178,16 @@ class ViewportPickingController {
           if (raw.length < 2) continue;
           final a = vector(raw[0]), b = vector(raw[1]);
           if (a == null || b == null) continue;
+          final projection = segmentProjection(
+            position,
+            project(a),
+            project(b),
+          );
           consider(
             entity,
             priority,
-            segmentDistance(position, project(a), project(b)),
-            a,
+            projection.distance,
+            a + (b - a) * projection.parameter,
           );
         }
         continue;
@@ -182,15 +197,17 @@ class ViewportPickingController {
       if (rawPoints is List) {
         final points = rawPoints.map(vector).whereType<Vector3>().toList();
         for (var i = 1; i < points.length; i++) {
+          final a = points[i - 1], b = points[i];
+          final projection = segmentProjection(
+            position,
+            project(a),
+            project(b),
+          );
           consider(
             entity,
             priority,
-            segmentDistance(
-              position,
-              project(points[i - 1]),
-              project(points[i]),
-            ),
-            points[i],
+            projection.distance,
+            a + (b - a) * projection.parameter,
           );
         }
         continue;
@@ -287,7 +304,9 @@ class ViewportPickingController {
       if (diagonal > 1e-9) return diagonal * .12;
     }
     final distance = (camera.eye - camera.target).length;
-    return (distance * .075).clamp(.05, double.infinity).toDouble();
+    // Must match the renderer fallback exactly: a plane that is visible must
+    // expose the same hit area, including in an otherwise empty project.
+    return (distance * .32).clamp(1.0, double.infinity).toDouble();
   }
 
   Vector3? pointOnPlane({

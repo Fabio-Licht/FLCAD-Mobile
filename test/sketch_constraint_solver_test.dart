@@ -60,6 +60,81 @@ void main() {
     },
   );
 
+  test('G-125 corrects scanned geometry from reference to target', () async {
+    final reference = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(10, 0),
+    );
+    final parallelTarget = sketch.builders.line.build(
+      const SketchVector(3, 4),
+      const SketchVector(7, 7),
+    );
+    final perpendicularTarget = sketch.builders.line.build(
+      const SketchVector(12, 2),
+      const SketchVector(16, 5),
+    );
+    final parallelLength = (parallelTarget.parameters['length'] as num)
+        .toDouble();
+    final perpendicularLength =
+        (perpendicularTarget.parameters['length'] as num).toDouble();
+    api.builders.parallel.build([reference.id, parallelTarget.id]);
+    api.builders.perpendicular.build([reference.id, perpendicularTarget.id]);
+
+    await api.solve();
+
+    expect(parallelTarget.parameters['angleDegrees'], closeTo(0, 1e-9));
+    expect(parallelTarget.parameters['length'], closeTo(parallelLength, 1e-9));
+    expect(perpendicularTarget.parameters['angleDegrees'], closeTo(90, 1e-9));
+    expect(
+      perpendicularTarget.parameters['length'],
+      closeTo(perpendicularLength, 1e-9),
+    );
+    expect(reference.parameters['end'], [10.0, 0.0, 0.0]);
+  });
+
+  test('G-125 concentric preserves target radius', () async {
+    final reference = sketch.builders.circle.build(
+      const SketchVector(12, -4),
+      7,
+    );
+    final target = sketch.builders.circle.build(
+      const SketchVector(12.3, -3.8),
+      2,
+    );
+    api.builders.of(SketchConstraintType.concentric).build([
+      reference.id,
+      target.id,
+    ]);
+
+    await api.solve();
+
+    expect(target.parameters['center'], reference.parameters['center']);
+    expect(target.parameters['radius'], 2);
+  });
+
+  test('G-125 endpoint coincidence moves only the target endpoint', () async {
+    final reference = sketch.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(5, 0),
+    );
+    final target = sketch.builders.line.build(
+      const SketchVector(5.2, 0.1),
+      const SketchVector(8, 2),
+    );
+    final untouchedEnd = List<double>.from(
+      (target.parameters['end'] as List).cast<num>().map((e) => e.toDouble()),
+    );
+    api.builders.coincident.build([
+      '${reference.id}:end',
+      '${target.id}:start',
+    ]);
+
+    await api.solve();
+
+    expect(target.parameters['start'], reference.parameters['end']);
+    expect(target.parameters['end'], untouchedEnd);
+  });
+
   test(
     'detects missing references, overdefinition and duplicate constraints',
     () async {
@@ -153,8 +228,14 @@ void main() {
           type: SketchDimensionType.linear,
           constraintId: constraint.id,
           value: 3,
+          references: [point.id],
+          anchorReference: point.id,
+          labelX: 4,
+          labelY: 5,
         ),
       );
+      final dimension = api.dimensions.single;
+      api.updateDimension(dimension.id, value: 6, labelX: 8, labelY: 9);
       await api.engine.persist();
       for (final path in ConstraintRepository.paths) {
         expect(
@@ -171,6 +252,11 @@ void main() {
       await loaded.engine.load();
       expect(loaded.constraints.single.id, constraint.id);
       expect(loaded.engine.dimensions, hasLength(1));
+      expect(loaded.dimensions.single.value, 6);
+      expect(loaded.dimensions.single.references, [point.id]);
+      expect(loaded.dimensions.single.anchorReference, point.id);
+      expect(loaded.dimensions.single.labelX, 8);
+      expect(loaded.dimensions.single.labelY, 9);
     },
   );
 

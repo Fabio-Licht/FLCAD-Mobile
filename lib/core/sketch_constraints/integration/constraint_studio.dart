@@ -25,6 +25,7 @@ class ConstraintStudioAdapter {
         ),
     ];
     final parent = nodes.first.id;
+    final dimensionsParent = nodes[1].id;
     nodes.addAll(
       engine.constraints.values.map(
         (c) => EngineeringTreeNode(
@@ -44,6 +45,26 @@ class ConstraintStudioAdapter {
             'diagnostics': c.diagnostics,
             'timestamp': c.timestamp.toIso8601String(),
             'persistentId': c.id,
+          },
+        ),
+      ),
+    );
+    nodes.addAll(
+      engine.dimensions.values.map(
+        (dimension) => EngineeringTreeNode(
+          id: dimension.id,
+          projectId: projectId,
+          name: '${dimension.type.name} ${dimension.value}',
+          type: StudioEntityType.sketch,
+          parentId: dimensionsParent,
+          context: {
+            'dimensionType': dimension.type.name,
+            'value': dimension.value,
+            'references': dimension.references,
+            'anchorReference': dimension.anchorReference,
+            'labelPosition': [dimension.labelX, dimension.labelY],
+            'visible': dimension.visible,
+            'persistentId': dimension.id,
           },
         ),
       ),

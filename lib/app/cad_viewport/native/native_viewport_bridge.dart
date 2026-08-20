@@ -9,6 +9,22 @@ import '../camera/cad_camera_controller.dart';
 
 enum ViewportBackend { flutterCanvas, nativeGpu }
 
+enum NativePickKind { none, face, edge, vertex }
+
+@immutable
+class NativeViewportPick {
+  const NativeViewportPick({
+    required this.entityId,
+    required this.kind,
+    required this.subId,
+    required this.point,
+  });
+  final String entityId;
+  final NativePickKind kind;
+  final int subId;
+  final List<double> point;
+}
+
 @immutable
 class DisplaySnapshot {
   const DisplaySnapshot({required this.revision, required this.entities});
@@ -216,13 +232,69 @@ class NativeViewportBridge extends ChangeNotifier {
   Future<void> zoom(double factor) => _invoke('zoom', {'factor': factor});
   Future<void> fit() => _invoke('fit');
   Future<void> textureProbe() => _invoke('textureProbe');
+  Future<void> clearHover() => _invoke('clearHover');
+  Future<void> setOperationalHover({
+    required String operationalEntityId,
+    required String entityId,
+    required List<int> triangleIndices,
+  }) => _invoke('setOperationalHover', {
+    'operationalEntityId': operationalEntityId,
+    'entityId': entityId,
+    'triangles': triangleIndices,
+  });
+  Future<void> setOperationalSelection({
+    required String operationalEntityId,
+    required String entityId,
+    required List<int> triangleIndices,
+  }) => _invoke('setOperationalSelection', {
+    'operationalEntityId': operationalEntityId,
+    'entityId': entityId,
+    'triangles': triangleIndices,
+  });
+  Future<void> clearOperationalSelection() =>
+      _invoke('clearOperationalSelection');
+  Future<NativeViewportPick?> pick(double x, double y) async {
+    if (!available) return null;
+    try {
+      final value = await _channel.invokeMapMethod<Object?, Object?>('pick', {
+        'x': x.round(),
+        'y': y.round(),
+      });
+      if (value == null || value['entityId'] is! String) return null;
+      final rawPoint = value['point'] as List<Object?>? ?? const [];
+      return NativeViewportPick(
+        entityId: value['entityId']! as String,
+        kind: NativePickKind
+            .values[(value['kind'] as num?)?.toInt().clamp(0, 3) ?? 0],
+        subId: (value['subId'] as num?)?.toInt() ?? 0,
+        point: rawPoint
+            .map((item) => (item as num).toDouble())
+            .toList(growable: false),
+      );
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<void> setCamera(CadCameraController camera) => _invoke('setCamera', {
-    'eye': [camera.eye.x, camera.eye.y, camera.eye.z],
-    'target': [camera.target.x, camera.target.y, camera.target.z],
+    'eye': [
+      camera.presentationEye.x,
+      camera.presentationEye.y,
+      camera.presentationEye.z,
+    ],
+    'target': [
+      camera.presentationTarget.x,
+      camera.presentationTarget.y,
+      camera.presentationTarget.z,
+    ],
     'up': [camera.up.x, camera.up.y, camera.up.z],
     'fov': camera.fieldOfViewRadians,
     'near': camera.nearPlane,
     'far': camera.farPlane,
+    'projectionMode': camera.projectionMode.name,
+    'orthographicHeight': camera.orthographicHeight,
+    'panOffsetX': camera.presentationOffsetNdcX,
+    'panOffsetY': camera.presentationOffsetNdcY,
   });
 
   Future<void> refreshStats() async {

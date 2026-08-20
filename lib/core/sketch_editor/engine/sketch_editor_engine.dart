@@ -1,4 +1,6 @@
 import 'dart:math' as math;
+import '../../feature_lifecycle/feature_update_solver.dart';
+import '../../parametric_solver/parametric_solver.dart';
 import '../../sketch_constraints/api/constraint_api.dart';
 import '../../sketch_engine/api/sketch_engine_api.dart';
 import '../../sketch_engine/entities/sketch_entities.dart';
@@ -45,6 +47,7 @@ class SketchEditorEngine {
   late final EditorSnappingEngine snapping;
   late final PreviewEngine preview;
   final _undoCounts = <int>[], _redoCounts = <int>[];
+  final FeatureUpdateSolver featureUpdates = const FeatureUpdateSolver();
 
   EditorOperation start(
     SketchToolType tool,
@@ -118,7 +121,7 @@ class SketchEditorEngine {
           b.arc.build(
             p[0],
             _distance(p[0], p[1]),
-            0,
+            op.parameters['startAngle'] as double? ?? 0,
             op.parameters['endAngle'] as double? ?? math.pi,
           ),
         );
@@ -185,7 +188,15 @@ class SketchEditorEngine {
     }
     final op = preview.confirm(preview.active.last.id), targets = ids.toList();
     final affectedConstraints = constraints.constraints
-        .where((constraint) => constraint.references.any(targets.contains))
+        .where(
+          (constraint) => constraint.references.any((reference) {
+            final entityId = reference.replaceFirst(
+              RegExp(r':(start|end|point)$'),
+              '',
+            );
+            return targets.contains(entityId);
+          }),
+        )
         .toList();
     if (affectedConstraints.isNotEmpty && !confirmConstrained) {
       throw StateError(
@@ -199,7 +210,12 @@ class SketchEditorEngine {
         return;
       }
       if (tool == SketchToolType.fillet || tool == SketchToolType.chamfer) {
-        _corner(tool, targets, value);
+        _corner(
+          tool,
+          targets,
+          value,
+          autoTrim: parameters['autoTrim'] as bool? ?? true,
+        );
         return;
       }
       for (final id in targets) {
@@ -292,6 +308,178 @@ class SketchEditorEngine {
     analytics.redo++;
     history.record(EditorHistoryAction.redo, 'editor');
     return changed;
+  }
+
+  void editCornerFeature(String id, double value) {
+    final feature =
+        sketch.entity(id) ?? (throw StateError('Unknown Sketch feature: $id'));
+    final typeName = feature.metadata['featureType'] as String?;
+    final tool = typeName == SketchToolType.fillet.name
+        ? SketchToolType.fillet
+        : typeName == SketchToolType.chamfer.name
+        ? SketchToolType.chamfer
+        : throw StateError('$id is not a Fillet or Chamfer feature.');
+    final sources =
+        (feature.metadata['sourceEntityIds'] as List?)
+            ?.whereType<String>()
+            .toList(growable: false) ??
+        const <String>[];
+    final historyBefore = sketch.engine.history.entries.length;
+    featureUpdates.update(
+      request: ParametricSolveRequest(
+        first: '$id:definition',
+        second: '$id:parameter',
+        degreesOfFreedom: [
+          ParametricDegreeOfFreedom('$id:definition', fixed: true),
+          ParametricDegreeOfFreedom(
+            '$id:parameter',
+            parameterIds: {'$id:value'},
+          ),
+        ],
+        parameters: [ParametricParameter('$id:value', value)],
+        anchors: {'$id:definition'},
+        priorities: [ParametricPriority('$id:parameter', 1)],
+      ),
+      apply: (_) => sketch.engine.transaction('edit-feature:$id', () {
+        _corner(
+          tool,
+          sources,
+          value,
+          autoTrim: feature.metadata['autoTrim'] as bool? ?? true,
+          featureId: id,
+        );
+        feature.metadata['featureValue'] = value;
+      }),
+    );
+    _undoCounts.add(sketch.engine.history.entries.length - historyBefore);
+    _redoCounts.clear();
+    history.record(EditorHistoryAction.edit, id);
+  }
+
+  void trimIntersection(
+    String firstId,
+    SketchVector firstKeepPoint,
+    String secondId,
+    SketchVector secondKeepPoint,
+  ) {
+    _ensureEditableWithoutConstraints([firstId, secondId]);
+    final first = sketch.entity(firstId), second = sketch.entity(secondId);
+    if (first is! SketchLine || second is! SketchLine) {
+      throw StateError('Intersection Trim requires two lines.');
+    }
+    final intersection = _lineIntersectionParameters(first, second);
+    final firstKeep = _projectOnLine(
+      firstKeepPoint,
+      SketchVector.fromJson(first.parameters['start']),
+      SketchVector.fromJson(first.parameters['end']),
+    ).$2;
+    final secondKeep = _projectOnLine(
+      secondKeepPoint,
+      SketchVector.fromJson(second.parameters['start']),
+      SketchVector.fromJson(second.parameters['end']),
+    ).$2;
+    final historyBefore = sketch.engine.history.entries.length;
+    sketch.engine.transaction('trim-intersection', () {
+      _keepLineSide(first, intersection.$1, firstKeep, intersection.$2);
+      _keepLineSide(second, intersection.$1, secondKeep, intersection.$3);
+    });
+    _recordExternalEdit('trim-intersection', historyBefore);
+  }
+
+  void trimEndpointToNearestIntersection(String id, SketchVector clickedPoint) {
+    _ensureEditableWithoutConstraints([id]);
+    final line = sketch.entity(id);
+    if (line is! SketchLine) {
+      throw StateError('Endpoint Trim requires a line.');
+    }
+    final start = SketchVector.fromJson(line.parameters['start']);
+    final end = SketchVector.fromJson(line.parameters['end']);
+    final clickedT = _projectOnLine(clickedPoint, start, end).$2;
+    final removeStart = clickedT <= .5;
+    (SketchVector, double)? best;
+    for (final other in sketch.engine.entities.values.whereType<SketchLine>()) {
+      if (other.id == id) continue;
+      try {
+        final candidate = _lineIntersectionParameters(line, other);
+        final t = candidate.$2, otherT = candidate.$3;
+        if (t <= 1e-8 || t >= 1 - 1e-8 || otherT < -1e-8 || otherT > 1 + 1e-8) {
+          continue;
+        }
+        final distance = removeStart ? t : 1 - t;
+        if (distance < 0 || (best != null && distance >= best.$2)) continue;
+        best = (candidate.$1, distance);
+      } catch (_) {
+        // Parallel lines are not valid cutting boundaries.
+      }
+    }
+    if (best == null) {
+      throw StateError('No valid intersection was found for this endpoint.');
+    }
+    final historyBefore = sketch.engine.history.entries.length;
+    sketch.engine.transaction('trim-endpoint', () {
+      sketch.engine.modify(id, SketchHistoryAction.modify, (entity) {
+        entity.parameters[removeStart ? 'start' : 'end'] = best!.$1.toJson();
+        entity.refreshDerivedParameters();
+      });
+    });
+    _recordExternalEdit('trim-endpoint', historyBefore);
+  }
+
+  void _keepLineSide(
+    SketchLine line,
+    SketchVector intersection,
+    double keepT,
+    double intersectionT,
+  ) {
+    sketch.engine.modify(line.id, SketchHistoryAction.modify, (entity) {
+      entity.parameters[keepT < intersectionT ? 'end' : 'start'] = intersection
+          .toJson();
+      entity.refreshDerivedParameters();
+    });
+  }
+
+  (SketchVector, double, double) _lineIntersectionParameters(
+    SketchLine first,
+    SketchLine second,
+  ) {
+    final a = SketchVector.fromJson(first.parameters['start']);
+    final b = SketchVector.fromJson(first.parameters['end']);
+    final c = SketchVector.fromJson(second.parameters['start']);
+    final d = SketchVector.fromJson(second.parameters['end']);
+    final abx = b.x - a.x, aby = b.y - a.y;
+    final cdx = d.x - c.x, cdy = d.y - c.y;
+    final determinant = abx * cdy - aby * cdx;
+    if (determinant.abs() <= 1e-12) {
+      throw StateError('The selected lines do not have a unique intersection.');
+    }
+    final acx = c.x - a.x, acy = c.y - a.y;
+    final t = (acx * cdy - acy * cdx) / determinant;
+    final u = (acx * aby - acy * abx) / determinant;
+    return (SketchVector(a.x + abx * t, a.y + aby * t), t, u);
+  }
+
+  void _ensureEditableWithoutConstraints(Iterable<String> ids) {
+    final targets = ids.toSet();
+    final affected = constraints.constraints.where(
+      (constraint) => constraint.references.any(
+        (reference) => targets.contains(
+          reference.replaceFirst(RegExp(r':(start|end|point)$'), ''),
+        ),
+      ),
+    );
+    if (affected.isNotEmpty) {
+      throw StateError(
+        'Trim is blocked by ${affected.first.type.name} '
+        '(${affected.first.id}). Delete or suppress that constraint first.',
+      );
+    }
+  }
+
+  void _recordExternalEdit(String id, int historyBefore) {
+    _undoCounts.add(sketch.engine.history.entries.length - historyBefore);
+    _redoCounts.clear();
+    history.record(EditorHistoryAction.edit, id);
+    analytics.editCount++;
   }
 
   DegreesOfFreedom readDof() =>
@@ -408,6 +596,7 @@ class SketchEditorEngine {
             ? 'start'
             : 'end'] = projected.$1
             .toJson();
+        value.refreshDerivedParameters();
       });
       return;
     }
@@ -576,7 +765,13 @@ class SketchEditorEngine {
     sketch.deleteEntity(second.id);
   }
 
-  void _corner(SketchToolType tool, List<String> ids, double value) {
+  void _corner(
+    SketchToolType tool,
+    List<String> ids,
+    double value, {
+    required bool autoTrim,
+    String? featureId,
+  }) {
     if (ids.length != 2 || value <= 0) {
       throw StateError('${tool.name} requires two lines and a positive value.');
     }
@@ -633,18 +828,30 @@ class SketchEditorEngine {
       corner.x + u2.x * insetDistance,
       corner.y + u2.y * insetDistance,
     );
-    sketch.engine.modify(
-      first.id,
-      SketchHistoryAction.modify,
-      (entity) => entity.parameters[pairs.first.$3] = p1.toJson(),
-    );
-    sketch.engine.modify(
-      second.id,
-      SketchHistoryAction.modify,
-      (entity) => entity.parameters[pairs.first.$4] = p2.toJson(),
-    );
+    if (autoTrim) {
+      sketch.engine.modify(
+        first.id,
+        SketchHistoryAction.modify,
+        (entity) => entity.parameters[pairs.first.$3] = p1.toJson(),
+      );
+      sketch.engine.modify(
+        second.id,
+        SketchHistoryAction.modify,
+        (entity) => entity.parameters[pairs.first.$4] = p2.toJson(),
+      );
+      first.refreshDerivedParameters();
+      second.refreshDerivedParameters();
+    }
     if (tool == SketchToolType.chamfer) {
-      sketch.builders.line.build(p1, p2);
+      if (featureId == null) {
+        sketch.builders.line.build(p1, p2);
+      } else {
+        sketch.engine.modify(featureId, SketchHistoryAction.modify, (entity) {
+          entity.parameters['start'] = p1.toJson();
+          entity.parameters['end'] = p2.toJson();
+          entity.refreshDerivedParameters();
+        });
+      }
     } else {
       final bisectorX = u1.x + u2.x, bisectorY = u1.y + u2.y;
       final bisectorLength = math.sqrt(
@@ -655,12 +862,18 @@ class SketchEditorEngine {
         corner.x + bisectorX / bisectorLength * centerDistance,
         corner.y + bisectorY / bisectorLength * centerDistance,
       );
-      sketch.builders.arc.build(
-        center,
-        value,
-        math.atan2(p1.y - center.y, p1.x - center.x),
-        math.atan2(p2.y - center.y, p2.x - center.x),
-      );
+      final startAngle = math.atan2(p1.y - center.y, p1.x - center.x);
+      final endAngle = math.atan2(p2.y - center.y, p2.x - center.x);
+      if (featureId == null) {
+        sketch.builders.arc.build(center, value, startAngle, endAngle);
+      } else {
+        sketch.engine.modify(featureId, SketchHistoryAction.modify, (entity) {
+          entity.parameters['center'] = center.toJson();
+          entity.parameters['radius'] = value;
+          entity.parameters['startAngle'] = startAngle;
+          entity.parameters['endAngle'] = endAngle;
+        });
+      }
     }
   }
 

@@ -121,6 +121,19 @@ void main() {
       expect(find.text('Shaded'), findsOneWidget);
       expect(find.text('Property Inspector'), findsOneWidget);
       expect(find.text('Engineering Assistant'), findsOneWidget);
+      expect(find.text('Engineering Intelligence'), findsNothing);
+      expect(find.text('New Sketch'), findsNothing);
+      await tester.tap(find.text('AI Engineering'));
+      await tester.pumpAndSettle();
+      expect(find.text('Engineering Intelligence'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ChoiceChip, 'Sketch'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Sketch'))
+            .selected,
+        isTrue,
+      );
       await tester.tap(find.byTooltip('About'));
       await tester.pumpAndSettle();
       expect(find.text('0.9.1 Alpha'), findsOneWidget);

@@ -1,9 +1,4 @@
-enum ProjectStatus {
-  created,
-  scanning,
-  processing,
-  completed,
-}
+enum ProjectStatus { created, scanning, processing, completed }
 
 class Project {
   final String id;

@@ -4,8 +4,20 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/geometric_kernel/geometry/vectors.dart';
 import '../../../core/geometric_kernel/linear_algebra/matrices.dart';
+import 'camera_pan_audit.dart';
 
 enum CadProjectionMode { perspective, orthographic }
+
+enum CadStandardView {
+  perspective,
+  top,
+  bottom,
+  front,
+  back,
+  right,
+  left,
+  isometric,
+}
 
 class CadCameraState {
   const CadCameraState({
@@ -16,8 +28,14 @@ class CadCameraState {
     required this.up,
     required this.projectionMode,
     required this.viewScale,
+    required this.fieldOfViewRadians,
     required this.nearPlane,
     required this.farPlane,
+    required this.viewportWidth,
+    required this.viewportHeight,
+    required this.presentationTranslation,
+    required this.presentationOffsetNdcX,
+    required this.presentationOffsetNdcY,
   });
   final Vector3 eye;
   final Vector3 target;
@@ -26,8 +44,14 @@ class CadCameraState {
   final Vector3 up;
   final CadProjectionMode projectionMode;
   final double viewScale;
+  final double fieldOfViewRadians;
   final double nearPlane;
   final double farPlane;
+  final double viewportWidth;
+  final double viewportHeight;
+  final Vector3 presentationTranslation;
+  final double presentationOffsetNdcX;
+  final double presentationOffsetNdcY;
 }
 
 class CadCameraController extends ChangeNotifier {
@@ -51,6 +75,9 @@ class CadCameraController extends ChangeNotifier {
   Vector3 rotationCenter;
   Vector3 focusPoint;
   Vector3 up;
+  Vector3 presentationTranslation = Vector3.zero;
+  double presentationOffsetNdcX = 0;
+  double presentationOffsetNdcY = 0;
   CadProjectionMode projectionMode = CadProjectionMode.perspective;
   double viewportWidth = 1;
   double viewportHeight = 1;
@@ -73,8 +100,14 @@ class CadCameraController extends ChangeNotifier {
     up: up,
     projectionMode: projectionMode,
     viewScale: viewScale,
+    fieldOfViewRadians: fieldOfViewRadians,
     nearPlane: nearPlane,
     farPlane: farPlane,
+    viewportWidth: viewportWidth,
+    viewportHeight: viewportHeight,
+    presentationTranslation: presentationTranslation,
+    presentationOffsetNdcX: presentationOffsetNdcX,
+    presentationOffsetNdcY: presentationOffsetNdcY,
   );
 
   void enterSketch({
@@ -87,14 +120,15 @@ class CadCameraController extends ChangeNotifier {
     final n = normal.normalized;
     final x = xDirection.normalized;
     final y = n.cross(x).normalized;
-    final currentSide = (eye - origin).dot(n) < 0 ? -1.0 : 1.0;
     final distance = math.max(visualSize * 1.5, .01);
     target = origin;
     rotationCenter = origin;
     focusPoint = origin;
-    eye = origin + n * (distance * currentSide);
-    // Keep local +Y pointing upward and local +X to the right on either side.
-    up = y * -currentSide;
+    // Sketch entry is deterministic and never inherits the side of the
+    // previous camera: observe the positive side of the support normal, with
+    // local +X to the right and local +Y upward.
+    eye = origin + n * distance;
+    up = y;
     projectionMode = CadProjectionMode.orthographic;
     viewScale = math.max(visualSize * 1.1, .01);
     nearPlane = math.max(distance / 10000, 1e-6);
@@ -112,29 +146,35 @@ class CadCameraController extends ChangeNotifier {
     up = state.up;
     projectionMode = state.projectionMode;
     viewScale = state.viewScale;
+    fieldOfViewRadians = state.fieldOfViewRadians;
     nearPlane = state.nearPlane;
     farPlane = state.farPlane;
+    presentationTranslation = state.presentationTranslation;
+    presentationOffsetNdcX = state.presentationOffsetNdcX;
+    presentationOffsetNdcY = state.presentationOffsetNdcY;
     _preSketchState = null;
     notifyListeners();
   }
 
   Matrix4 get viewMatrix {
-    final forward = (target - eye).normalized;
+    final effectiveEye = eye;
+    final effectiveTarget = target;
+    final forward = (effectiveTarget - effectiveEye).normalized;
     final right = forward.cross(_safeUp()).normalized;
     final cameraUp = right.cross(forward);
     return Matrix4([
       right.x,
       right.y,
       right.z,
-      -right.dot(eye),
+      -right.dot(effectiveEye),
       cameraUp.x,
       cameraUp.y,
       cameraUp.z,
-      -cameraUp.dot(eye),
+      -cameraUp.dot(effectiveEye),
       -forward.x,
       -forward.y,
       -forward.z,
-      forward.dot(eye),
+      forward.dot(effectiveEye),
       0,
       0,
       0,
@@ -142,12 +182,39 @@ class CadCameraController extends ChangeNotifier {
     ]);
   }
 
+  Vector3 get presentationEye => eye;
+  Vector3 get presentationTarget => target;
+
+  void translateOperationalScene(Vector3 delta) {
+    if (!delta.x.isFinite || !delta.y.isFinite || !delta.z.isFinite) return;
+    presentationTranslation = presentationTranslation + delta;
+    final view = target - eye;
+    final distance = view.length;
+    if (distance <= 1e-12 || viewportWidth <= 0 || viewportHeight <= 0) return;
+    final forward = view / distance;
+    final right = forward.cross(_safeUp()).normalized;
+    final cameraUp = right.cross(forward).normalized;
+    if (projectionMode == CadProjectionMode.orthographic) {
+      presentationOffsetNdcX +=
+          2 * right.dot(delta) / (viewScale * viewportWidth / viewportHeight);
+      presentationOffsetNdcY += 2 * cameraUp.dot(delta) / viewScale;
+    } else {
+      final focal = 1 / math.tan(fieldOfViewRadians / 2);
+      presentationOffsetNdcX +=
+          right.dot(delta) *
+          focal /
+          (distance * viewportWidth / viewportHeight);
+      presentationOffsetNdcY += cameraUp.dot(delta) * focal / distance;
+    }
+    notifyListeners();
+  }
+
   Matrix4 get projectionMatrix {
     final aspect = viewportWidth / viewportHeight;
     if (projectionMode == CadProjectionMode.orthographic) {
       final halfH = viewScale / 2;
       final halfW = halfH * aspect;
-      return Matrix4([
+      final base = Matrix4([
         1 / halfW,
         0,
         0,
@@ -165,9 +232,10 @@ class CadCameraController extends ChangeNotifier {
         0,
         1,
       ]);
+      return _withPresentationOffset(base);
     }
     final f = 1 / math.tan(fieldOfViewRadians / 2);
-    return Matrix4([
+    final base = Matrix4([
       f / aspect,
       0,
       0,
@@ -185,6 +253,32 @@ class CadCameraController extends ChangeNotifier {
       -1,
       0,
     ]);
+    return _withPresentationOffset(base);
+  }
+
+  Matrix4 _withPresentationOffset(Matrix4 projection) {
+    if (presentationOffsetNdcX == 0 && presentationOffsetNdcY == 0) {
+      return projection;
+    }
+    final shift = Matrix4([
+      1,
+      0,
+      0,
+      presentationOffsetNdcX,
+      0,
+      1,
+      0,
+      presentationOffsetNdcY,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+    ]);
+    return shift * projection;
   }
 
   Matrix4 get viewProjectionMatrix => projectionMatrix * viewMatrix;
@@ -202,6 +296,7 @@ class CadCameraController extends ChangeNotifier {
 
   void orbit(double yaw, double pitch) {
     if (!yaw.isFinite || !pitch.isFinite) return;
+    final pivotBefore = viewProjectionMatrix.transformPoint(focusPoint);
     final safeUp = _safeUp();
     var eyeOffset = eye - focusPoint;
     var targetOffset = target - focusPoint;
@@ -220,6 +315,13 @@ class CadCameraController extends ChangeNotifier {
     target = focusPoint + targetOffset;
     final forward = (target - eye).normalized;
     up = right.cross(forward).normalized;
+    final pivotAfter = viewProjectionMatrix.transformPoint(focusPoint);
+    final correctionX = pivotBefore.x - pivotAfter.x;
+    final correctionY = pivotBefore.y - pivotAfter.y;
+    if (correctionX.isFinite && correctionY.isFinite) {
+      presentationOffsetNdcX += correctionX;
+      presentationOffsetNdcY += correctionY;
+    }
     notifyListeners();
   }
 
@@ -241,8 +343,32 @@ class CadCameraController extends ChangeNotifier {
     target = translatedEye + forward * viewDistance;
     up = cameraUp;
     rotationCenter = rotationCenter + delta;
+    focusPoint = focusPoint + delta;
     notifyListeners();
   }
+
+  /// FreeCAD-compatible camera-position translation. `target` is translated
+  /// only because this camera stores orientation as Eye -> Target; it is the
+  /// representational focal point, not an operational navigation center.
+  /// RotationCenter, FocusPoint, Up, projection and scale remain unchanged.
+  void translateCameraPosition(Vector3 delta) {
+    if (!delta.x.isFinite || !delta.y.isFinite || !delta.z.isFinite) return;
+    CameraPanAudit.record('camera.pan()');
+    eye = eye + delta;
+    target = target + delta;
+    CameraPanAudit.record('Estado da câmera\n${auditState()}');
+    notifyListeners();
+    CameraPanAudit.record(
+      'CadCameraController.notifyListeners() concluído\n${auditState()}',
+    );
+  }
+
+  String auditState() =>
+      'Eye=(${eye.x},${eye.y},${eye.z}) '
+      'Target=(${target.x},${target.y},${target.z}) '
+      'Up=(${up.x},${up.y},${up.z}) '
+      'RotationCenter=(${rotationCenter.x},${rotationCenter.y},${rotationCenter.z}) '
+      'FocusPoint=(${focusPoint.x},${focusPoint.y},${focusPoint.z})';
 
   /// Translates the camera parallel to the viewport without changing its
   /// orientation. Positive screen X drags the view to the right; positive
@@ -257,6 +383,49 @@ class CadCameraController extends ChangeNotifier {
               math.tan(fieldOfViewRadians / 2) /
               math.max(viewportHeight, 1);
     pan(-deltaX * worldPerPixel, deltaY * worldPerPixel);
+  }
+
+  /// Applies a pan from one immutable gesture baseline. The result depends
+  /// only on the total cursor displacement, never on pointer-event frequency.
+  void panViewportPixelsFrom(
+    CadCameraState baseline,
+    double totalDeltaX,
+    double totalDeltaY, {
+    Vector3? surfaceAnchor,
+  }) {
+    if (!totalDeltaX.isFinite || !totalDeltaY.isFinite) return;
+    final viewDirection = baseline.target - baseline.eye;
+    final viewDistance = viewDirection.length;
+    if (viewDistance <= 1e-12) return;
+    final forward = viewDirection / viewDistance;
+    final right = forward.cross(baseline.up).normalized;
+    final cameraUp = right.cross(forward).normalized;
+    final panDepth = surfaceAnchor == null
+        ? viewDistance
+        : (surfaceAnchor - baseline.eye).dot(forward);
+    if (panDepth <= 1e-12) return;
+    final worldPerPixel =
+        baseline.projectionMode == CadProjectionMode.orthographic
+        ? baseline.viewScale / math.max(baseline.viewportHeight, 1)
+        : 2 *
+              panDepth *
+              math.tan(baseline.fieldOfViewRadians / 2) /
+              math.max(baseline.viewportHeight, 1);
+    final delta =
+        right * (-totalDeltaX * worldPerPixel) +
+        cameraUp * (totalDeltaY * worldPerPixel);
+
+    eye = baseline.eye + delta;
+    target = eye + viewDirection;
+    rotationCenter = baseline.rotationCenter + delta;
+    focusPoint = baseline.focusPoint + delta;
+    up = baseline.up;
+    projectionMode = baseline.projectionMode;
+    viewScale = baseline.viewScale;
+    fieldOfViewRadians = baseline.fieldOfViewRadians;
+    nearPlane = baseline.nearPlane;
+    farPlane = baseline.farPlane;
+    notifyListeners();
   }
 
   void zoom(double factor, {Vector3? anchor}) {
@@ -305,6 +474,9 @@ class CadCameraController extends ChangeNotifier {
   }
 
   void fit(Vector3 minimum, Vector3 maximum) {
+    presentationTranslation = Vector3.zero;
+    presentationOffsetNdcX = 0;
+    presentationOffsetNdcY = 0;
     final previousDirection = eye - target;
     target = (minimum + maximum) / 2;
     rotationCenter = target;
@@ -316,6 +488,58 @@ class CadCameraController extends ChangeNotifier {
     // Keep Fit, clipping and FOV identical to the Render Lab reference.
     final distance = math.max(radius * 2.7, .01);
     eye = target + direction * distance;
+    viewScale = math.max(radius * 2.4, .01);
+    nearPlane = math.max(radius * .001, .001);
+    farPlane = math.max(radius * 100, 1000);
+    notifyListeners();
+  }
+
+  /// Reconstructs the non-persistent camera state at a project boundary.
+  /// Workspace recovery must never inherit Sketch mode, projection offsets,
+  /// pan presentation, or the orientation of the previously opened project.
+  void restoreWorkspace(Vector3 minimum, Vector3 maximum) {
+    _preSketchState = null;
+    projectionMode = CadProjectionMode.perspective;
+    presentationTranslation = Vector3.zero;
+    presentationOffsetNdcX = 0;
+    presentationOffsetNdcY = 0;
+    setStandardView(CadStandardView.perspective, minimum, maximum);
+  }
+
+  void setStandardView(CadStandardView view, Vector3 minimum, Vector3 maximum) {
+    final (direction, viewUp) = switch (view) {
+      CadStandardView.perspective => (
+        const Vector3(1, -1, .75).normalized,
+        const Vector3(0, 0, 1),
+      ),
+      CadStandardView.top => (const Vector3(0, 0, 1), const Vector3(0, 1, 0)),
+      CadStandardView.bottom => (
+        const Vector3(0, 0, -1),
+        const Vector3(0, -1, 0),
+      ),
+      CadStandardView.front => (
+        const Vector3(0, -1, 0),
+        const Vector3(0, 0, 1),
+      ),
+      CadStandardView.back => (const Vector3(0, 1, 0), const Vector3(0, 0, 1)),
+      CadStandardView.right => (const Vector3(1, 0, 0), const Vector3(0, 0, 1)),
+      CadStandardView.left => (const Vector3(-1, 0, 0), const Vector3(0, 0, 1)),
+      CadStandardView.isometric => (
+        const Vector3(1, -1, 1).normalized,
+        const Vector3(0, 0, 1),
+      ),
+    };
+    final center = (minimum + maximum) / 2;
+    final radius = (maximum - minimum).length / 2;
+    final distance = math.max(radius * 2.7, .01);
+    presentationTranslation = Vector3.zero;
+    presentationOffsetNdcX = 0;
+    presentationOffsetNdcY = 0;
+    target = center;
+    rotationCenter = center;
+    focusPoint = center;
+    eye = center + direction * distance;
+    up = viewUp;
     viewScale = math.max(radius * 2.4, .01);
     nearPlane = math.max(radius * .001, .001);
     farPlane = math.max(radius * 100, 1000);

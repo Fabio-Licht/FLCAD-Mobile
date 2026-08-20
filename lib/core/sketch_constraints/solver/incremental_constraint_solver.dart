@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import '../../sketch_engine/entities/sketch_entities.dart';
+import '../../sketch_engine/models/sketch_models.dart';
 import '../diagnostics/constraint_diagnostics.dart';
 import '../graph/constraint_graph.dart';
 import '../models/constraint_models.dart';
@@ -43,7 +46,7 @@ class IncrementalConstraintSolver {
       constraint.diagnostics.clear();
       if (!constraint.enabled || constraint.suppressed) continue;
       final missing = constraint.references
-          .where((id) => !entities.containsKey(id))
+          .where((id) => !entities.containsKey(_entityId(id)))
           .toList();
       if (missing.isNotEmpty) {
         constraint.status = ConstraintStatus.invalid;
@@ -153,7 +156,7 @@ class IncrementalConstraintSolver {
 
   void _apply(SketchConstraint c, Map<String, SketchEntity> entities) {
     if (c.references.isEmpty) return;
-    final first = entities[c.references.first]!;
+    final first = entities[_entityId(c.references.first)]!;
     if (first is SketchLine &&
         (c.type == SketchConstraintType.horizontal ||
             c.type == SketchConstraintType.vertical)) {
@@ -163,15 +166,92 @@ class IncrementalConstraintSolver {
           ? [end[0].toDouble(), start[1].toDouble(), end[2].toDouble()]
           : [start[0].toDouble(), end[1].toDouble(), end[2].toDouble()];
       first.version++;
+      first.refreshDerivedParameters();
     }
     if (c.type == SketchConstraintType.coincident && c.references.length > 1) {
-      final a = entities[c.references[0]], b = entities[c.references[1]];
-      if (a is SketchPoint && b is SketchPoint) {
-        b.parameters['point'] = List<double>.from(
-          (a.parameters['point'] as List).cast<num>().map((e) => e.toDouble()),
+      final target = _point(c.references[0], entities);
+      if (target != null) _setPoint(c.references[1], target, entities);
+    }
+    if ((c.type == SketchConstraintType.parallel ||
+            c.type == SketchConstraintType.perpendicular) &&
+        c.references.length > 1) {
+      final a = entities[_entityId(c.references[0])];
+      final b = entities[_entityId(c.references[1])];
+      if (a is SketchLine && b is SketchLine) {
+        final a0 = SketchVector.fromJson(a.parameters['start']);
+        final a1 = SketchVector.fromJson(a.parameters['end']);
+        final b0 = SketchVector.fromJson(b.parameters['start']);
+        final b1 = SketchVector.fromJson(b.parameters['end']);
+        final delta = b1 - b0;
+        final length = math.sqrt(
+          delta.x * delta.x + delta.y * delta.y + delta.z * delta.z,
+        );
+        final angle =
+            math.atan2(a1.y - a0.y, a1.x - a0.x) +
+            (c.type == SketchConstraintType.perpendicular ? math.pi / 2 : 0);
+        b.parameters['end'] = SketchVector(
+          b0.x + length * math.cos(angle),
+          b0.y + length * math.sin(angle),
+          b0.z,
+        ).toJson();
+        b.version++;
+        b.refreshDerivedParameters();
+      }
+    }
+    if (c.type == SketchConstraintType.concentric && c.references.length > 1) {
+      final a = entities[_entityId(c.references[0])];
+      final b = entities[_entityId(c.references[1])];
+      if ((a is SketchCircle || a is SketchArc) &&
+          (b is SketchCircle || b is SketchArc)) {
+        b!.parameters['center'] = List<double>.from(
+          (a!.parameters['center'] as List).cast<num>().map(
+            (e) => e.toDouble(),
+          ),
         );
         b.version++;
       }
     }
+  }
+
+  static String _entityId(String reference) {
+    final marker = reference.lastIndexOf(':');
+    if (marker <= 0) return reference;
+    final suffix = reference.substring(marker + 1);
+    return suffix == 'start' || suffix == 'end' || suffix == 'point'
+        ? reference.substring(0, marker)
+        : reference;
+  }
+
+  static SketchVector? _point(
+    String reference,
+    Map<String, SketchEntity> entities,
+  ) {
+    final entity = entities[_entityId(reference)];
+    if (entity is SketchPoint) {
+      return SketchVector.fromJson(entity.parameters['point']);
+    }
+    if (entity is SketchLine) {
+      final endpoint = reference.endsWith(':start') ? 'start' : 'end';
+      return SketchVector.fromJson(entity.parameters[endpoint]);
+    }
+    return null;
+  }
+
+  static void _setPoint(
+    String reference,
+    SketchVector point,
+    Map<String, SketchEntity> entities,
+  ) {
+    final entity = entities[_entityId(reference)];
+    if (entity is SketchPoint) {
+      entity.parameters['point'] = point.toJson();
+    } else if (entity is SketchLine) {
+      entity.parameters[reference.endsWith(':start') ? 'start' : 'end'] = point
+          .toJson();
+      entity.refreshDerivedParameters();
+    } else {
+      return;
+    }
+    entity!.version++;
   }
 }

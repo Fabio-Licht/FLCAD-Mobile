@@ -35,6 +35,22 @@ class SketchBridge {
     required String name,
   }) {
     validation.requireConfirmation(context);
+    return openOnSupport(
+      referenceId: referenceId,
+      geometry: geometry,
+      name: name,
+    );
+  }
+
+  /// Opens a Sketch from a geometric support without introducing a Mesh
+  /// dependency. The support can be a world plane, reference plane, planar
+  /// Face or planar Surface exposed by the platform.
+  Sketch openOnSupport({
+    required String referenceId,
+    required PlaneGeometry geometry,
+    required String name,
+    SketchPlaneType planeType = SketchPlaneType.faceReference,
+  }) {
     final normal = geometry.normal.normalized;
     final xAxis =
         (geometry.xDirection ??
@@ -49,7 +65,7 @@ class SketchBridge {
     final sketch = api.createSketch(
       name,
       plane: SketchPlane(
-        type: SketchPlaneType.faceReference,
+        type: planeType,
         parameters: {
           'referenceId': referenceId,
           'origin': geometry.origin.toJson(),

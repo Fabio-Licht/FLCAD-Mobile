@@ -520,7 +520,8 @@ class RenderLab {
     if (std::abs(x - dragStart_.x) > 3 || std::abs(y - dragStart_.y) > 3) dragMoved_ = true;
     previous_ = {x, y};
     if (panning_) {
-      camera_.PanPixels(static_cast<float>(dx), static_cast<float>(dy));
+      camera_.PanViewportPixels(static_cast<float>(dx), static_cast<float>(dy),
+                                static_cast<float>(height_));
     } else {
       camera_.OrbitPixels(static_cast<float>(dx), static_cast<float>(dy));
     }
@@ -755,10 +756,7 @@ class RenderLab {
     std::wostringstream title;
     title << kWindowTitle << L" | " << triangleCount() << L" triangles | "
           << std::fixed << std::setprecision(1) << fps_ << L" FPS | " << adapterName_
-          << L" | Hover " << pickKindName(hover_.kind) << L" " << hover_.id
-          << L" | Selected " << pickKindName(selected_.kind) << L" " << selected_.id
-          << L" | Filter " << pickKindName(pickMode_)
-          << L" [1 Face 2 Edge 3 Vertex] | Click Select / Drag Orbit  MMB Pan  Wheel Zoom  F Fit";
+          << L" | R2-008 Navigation Benchmark | Drag Orbit  MMB Pan  Wheel Zoom  F Fit";
     SetWindowTextW(window_, title.str().c_str());
     frames_ = 0; lastMetric_ = now;
   }
@@ -808,20 +806,16 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
       case WM_SIZE: if (lab && wparam != SIZE_MINIMIZED) lab->resize(); return 0;
       case WM_LBUTTONDOWN: if (lab) lab->beginDrag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), false); return 0;
       case WM_MBUTTONDOWN: if (lab) lab->beginDrag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), true); return 0;
-      case WM_LBUTTONUP: if (lab) lab->endDrag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), true); return 0;
+      case WM_LBUTTONUP: if (lab) lab->endDrag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), false); return 0;
       case WM_MBUTTONUP: if (lab) lab->endDrag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), false); return 0;
       case WM_MOUSEMOVE:
         if (lab) {
           lab->drag(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-          lab->hoverAt(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
         }
         return 0;
       case WM_MOUSEWHEEL: if (lab) lab->zoom(GET_WHEEL_DELTA_WPARAM(wparam)); return 0;
       case WM_KEYDOWN:
         if (lab && (wparam == 'F' || wparam == VK_HOME)) lab->fit();
-        if (lab && wparam == '1') lab->setPickMode(PickKind::face);
-        if (lab && wparam == '2') lab->setPickMode(PickKind::edge);
-        if (lab && wparam == '3') lab->setPickMode(PickKind::vertex);
         return 0;
       case WM_ERASEBKGND: return 1;
       case WM_DESTROY: PostQuitMessage(0); return 0;

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import '../../sketch_engine/api/sketch_engine_api.dart';
+import '../../sketch_engine/entities/sketch_entities.dart';
 import '../analytics/constraint_analytics.dart';
 import '../diagnostics/constraint_diagnostics.dart';
 import '../graph/constraint_graph.dart';
@@ -8,6 +9,7 @@ import '../models/constraint_models.dart';
 import '../repository/constraint_repository.dart';
 import '../runtime/constraint_runtime.dart';
 import '../solver/incremental_constraint_solver.dart';
+import '../integration/sketch_driving_dimension_adapter.dart';
 
 class ConstraintEngine {
   ConstraintEngine({
@@ -30,6 +32,8 @@ class ConstraintEngine {
   final graphs = ConstraintGraphSet();
   final Map<String, SketchConstraint> constraints = {};
   final Map<String, SketchDimension> dimensions = {};
+  final SketchDrivingDimensionAdapter dimensionAdapter =
+      const SketchDrivingDimensionAdapter();
   final List<_ConstraintSnapshot> _undo = [], _redo = [];
   ConstraintSolveResult? lastResult;
 
@@ -88,6 +92,14 @@ class ConstraintEngine {
     ConstraintStatus.suppressed,
     ConstraintHistoryAction.suppress,
   );
+  void setVisible(String id, bool visible) =>
+      _change(ConstraintHistoryAction.modify, id, () {
+        final c =
+            constraints[id] ?? (throw StateError('Unknown constraint: $id'));
+        c.metadata['visible'] = visible;
+        c.version++;
+        c.history.add('visibility');
+      });
   void _setStatus(
     String id,
     ConstraintStatus status,
@@ -112,6 +124,174 @@ class ConstraintEngine {
         dimensions[dimension.id] = dimension;
         return dimension;
       });
+
+  SketchDimension createDrivingDimension({
+    required SketchDimensionType type,
+    required List<String> references,
+    required double value,
+    String? anchorReference,
+    double labelX = 0,
+    double labelY = 0,
+  }) => transaction(
+    'create-driving-dimension',
+    () => sketch.engine.transaction('create-driving-dimension', () {
+      final duplicate = dimensions.values.where((dimension) {
+        if (dimension.references.isEmpty || references.isEmpty) return false;
+        if (dimension.references.first != references.first) return false;
+        final existingRadial =
+            dimension.type == SketchDimensionType.radius ||
+            dimension.type == SketchDimensionType.diameter;
+        final requestedRadial =
+            type == SketchDimensionType.radius ||
+            type == SketchDimensionType.diameter;
+        return dimension.type == type || (existingRadial && requestedRadial);
+      }).firstOrNull;
+      if (duplicate != null) {
+        throw StateError(
+          'Geometry is already controlled by ${duplicate.id}. '
+          'Edit or delete the existing driving dimension.',
+        );
+      }
+      final constraintType = switch (type) {
+        SketchDimensionType.linear => SketchConstraintType.distance,
+        SketchDimensionType.angular => SketchConstraintType.angle,
+        SketchDimensionType.radius => SketchConstraintType.radius,
+        SketchDimensionType.diameter => SketchConstraintType.diameter,
+        _ => throw StateError('${type.name} is not a driving dimension.'),
+      };
+      final constraint = add(
+        SketchConstraint(
+          type: constraintType,
+          references: references,
+          value: value,
+          status: ConstraintStatus.driving,
+        ),
+      );
+      final solution = _applyDrivingDimension(
+        type: type,
+        references: references,
+        value: value,
+        anchorReference: anchorReference,
+      );
+      return addDimension(
+        SketchDimension(
+          type: type,
+          constraintId: constraint.id,
+          value: value,
+          references: references,
+          anchorReference: solution.anchorReference,
+          labelX: labelX,
+          labelY: labelY,
+        ),
+      );
+    }),
+  );
+
+  SketchDimension driveDimension(
+    String id,
+    double value, {
+    String? anchorReference,
+  }) => transaction(
+    'edit-driving-dimension',
+    () => sketch.engine.transaction('edit-driving-dimension', () {
+      final dimension =
+          dimensions[id] ?? (throw StateError('Unknown dimension: $id'));
+      final solution = _applyDrivingDimension(
+        type: dimension.type,
+        references: dimension.references,
+        value: value,
+        anchorReference: anchorReference ?? dimension.anchorReference,
+        ignoredConstraintId: dimension.constraintId,
+      );
+      return updateDimension(
+        id,
+        value: value,
+        anchorReference: solution.anchorReference,
+      );
+    }),
+  );
+
+  SketchDrivingDimensionSolution _applyDrivingDimension({
+    required SketchDimensionType type,
+    required List<String> references,
+    required double value,
+    String? anchorReference,
+    String? ignoredConstraintId,
+  }) {
+    final active = constraints.values
+        .where((constraint) => constraint.id != ignoredConstraintId)
+        .toList(growable: false);
+    SketchDrivingDimensionSolution attempt(String? anchor) =>
+        sketch.engine.transaction(
+          'dimension-adapter-attempt',
+          () => dimensionAdapter.apply(
+            sketch: sketch,
+            constraints: active,
+            type: type,
+            references: references,
+            value: value,
+            anchorReference: anchor,
+          ),
+        );
+    if (anchorReference != null) return attempt(anchorReference);
+    try {
+      return attempt(null);
+    } on StateError catch (automaticFailure) {
+      final entity = references.isEmpty
+          ? null
+          : sketch.entity(references.first);
+      if (entity is! SketchLine) rethrow;
+      final diagnostics = <String>[automaticFailure.message];
+      for (final suffix in const ['start', 'end']) {
+        try {
+          return attempt('${entity.id}:$suffix');
+        } on StateError catch (failure) {
+          diagnostics.add(failure.message);
+        }
+      }
+      throw StateError(
+        'Sketch over constrained. No legal anchor preserves all relations. '
+        '${diagnostics.toSet().join(' ')}',
+      );
+    }
+  }
+
+  SketchDimension updateDimension(
+    String id, {
+    double? value,
+    double? labelX,
+    double? labelY,
+    String? anchorReference,
+  }) => _change(ConstraintHistoryAction.modify, id, () {
+    final dimension =
+        dimensions[id] ?? (throw StateError('Unknown dimension: $id'));
+    if (value != null) {
+      if (!value.isFinite || value <= 0) {
+        throw StateError('A driving dimension must be greater than zero.');
+      }
+      dimension.value = value;
+      constraints[dimension.constraintId]?.value = value;
+    }
+    if (labelX != null) dimension.labelX = labelX;
+    if (labelY != null) dimension.labelY = labelY;
+    if (anchorReference != null) dimension.anchorReference = anchorReference;
+    return dimension;
+  });
+
+  void deleteDimension(String id) => _change(
+    ConstraintHistoryAction.delete,
+    id,
+    () {
+      final dimension =
+          dimensions.remove(id) ?? (throw StateError('Unknown dimension: $id'));
+      final constraint = constraints.remove(dimension.constraintId);
+      if (constraint != null) {
+        graphs.constraints.removeNode(constraint.id);
+        graphs.dependencies.removeNode(constraint.id);
+        analytics.totalConstraints--;
+      }
+    },
+  );
 
   Future<ConstraintSolveResult> solve({Iterable<String>? only}) async {
     final before = _capture('solve');
@@ -167,7 +347,15 @@ class ConstraintEngine {
     final before = _capture(label);
     final h = history.entries.length, u = _undo.length, r = _redo.length;
     try {
-      return operation();
+      final result = operation();
+      if (_undo.length > u) {
+        _undo.removeRange(u, _undo.length);
+        _undo.add(before);
+        _redo.clear();
+        history.truncate(h);
+        history.record(ConstraintHistoryAction.modify, label);
+      }
+      return result;
     } catch (_) {
       _restore(before);
       history.truncate(h);

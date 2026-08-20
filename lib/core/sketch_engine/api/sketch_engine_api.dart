@@ -19,6 +19,15 @@ class SketchEngineApi {
   void openSketch(String id) => engine.openSketch(id);
   void closeSketch() => engine.closeSketch();
   void deleteEntity(String id) => engine.deleteEntity(id);
+
+  /// Atomically edits the defining parameters of an existing professional
+  /// Sketch primitive. Derived values are always recomputed from its true
+  /// geometry, so the Inspector never leaves a partially updated entity.
+  void updateParameters(String id, Map<String, double> values) => engine.modify(
+    id,
+    SketchHistoryAction.modify,
+    (entity) => _updateProfessionalParameters(entity, values),
+  );
   void move(String id, SketchVector delta) => engine.modify(
     id,
     SketchHistoryAction.move,
@@ -114,6 +123,115 @@ class SketchEngineApi {
   SketchEntity? entity(String id) => engine.entities[id];
   Future<void> load() => engine.load();
   Future<void> persist() => engine.persist();
+
+  static void _updateProfessionalParameters(
+    SketchEntity entity,
+    Map<String, double> values,
+  ) {
+    double finite(String name, double value) {
+      if (!value.isFinite) throw ArgumentError('$name must be finite.');
+      return value;
+    }
+
+    double positive(String name, double value) {
+      finite(name, value);
+      if (value <= 0) throw ArgumentError('$name must be greater than zero.');
+      return value;
+    }
+
+    switch (entity) {
+      case SketchLine():
+        var start = SketchVector.fromJson(entity.parameters['start']);
+        var end = SketchVector.fromJson(entity.parameters['end']);
+        start = SketchVector(
+          finite('startX', values['startX'] ?? start.x),
+          finite('startY', values['startY'] ?? start.y),
+          start.z,
+        );
+        end = SketchVector(
+          finite('endX', values['endX'] ?? end.x),
+          finite('endY', values['endY'] ?? end.y),
+          end.z,
+        );
+        if (values.containsKey('length') ||
+            values.containsKey('angleDegrees')) {
+          final currentDx = end.x - start.x;
+          final currentDy = end.y - start.y;
+          final length = positive(
+            'length',
+            values['length'] ??
+                math.sqrt(currentDx * currentDx + currentDy * currentDy),
+          );
+          final angle =
+              finite(
+                'angleDegrees',
+                values['angleDegrees'] ??
+                    math.atan2(currentDy, currentDx) * 180 / math.pi,
+              ) *
+              math.pi /
+              180;
+          end = SketchVector(
+            start.x + length * math.cos(angle),
+            start.y + length * math.sin(angle),
+            start.z,
+          );
+        }
+        entity.parameters
+          ..clear()
+          ..addAll(SketchLine.parametersFor(start, end));
+      case SketchCircle():
+        final old = SketchVector.fromJson(entity.parameters['center']);
+        final center = SketchVector(
+          finite('centerX', values['centerX'] ?? old.x),
+          finite('centerY', values['centerY'] ?? old.y),
+          old.z,
+        );
+        final radius = positive(
+          'radius',
+          values['diameter'] != null
+              ? values['diameter']! / 2
+              : values['radius'] ??
+                    (entity.parameters['radius'] as num).toDouble(),
+        );
+        entity.parameters
+          ..['center'] = center.toJson()
+          ..['radius'] = radius;
+      case SketchArc():
+        final old = SketchVector.fromJson(entity.parameters['center']);
+        entity.parameters
+          ..['center'] = SketchVector(
+            finite('centerX', values['centerX'] ?? old.x),
+            finite('centerY', values['centerY'] ?? old.y),
+            old.z,
+          ).toJson()
+          ..['radius'] = positive(
+            'radius',
+            values['radius'] ?? (entity.parameters['radius'] as num).toDouble(),
+          )
+          ..['startAngle'] =
+              finite(
+                'startAngleDegrees',
+                values['startAngleDegrees'] ??
+                    (entity.parameters['startAngle'] as num).toDouble() *
+                        180 /
+                        math.pi,
+              ) *
+              math.pi /
+              180
+          ..['endAngle'] =
+              finite(
+                'endAngleDegrees',
+                values['endAngleDegrees'] ??
+                    (entity.parameters['endAngle'] as num).toDouble() *
+                        180 /
+                        math.pi,
+              ) *
+              math.pi /
+              180;
+      default:
+        throw StateError('${entity.type.name} is not editable by G-124.');
+    }
+  }
 
   static void _transformPoints(
     SketchEntity entity,

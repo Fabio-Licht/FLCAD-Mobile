@@ -1,0 +1,8 @@
+file 'C:\flcad_mobile\smoke\wcs-smoke-00-baseline.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-01-recognition.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-02-reference.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-03-sketch.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-04-curves.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-05-surfaces.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-06-sections.png'
+file 'C:\flcad_mobile\smoke\wcs-smoke-07-transform.png'

@@ -67,4 +67,8 @@ class CadSceneGraph extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// Requests a display-only repaint without rebuilding or mutating geometry.
+  /// Used after compositor overlays change above a native-backed viewport.
+  void invalidatePresentation() => notifyListeners();
 }

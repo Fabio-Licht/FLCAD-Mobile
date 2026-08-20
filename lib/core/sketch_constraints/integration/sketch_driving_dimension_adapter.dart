@@ -1,0 +1,369 @@
+import 'dart:math' as math;
+
+import '../../parametric_solver/parametric_solver.dart';
+import '../../sketch_engine/api/sketch_engine_api.dart';
+import '../../sketch_engine/entities/sketch_entities.dart';
+import '../../sketch_engine/history/sketch_history.dart';
+import '../../sketch_engine/models/sketch_models.dart';
+import '../models/constraint_models.dart';
+
+class SketchDrivingDimensionSolution {
+  const SketchDrivingDimensionSolution(
+    this.anchorReference,
+    this.movedReferences,
+  );
+  final String? anchorReference;
+  final Set<String> movedReferences;
+}
+
+/// Applies a driving value without ever separating coincident endpoint groups.
+/// It is deliberately deterministic: the explicit anchor wins, then a fixed
+/// endpoint, then the start/centre convention.
+class SketchDrivingDimensionAdapter {
+  const SketchDrivingDimensionAdapter({
+    this.connectionTolerance = 1e-4,
+    this.parametricSolver = const ParametricPropagationSolver(),
+  });
+  final double connectionTolerance;
+  final ParametricPropagationSolver parametricSolver;
+
+  SketchDrivingDimensionSolution apply({
+    required SketchEngineApi sketch,
+    required Iterable<SketchConstraint> constraints,
+    required SketchDimensionType type,
+    required List<String> references,
+    required double value,
+    String? anchorReference,
+  }) {
+    if (!value.isFinite || value <= 0) {
+      throw StateError('A driving dimension must be greater than zero.');
+    }
+    if (references.isEmpty) throw StateError('Dimension has no references.');
+    final entity =
+        sketch.entity(_entityId(references.first)) ??
+        (throw StateError('Dimension references unknown geometry.'));
+    final fixed = _fixedReferences(constraints);
+    final groups = _coincidentGroups(sketch, constraints);
+    final moved = <String>{};
+
+    void moveGroup(String reference, SketchVector point) {
+      final group = groups[reference] ?? {reference};
+      final blocker = group.where(fixed.contains).firstOrNull;
+      if (blocker != null) {
+        throw StateError('Sketch over constrained: $blocker is fixed.');
+      }
+      for (final member in group) {
+        _setEndpoint(sketch, member, point);
+        moved.add(member);
+      }
+    }
+
+    String? selectedAnchor = anchorReference;
+    if (entity is SketchLine &&
+        (type == SketchDimensionType.linear ||
+            type == SketchDimensionType.angular)) {
+      final startRef = '${entity.id}:start', endRef = '${entity.id}:end';
+      final allReferences = groups.values.expand((value) => value).toSet();
+      final relationKeys = <String>{};
+      final dependencies = <ParametricDependency>[];
+      for (final group in groups.values) {
+        final key = (group.toList()..sort()).join('|');
+        if (relationKeys.add(key) && group.length > 1) {
+          dependencies.add(ParametricDependency('connection:$key', group));
+        }
+      }
+      late final ParametricMotionPlan plan;
+      try {
+        plan = parametricSolver.solve(
+          ParametricSolveRequest(
+            first: startRef,
+            second: endRef,
+            degreesOfFreedom: [
+              for (final reference in allReferences)
+                ParametricDegreeOfFreedom(
+                  reference,
+                  fixed: fixed.contains(reference),
+                ),
+            ],
+            parameters: [ParametricParameter('dimension:value', value)],
+            dependencies: dependencies,
+            anchors: fixed,
+            preferredAnchor: selectedAnchor,
+          ),
+        );
+      } on ParametricSolveConflict catch (conflict) {
+        throw StateError(conflict.message);
+      }
+      selectedAnchor = plan.anchor;
+      final movingRef = plan.moving;
+      final anchor = _endpoint(sketch, selectedAnchor)!;
+      final moving = _endpoint(sketch, movingRef)!;
+      final delta = moving - anchor;
+      final currentLength = math.sqrt(delta.x * delta.x + delta.y * delta.y);
+      final angle = type == SketchDimensionType.angular
+          ? value * math.pi / 180 + (selectedAnchor == endRef ? math.pi : 0)
+          : math.atan2(delta.y, delta.x);
+      final length = type == SketchDimensionType.linear ? value : currentLength;
+      moveGroup(
+        movingRef,
+        SketchVector(
+          anchor.x + length * math.cos(angle),
+          anchor.y + length * math.sin(angle),
+          anchor.z,
+        ),
+      );
+    } else if ((entity is SketchCircle || entity is SketchArc) &&
+        (type == SketchDimensionType.radius ||
+            type == SketchDimensionType.diameter)) {
+      if (fixed.contains(entity.id) || fixed.contains('${entity.id}:center')) {
+        throw StateError('Sketch over constrained: ${entity.id} is fixed.');
+      }
+      final radius = type == SketchDimensionType.diameter ? value / 2 : value;
+      if (entity is SketchCircle) {
+        sketch.engine.modify(entity.id, SketchHistoryAction.modify, (item) {
+          item.parameters['radius'] = radius;
+        });
+      } else if (entity is SketchArc) {
+        final oldStart = _endpoint(sketch, '${entity.id}:start')!;
+        final oldEnd = _endpoint(sketch, '${entity.id}:end')!;
+        final center = SketchVector.fromJson(entity.parameters['center']);
+        final startAngle = math.atan2(
+          oldStart.y - center.y,
+          oldStart.x - center.x,
+        );
+        final endAngle = math.atan2(oldEnd.y - center.y, oldEnd.x - center.x);
+        sketch.engine.modify(entity.id, SketchHistoryAction.modify, (item) {
+          item.parameters['radius'] = radius;
+        });
+        moveGroup(
+          '${entity.id}:start',
+          SketchVector(
+            center.x + radius * math.cos(startAngle),
+            center.y + radius * math.sin(startAngle),
+          ),
+        );
+        moveGroup(
+          '${entity.id}:end',
+          SketchVector(
+            center.x + radius * math.cos(endAngle),
+            center.y + radius * math.sin(endAngle),
+          ),
+        );
+      }
+      selectedAnchor ??= '${entity.id}:center';
+    } else {
+      throw StateError(
+        '${type.name} is incompatible with ${entity.type.name}.',
+      );
+    }
+    _validateGeometricConstraints(sketch, constraints);
+    return SketchDrivingDimensionSolution(selectedAnchor, moved);
+  }
+
+  Set<String> _fixedReferences(Iterable<SketchConstraint> constraints) {
+    final result = <String>{};
+    for (final c in constraints) {
+      if (!c.enabled ||
+          c.suppressed ||
+          (c.type != SketchConstraintType.fixed &&
+              c.type != SketchConstraintType.lock)) {
+        continue;
+      }
+      for (final reference in c.references) {
+        result.add(reference);
+        if (!RegExp(r':(start|end|center)$').hasMatch(reference)) {
+          result.addAll([
+            '$reference:start',
+            '$reference:end',
+            '$reference:center',
+          ]);
+        }
+      }
+    }
+    return result;
+  }
+
+  Map<String, Set<String>> _coincidentGroups(
+    SketchEngineApi sketch,
+    Iterable<SketchConstraint> constraints,
+  ) {
+    final refs = <String, SketchVector>{};
+    for (final entity in sketch.engine.entities.values) {
+      if (entity is SketchLine) {
+        refs['${entity.id}:start'] = SketchVector.fromJson(
+          entity.parameters['start'],
+        );
+        refs['${entity.id}:end'] = SketchVector.fromJson(
+          entity.parameters['end'],
+        );
+      } else if (entity is SketchArc) {
+        refs['${entity.id}:start'] = _endpoint(sketch, '${entity.id}:start')!;
+        refs['${entity.id}:end'] = _endpoint(sketch, '${entity.id}:end')!;
+      }
+    }
+    final adjacency = {
+      for (final ref in refs.keys) ref: <String>{ref},
+    };
+    final entries = refs.entries.toList();
+    for (var i = 0; i < entries.length; i++) {
+      for (var j = i + 1; j < entries.length; j++) {
+        if (_distance(entries[i].value, entries[j].value) <=
+            connectionTolerance) {
+          adjacency[entries[i].key]!.add(entries[j].key);
+          adjacency[entries[j].key]!.add(entries[i].key);
+        }
+      }
+    }
+    for (final c in constraints.where(
+      (c) =>
+          c.enabled &&
+          !c.suppressed &&
+          c.type == SketchConstraintType.coincident,
+    )) {
+      if (c.references.length < 2) continue;
+      adjacency
+          .putIfAbsent(c.references[0], () => {c.references[0]})
+          .add(c.references[1]);
+      adjacency
+          .putIfAbsent(c.references[1], () => {c.references[1]})
+          .add(c.references[0]);
+    }
+    final result = <String, Set<String>>{};
+    for (final ref in adjacency.keys) {
+      final group = <String>{}, queue = <String>[ref];
+      while (queue.isNotEmpty) {
+        final item = queue.removeLast();
+        if (!group.add(item)) continue;
+        queue.addAll(adjacency[item] ?? const <String>{});
+      }
+      result[ref] = group;
+    }
+    return result;
+  }
+
+  void _validateGeometricConstraints(
+    SketchEngineApi sketch,
+    Iterable<SketchConstraint> constraints,
+  ) {
+    const epsilon = 1e-6;
+    for (final c in constraints.where((c) => c.enabled && !c.suppressed)) {
+      final entities = c.references
+          .map((r) => sketch.entity(_entityId(r)))
+          .toList();
+      bool valid = true;
+      if (c.type == SketchConstraintType.coincident &&
+          c.references.length > 1) {
+        valid =
+            _distance(
+              _endpoint(sketch, c.references[0])!,
+              _endpoint(sketch, c.references[1])!,
+            ) <=
+            connectionTolerance;
+      } else if ((c.type == SketchConstraintType.horizontal ||
+              c.type == SketchConstraintType.vertical) &&
+          entities.first is SketchLine) {
+        final line = entities.first as SketchLine;
+        final a = SketchVector.fromJson(line.parameters['start']),
+            b = SketchVector.fromJson(line.parameters['end']);
+        valid = c.type == SketchConstraintType.horizontal
+            ? (a.y - b.y).abs() <= epsilon
+            : (a.x - b.x).abs() <= epsilon;
+      } else if (c.type == SketchConstraintType.concentric &&
+          entities.length > 1) {
+        final a = SketchVector.fromJson(entities[0]!.parameters['center']);
+        final b = SketchVector.fromJson(entities[1]!.parameters['center']);
+        valid = _distance(a, b) <= epsilon;
+      } else if ((c.type == SketchConstraintType.parallel ||
+              c.type == SketchConstraintType.perpendicular) &&
+          entities.length > 1 &&
+          entities[0] is SketchLine &&
+          entities[1] is SketchLine) {
+        double angle(SketchEntity entity) =>
+            (entity.parameters['angleDegrees'] as num).toDouble() *
+            math.pi /
+            180;
+        final difference = angle(entities[1]!) - angle(entities[0]!);
+        valid = c.type == SketchConstraintType.parallel
+            ? math.sin(difference).abs() <= epsilon
+            : math.cos(difference).abs() <= epsilon;
+      } else if (c.type == SketchConstraintType.tangent &&
+          entities.length > 1) {
+        final line = entities.whereType<SketchLine>().firstOrNull;
+        final radial = entities
+            .where((e) => e is SketchCircle || e is SketchArc)
+            .firstOrNull;
+        if (line != null && radial != null) {
+          final a = SketchVector.fromJson(line.parameters['start']);
+          final b = SketchVector.fromJson(line.parameters['end']);
+          final center = SketchVector.fromJson(radial.parameters['center']);
+          final radius = (radial.parameters['radius'] as num).toDouble();
+          final dx = b.x - a.x, dy = b.y - a.y;
+          final length = math.sqrt(dx * dx + dy * dy);
+          final distance = length <= epsilon
+              ? double.infinity
+              : ((center.x - a.x) * dy - (center.y - a.y) * dx).abs() / length;
+          valid = (distance - radius).abs() <= epsilon;
+        }
+      }
+      if (!valid) {
+        throw StateError('${c.type.name} (${c.id}) prevents this dimension.');
+      }
+    }
+  }
+
+  SketchVector? _endpoint(SketchEngineApi sketch, String reference) {
+    final entity = sketch.entity(_entityId(reference));
+    if (entity is SketchLine) {
+      return SketchVector.fromJson(
+        entity.parameters[reference.endsWith(':start') ? 'start' : 'end'],
+      );
+    }
+    if (entity is SketchArc) {
+      final center = SketchVector.fromJson(entity.parameters['center']);
+      final radius = (entity.parameters['radius'] as num).toDouble();
+      final angle =
+          (entity.parameters[reference.endsWith(':start')
+                      ? 'startAngle'
+                      : 'endAngle']
+                  as num)
+              .toDouble();
+      return SketchVector(
+        center.x + radius * math.cos(angle),
+        center.y + radius * math.sin(angle),
+      );
+    }
+    if (entity is SketchPoint) {
+      return SketchVector.fromJson(entity.parameters['point']);
+    }
+    return null;
+  }
+
+  void _setEndpoint(
+    SketchEngineApi sketch,
+    String reference,
+    SketchVector point,
+  ) {
+    final entity = sketch.entity(_entityId(reference));
+    if (entity is SketchLine) {
+      sketch.engine.modify(entity.id, SketchHistoryAction.modify, (item) {
+        item.parameters[reference.endsWith(':start') ? 'start' : 'end'] = point
+            .toJson();
+      });
+    } else if (entity is SketchArc) {
+      final center = SketchVector.fromJson(entity.parameters['center']);
+      sketch.engine.modify(entity.id, SketchHistoryAction.modify, (item) {
+        item.parameters[reference.endsWith(':start')
+            ? 'startAngle'
+            : 'endAngle'] = math.atan2(
+          point.y - center.y,
+          point.x - center.x,
+        );
+      });
+    }
+  }
+
+  String _entityId(String reference) =>
+      reference.replaceFirst(RegExp(r':(start|end|center)$'), '');
+  double _distance(SketchVector a, SketchVector b) =>
+      math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2));
+}

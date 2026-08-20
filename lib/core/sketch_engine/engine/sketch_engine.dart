@@ -110,6 +110,7 @@ class SketchEngine {
     final entity = entities[id] ?? (throw StateError('Unknown entity: $id'));
     if (entity.locked) throw StateError('Entity is locked: $id');
     update(entity);
+    entity.refreshDerivedParameters();
     entity.version++;
     entity.history.add(action.name);
     analytics.edits++;
@@ -121,7 +122,15 @@ class SketchEngine {
     final undoLength = _undo.length;
     final redoLength = _redo.length;
     try {
-      return operation();
+      final result = operation();
+      if (_undo.length > undoLength) {
+        _undo.removeRange(undoLength, _undo.length);
+        _undo.add(before);
+        _redo.clear();
+        history.truncate(historyLength);
+        history.record(SketchHistoryAction.modify, label);
+      }
+      return result;
     } catch (_) {
       _restore(before);
       history.truncate(historyLength);

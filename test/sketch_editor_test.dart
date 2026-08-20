@@ -54,6 +54,9 @@ void main() {
     expect(editor.engine.preview.active, hasLength(1));
     final created = editor.confirm(line.id);
     expect(created.single, isA<SketchLine>());
+    expect(created.single.parameters['length'], closeTo(math.sqrt(8), 1e-12));
+    expect(created.single.parameters['direction'], isA<List<double>>());
+    expect(created.single.parameters['angleDegrees'], closeTo(45, 1e-12));
     expect(line.status, EditorOperationStatus.committed);
     final rectangle = editor.preview(SketchToolType.rectangle, const [
       SketchVector(0, 0),
@@ -71,6 +74,77 @@ void main() {
       parameters: {'sides': 6},
     );
     expect(editor.confirm(polygon.id), hasLength(6));
+  });
+
+  test('professional Line snapping is limited to endpoint origin and grid', () {
+    final settings = editor.engine.snapping.settings
+      ..tolerance = .5
+      ..gridSpacing = 1;
+    settings.enabled
+      ..clear()
+      ..addAll(const {
+        EditorSnapType.endpoint,
+        EditorSnapType.origin,
+        EditorSnapType.grid,
+      });
+    settings.priority.addAll(const {
+      EditorSnapType.endpoint: 30,
+      EditorSnapType.origin: 20,
+      EditorSnapType.grid: 10,
+    });
+    final line = editor.confirm(
+      editor.preview(SketchToolType.line, const [
+        SketchVector(2, 2),
+        SketchVector(4, 2),
+      ]).id,
+    );
+    expect(line.single, isA<SketchLine>());
+    expect(
+      editor.snap(const SketchVector(2.1, 2.05))?.type,
+      EditorSnapType.endpoint,
+    );
+    expect(
+      editor.snap(const SketchVector(.1, .1))?.type,
+      EditorSnapType.origin,
+    );
+    final grid = editor.snap(const SketchVector(7.7, 3.2));
+    expect(grid?.type, EditorSnapType.grid);
+    expect(grid?.position.toJson(), [8.0, 3.0, 0.0]);
+  });
+
+  test('professional Line snaps to both real Arc endpoints', () {
+    final settings = editor.engine.snapping.settings
+      ..tolerance = .5
+      ..gridSpacing = 1;
+    settings.enabled
+      ..clear()
+      ..addAll(const {
+        EditorSnapType.endpoint,
+        EditorSnapType.origin,
+        EditorSnapType.grid,
+      });
+    settings.priority.addAll(const {
+      EditorSnapType.endpoint: 30,
+      EditorSnapType.origin: 20,
+      EditorSnapType.grid: 10,
+    });
+    final arc = sketch.builders.arc.build(
+      const SketchVector(5, 5),
+      5,
+      0,
+      math.pi / 2,
+    );
+
+    final start = editor.snap(const SketchVector(9.9, 5.05));
+    expect(start?.type, EditorSnapType.endpoint);
+    expect(start?.entityId, arc.id);
+    expect(start?.position.toJson(), [10.0, 5.0, 0.0]);
+
+    final end = editor.snap(const SketchVector(5.05, 9.9));
+    expect(end?.type, EditorSnapType.endpoint);
+    expect(end?.entityId, arc.id);
+    expect(end?.position.x, closeTo(5, 1e-12));
+    expect(end?.position.y, closeTo(10, 1e-12));
   });
 
   test('editing preview rollback and undo redo sequence', () {

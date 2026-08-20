@@ -31,6 +31,21 @@ class SketchEditorApi {
   );
   bool undo() => engine.undo();
   bool redo() => engine.redo();
+  void editCornerFeature(String id, double value) =>
+      engine.editCornerFeature(id, value);
+  void trimIntersection(
+    String firstId,
+    SketchVector firstKeepPoint,
+    String secondId,
+    SketchVector secondKeepPoint,
+  ) => engine.trimIntersection(
+    firstId,
+    firstKeepPoint,
+    secondId,
+    secondKeepPoint,
+  );
+  void trimEndpointToNearestIntersection(String id, SketchVector point) =>
+      engine.trimEndpointToNearestIntersection(id, point);
   DegreesOfFreedom get dof => engine.readDof();
   SketchQuality get quality => engine.quality();
   List<SketchRecommendation> get recommendations => engine.recommendations();

@@ -7,6 +7,10 @@ import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 
 import '../../core/geometric_kernel/geometry/vectors.dart';
+import '../navigation/cad_camera_navigation_adapter.dart';
+import '../navigation/navigation_contracts.dart';
+import '../navigation/navigation_engine.dart';
+import '../navigation/navigation_debug_panel.dart';
 import 'camera/cad_camera_controller.dart';
 import 'rendering/cad_canvas_normal_pipeline.dart';
 import 'rendering/cad_tonal_separation.dart';
@@ -15,27 +19,41 @@ import 'selection/viewport_picking_controller.dart';
 
 enum CadRenderStyle { shaded, wireframe, hiddenLine, transparent, ghost }
 
-enum _MouseNavigationMode { pan, orbit, zoom }
-
 class ProfessionalCadViewportWidget extends StatefulWidget {
   const ProfessionalCadViewportWidget({
     super.key,
     required this.scene,
     required this.camera,
     this.onPick,
+    this.onSketchSupportPick,
+    this.onSketchEntityPick,
+    this.onSketchEntityDoublePick,
     this.onSketchTap,
+    this.onSketchSecondaryTap,
+    this.onSketchHover,
     this.showSketchGrid = false,
     this.renderMeshes = true,
     this.paintBackground = true,
+    this.enablePicking = true,
+    this.onNavigationChanged,
+    this.showNavigationDebug = false,
   });
 
   final CadSceneGraph scene;
   final CadCameraController camera;
   final ValueChanged<CadViewportPick>? onPick;
+  final ValueChanged<CadViewportPick>? onSketchSupportPick;
+  final ValueChanged<CadViewportPick>? onSketchEntityPick;
+  final ValueChanged<CadViewportPick>? onSketchEntityDoublePick;
   final ValueChanged<Offset>? onSketchTap;
+  final VoidCallback? onSketchSecondaryTap;
+  final ValueChanged<Offset>? onSketchHover;
   final bool showSketchGrid;
   final bool renderMeshes;
   final bool paintBackground;
+  final bool enablePicking;
+  final ValueChanged<bool>? onNavigationChanged;
+  final bool showNavigationDebug;
 
   @override
   State<ProfessionalCadViewportWidget> createState() =>
@@ -48,85 +66,80 @@ class _ProfessionalCadViewportWidgetState
   double previousScale = 1;
   final picking = ViewportPickingController();
   final Map<String, _MeshRenderCache> meshRenderCaches = {};
+
+  bool get _sketchToolActive =>
+      widget.onSketchTap != null || widget.onSketchSupportPick != null;
   String? hoveredEntityId;
-  Offset? _middleStart;
-  Offset? _middlePrevious;
-  bool _middleMoved = false;
-  _MouseNavigationMode _mouseNavigationMode = _MouseNavigationMode.pan;
+  late NavigationEngine navigation;
   Vector3? _rotationCenterMarker;
   Timer? _rotationCenterMarkerTimer;
-  Vector3? _zoomSessionAnchor;
-  Timer? _zoomSessionTimer;
-  bool _zoomSessionActive = false;
+  bool get _isMouseNavigating => navigation.isNavigating;
+  bool get _isOrbiting => navigation.state == NavigationState.orbiting;
 
-  bool get _isMouseNavigating => _middleStart != null;
+  @override
+  void initState() {
+    super.initState();
+    navigation = _createNavigationEngine();
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfessionalCadViewportWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.camera != widget.camera || oldWidget.scene != widget.scene) {
+      navigation.dispose();
+      navigation = _createNavigationEngine();
+    }
+  }
+
+  NavigationEngine _createNavigationEngine() => NavigationEngine(
+    camera: CadCameraNavigationAdapter(widget.camera),
+    resolvePoint: (x, y) => picking
+        .pick(
+          position: Offset(x, y),
+          camera: widget.camera,
+          scene: widget.scene,
+        )
+        ?.hit
+        .point,
+    onNavigationChanged: widget.onNavigationChanged,
+    onRotationCenterSet: _showRotationCenterMarker,
+  );
+
+  void _orbitFromViewCube(Offset delta) {
+    const calibration = NavigationProfileCalibration.geomagicCatia;
+    CadCameraNavigationAdapter(widget.camera).execute(
+      OrbitCommand(
+        delta.dx / calibration.orbitPixelsPerRadian,
+        delta.dy / calibration.orbitPixelsPerRadian,
+      ),
+    );
+  }
 
   void _startMouseNavigation(PointerDownEvent event) {
-    if ((event.buttons & kMiddleMouseButton) == 0) return;
-    if (_isMouseNavigating) {
-      if ((event.buttons & (kPrimaryMouseButton | kSecondaryMouseButton)) !=
-          0) {
-        _mouseNavigationMode = _MouseNavigationMode.orbit;
-      }
-      return;
-    }
-    _middleStart = event.localPosition;
-    _middlePrevious = event.localPosition;
-    _middleMoved = false;
-    _mouseNavigationMode = _MouseNavigationMode.pan;
+    if (_sketchToolActive) return;
+    navigation.pointerDown(
+      x: event.localPosition.dx,
+      y: event.localPosition.dy,
+      buttons: event.buttons,
+    );
   }
 
   void _updateMouseNavigation(PointerMoveEvent event) {
-    if (!_isMouseNavigating || (event.buttons & kMiddleMouseButton) == 0) {
-      return;
-    }
-    final hasOrbitButton =
-        (event.buttons & (kPrimaryMouseButton | kSecondaryMouseButton)) != 0;
-    if (_mouseNavigationMode == _MouseNavigationMode.pan && hasOrbitButton) {
-      _mouseNavigationMode = _MouseNavigationMode.orbit;
-    } else if (_mouseNavigationMode == _MouseNavigationMode.orbit &&
-        !hasOrbitButton) {
-      _mouseNavigationMode = _MouseNavigationMode.zoom;
-    }
-    final delta =
-        event.localPosition - (_middlePrevious ?? event.localPosition);
-    _middlePrevious = event.localPosition;
-    if (delta.distanceSquared < .01) return;
-    _middleMoved = true;
-    switch (_mouseNavigationMode) {
-      case _MouseNavigationMode.pan:
-        widget.camera.panViewportPixels(delta.dx, delta.dy);
-      case _MouseNavigationMode.orbit:
-        widget.camera.orbit(delta.dx / 180, delta.dy / 180);
-      case _MouseNavigationMode.zoom:
-        widget.camera.zoom(math.exp(delta.dy.clamp(-80.0, 80.0) * .008));
-    }
+    if (_sketchToolActive) return;
+    navigation.pointerMove(
+      x: event.localPosition.dx,
+      y: event.localPosition.dy,
+      buttons: event.buttons,
+    );
   }
 
   void _endMouseNavigation(PointerUpEvent event) {
-    if (!_isMouseNavigating) return;
-    if ((event.buttons & kMiddleMouseButton) != 0) {
-      if (_mouseNavigationMode == _MouseNavigationMode.orbit) {
-        _mouseNavigationMode = _MouseNavigationMode.zoom;
-        _middlePrevious = event.localPosition;
-      }
-      return;
-    }
-    if (!_middleMoved) {
-      final hit = picking.pick(
-        position: event.localPosition,
-        camera: widget.camera,
-        scene: widget.scene,
-      );
-      if (hit != null) {
-        widget.camera.setRotationCenter(hit.hit.point);
-        _showRotationCenterMarker(hit.hit.point);
-      }
-    }
-    _middleStart = null;
-    _middlePrevious = null;
-    _middleMoved = false;
-    _mouseNavigationMode = _MouseNavigationMode.pan;
+    if (_sketchToolActive) return;
+    navigation.pointerUp(
+      x: event.localPosition.dx,
+      y: event.localPosition.dy,
+      buttons: event.buttons,
+    );
   }
 
   void _showRotationCenterMarker(Vector3 point) {
@@ -138,34 +151,17 @@ class _ProfessionalCadViewportWidgetState
   }
 
   void _zoomFromWheel(PointerScrollEvent event) {
-    if (!_zoomSessionActive) {
-      _zoomSessionActive = true;
-      final hit = picking.pick(
-        position: event.localPosition,
-        camera: widget.camera,
-        scene: widget.scene,
-      );
-      _zoomSessionAnchor = hit?.hit.point;
-      if (_zoomSessionAnchor != null) {
-        widget.camera.focusOn(_zoomSessionAnchor!);
-      }
-    }
-    _zoomSessionTimer?.cancel();
-    _zoomSessionTimer = Timer(const Duration(milliseconds: 220), () {
-      _zoomSessionActive = false;
-      _zoomSessionAnchor = null;
-    });
-    final normalizedDelta = event.scrollDelta.dy.clamp(-240.0, 240.0);
-    widget.camera.zoom(
-      math.exp(normalizedDelta * .001),
-      anchor: _zoomSessionAnchor,
+    navigation.wheel(
+      x: event.localPosition.dx,
+      y: event.localPosition.dy,
+      deltaY: event.scrollDelta.dy,
     );
   }
 
   @override
   void dispose() {
     _rotationCenterMarkerTimer?.cancel();
-    _zoomSessionTimer?.cancel();
+    navigation.dispose();
     super.dispose();
   }
 
@@ -181,7 +177,7 @@ class _ProfessionalCadViewportWidgetState
     }
   }
 
-  void _fitVisibleScene() {
+  void _fitVisibleScene([CadStandardView? standardView]) {
     var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
     var maxX = double.negativeInfinity;
     var maxY = double.negativeInfinity;
@@ -223,7 +219,13 @@ class _ProfessionalCadViewportWidgetState
       }
     }
     if (!minX.isFinite || !maxX.isFinite) return;
-    widget.camera.fit(Vector3(minX, minY, minZ), Vector3(maxX, maxY, maxZ));
+    final minimum = Vector3(minX, minY, minZ);
+    final maximum = Vector3(maxX, maxY, maxZ);
+    if (standardView == null) {
+      navigation.fit(minimum, maximum);
+    } else {
+      widget.camera.setStandardView(standardView, minimum, maximum);
+    }
   }
 
   @override
@@ -236,11 +238,18 @@ class _ProfessionalCadViewportWidgetState
         );
         final colors = Theme.of(context).colorScheme;
         return MouseRegion(
-          cursor: hoveredEntityId == null
+          cursor: _sketchToolActive
+              ? SystemMouseCursors.precise
+              : !widget.enablePicking || hoveredEntityId == null
               ? MouseCursor.defer
               : SystemMouseCursors.click,
           onHover: (event) {
-            if (!_isMouseNavigating) _updateHover(event.localPosition);
+            if (!_isMouseNavigating) {
+              widget.onSketchHover?.call(event.localPosition);
+            }
+            if (widget.enablePicking && !_isMouseNavigating) {
+              _updateHover(event.localPosition);
+            }
           },
           onExit: (_) {
             if (hoveredEntityId != null) {
@@ -252,19 +261,57 @@ class _ProfessionalCadViewportWidgetState
             onPointerMove: _updateMouseNavigation,
             onPointerUp: _endMouseNavigation,
             onPointerCancel: (_) {
-              _middleStart = null;
-              _middlePrevious = null;
-              _middleMoved = false;
-              _mouseNavigationMode = _MouseNavigationMode.pan;
+              if (!_sketchToolActive) navigation.pointerCancel();
             },
             onPointerSignal: (event) {
-              if (event is PointerScrollEvent) {
+              if (!_sketchToolActive && event is PointerScrollEvent) {
                 _zoomFromWheel(event);
               }
             },
             child: GestureDetector(
+              onDoubleTapDown: widget.onSketchEntityDoublePick == null
+                  ? null
+                  : (event) {
+                      final hit = picking.pick(
+                        position: event.localPosition,
+                        camera: widget.camera,
+                        scene: widget.scene,
+                      );
+                      if (hit != null &&
+                          widget.scene.find(hit.entityId)?.kind ==
+                              CadSceneEntityKind.sketch) {
+                        widget.onSketchEntityDoublePick!(hit);
+                      }
+                    },
               onTapUp: widget.onSketchTap != null
-                  ? (event) => widget.onSketchTap!(event.localPosition)
+                  ? (event) {
+                      final hit = picking.pick(
+                        position: event.localPosition,
+                        camera: widget.camera,
+                        scene: widget.scene,
+                      );
+                      final existing = hit == null
+                          ? null
+                          : widget.scene.find(hit.entityId);
+                      if (hit != null &&
+                          existing?.kind == CadSceneEntityKind.sketch &&
+                          widget.onSketchEntityPick != null) {
+                        widget.onSketchEntityPick!(hit);
+                      } else {
+                        widget.onSketchTap!(event.localPosition);
+                      }
+                    }
+                  : widget.onSketchSupportPick != null
+                  ? (event) {
+                      final hit = picking.pick(
+                        position: event.localPosition,
+                        camera: widget.camera,
+                        scene: widget.scene,
+                      );
+                      if (hit != null) widget.onSketchSupportPick!(hit);
+                    }
+                  : !widget.enablePicking
+                  ? null
                   : widget.onPick == null
                   ? null
                   : (event) {
@@ -274,16 +321,21 @@ class _ProfessionalCadViewportWidgetState
                         scene: widget.scene,
                       );
                       if (hit != null) {
-                        widget.camera.focusOn(hit.hit.point);
+                        navigation.focus(hit.hit.point);
                         widget.onPick!(hit);
                       }
                     },
+              onSecondaryTapUp: widget.onSketchSecondaryTap == null
+                  ? null
+                  : (_) => widget.onSketchSecondaryTap!(),
               onScaleStart: (event) {
                 previousScale = 1;
               },
               onScaleUpdate: (event) {
-                if (event.pointerCount > 1 && event.scale != previousScale) {
-                  widget.camera.zoom(previousScale / event.scale);
+                if (!_sketchToolActive &&
+                    event.pointerCount > 1 &&
+                    event.scale != previousScale) {
+                  navigation.scale(previousScale / event.scale);
                   previousScale = event.scale;
                 }
               },
@@ -297,18 +349,26 @@ class _ProfessionalCadViewportWidgetState
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: CustomPaint(
-                        painter: _CadScenePainter(
-                          scene: widget.scene,
-                          camera: widget.camera,
-                          style: style,
-                          colors: colors,
-                          showGrid: widget.showSketchGrid,
-                          meshRenderCaches: meshRenderCaches,
-                          hoveredEntityId: hoveredEntityId,
-                          rotationCenterMarker: _rotationCenterMarker,
-                          renderMeshes: widget.renderMeshes,
-                          paintBackground: widget.paintBackground,
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          isComplex: true,
+                          willChange: true,
+                          painter: _CadScenePainter(
+                            scene: widget.scene,
+                            camera: widget.camera,
+                            style: style,
+                            colors: colors,
+                            showGrid: widget.showSketchGrid,
+                            meshRenderCaches: meshRenderCaches,
+                            hoveredEntityId: hoveredEntityId,
+                            rotationCenterMarker: _rotationCenterMarker,
+                            renderMeshes: widget.renderMeshes,
+                            paintBackground: widget.paintBackground,
+                            highlightSketchSupports:
+                                widget.onSketchSupportPick != null,
+                            navigationActive: _isMouseNavigating,
+                            orbitActive: _isOrbiting,
+                          ),
                         ),
                       ),
                     ),
@@ -340,8 +400,14 @@ class _ProfessionalCadViewportWidgetState
                             setState(() => style = value.first),
                       ),
                     ),
+                    if (widget.showNavigationDebug)
+                      Positioned(
+                        left: 10,
+                        bottom: 10,
+                        child: NavigationDebugPanel(engine: navigation),
+                      ),
                     Positioned(
-                      right: 10,
+                      right: 152,
                       top: 10,
                       child: Column(
                         children: [
@@ -356,7 +422,80 @@ class _ProfessionalCadViewportWidgetState
                             onPressed: widget.camera.toggleProjection,
                             icon: const Icon(Icons.view_in_ar),
                           ),
+                          const SizedBox(height: 6),
+                          Material(
+                            color: Colors.transparent,
+                            child: PopupMenuButton<CadStandardView>(
+                              tooltip: 'Views',
+                              onSelected: _fitVisibleScene,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: colors.secondaryContainer,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.view_in_ar_outlined, size: 18),
+                                      SizedBox(width: 5),
+                                      Text('Views'),
+                                      Icon(Icons.arrow_drop_down, size: 18),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: CadStandardView.perspective,
+                                  child: Text('Perspective  F1'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.top,
+                                  child: Text('Top  F2'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.bottom,
+                                  child: Text('Bottom  F3'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.front,
+                                  child: Text('Front  F4'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.back,
+                                  child: Text('Back  F5'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.right,
+                                  child: Text('Right  F6'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.left,
+                                  child: Text('Left  F7'),
+                                ),
+                                PopupMenuItem(
+                                  value: CadStandardView.isometric,
+                                  child: Text('Isometric  F8'),
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
+                      ),
+                    ),
+                    Positioned(
+                      right: 10,
+                      top: 10,
+                      child: _ProfessionalViewCube(
+                        camera: widget.camera,
+                        orbitActive: _isOrbiting,
+                        onViewSelected: _fitVisibleScene,
+                        onOrbit: _orbitFromViewCube,
                       ),
                     ),
                   ],
@@ -368,6 +507,287 @@ class _ProfessionalCadViewportWidgetState
       },
     );
   }
+}
+
+class _ProfessionalViewCube extends StatelessWidget {
+  const _ProfessionalViewCube({
+    required this.camera,
+    required this.orbitActive,
+    required this.onViewSelected,
+    required this.onOrbit,
+  });
+
+  static const size = Size(132, 132);
+  final CadCameraController camera;
+  final bool orbitActive;
+  final ValueChanged<CadStandardView> onViewSelected;
+  final ValueChanged<Offset> onOrbit;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: camera,
+    builder: (context, _) {
+      final colors = Theme.of(context).colorScheme;
+      final geometry = _ViewCubeGeometry(camera, size);
+      return AnimatedOpacity(
+        duration: Duration.zero,
+        opacity: orbitActive ? .24 : 1,
+        child: Semantics(
+          key: const ValueKey('professional-view-cube'),
+          label: 'ViewCube',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (event) {
+              final view = geometry.viewAt(event.localPosition);
+              if (view != null) onViewSelected(view);
+            },
+            onPanUpdate: (event) => onOrbit(event.delta),
+            child: CustomPaint(
+              size: size,
+              painter: _ViewCubePainter(geometry: geometry, colors: colors),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _ViewCubeFace {
+  const _ViewCubeFace({
+    required this.view,
+    required this.label,
+    required this.path,
+    required this.depth,
+  });
+  final CadStandardView view;
+  final String label;
+  final Path path;
+  final double depth;
+}
+
+class _ViewCubeGeometry {
+  _ViewCubeGeometry(this.camera, this.size) {
+    _build();
+  }
+
+  final CadCameraController camera;
+  final Size size;
+  final faces = <_ViewCubeFace>[];
+  final axisEndpoints = <String, Offset>{};
+  late Offset center;
+  late double isoRadius;
+
+  void _build() {
+    center = size.center(Offset.zero);
+    isoRadius = 16.5;
+    final forward = (camera.target - camera.eye).normalized;
+    final right = forward.cross(camera.up).normalized;
+    final viewUp = right.cross(forward).normalized;
+    const extent = 34.0;
+
+    Offset project(Vector3 point) => Offset(
+      center.dx + point.dot(right) * extent,
+      center.dy - point.dot(viewUp) * extent,
+    );
+
+    const definitions = <(CadStandardView, String, Vector3, List<Vector3>)>[
+      (
+        CadStandardView.right,
+        'RIGHT',
+        Vector3(1, 0, 0),
+        [
+          Vector3(1, -1, -1),
+          Vector3(1, 1, -1),
+          Vector3(1, 1, 1),
+          Vector3(1, -1, 1),
+        ],
+      ),
+      (
+        CadStandardView.left,
+        'LEFT',
+        Vector3(-1, 0, 0),
+        [
+          Vector3(-1, 1, -1),
+          Vector3(-1, -1, -1),
+          Vector3(-1, -1, 1),
+          Vector3(-1, 1, 1),
+        ],
+      ),
+      (
+        CadStandardView.back,
+        'BACK',
+        Vector3(0, 1, 0),
+        [
+          Vector3(1, 1, -1),
+          Vector3(-1, 1, -1),
+          Vector3(-1, 1, 1),
+          Vector3(1, 1, 1),
+        ],
+      ),
+      (
+        CadStandardView.front,
+        'FRONT',
+        Vector3(0, -1, 0),
+        [
+          Vector3(-1, -1, -1),
+          Vector3(1, -1, -1),
+          Vector3(1, -1, 1),
+          Vector3(-1, -1, 1),
+        ],
+      ),
+      (
+        CadStandardView.top,
+        'TOP',
+        Vector3(0, 0, 1),
+        [
+          Vector3(-1, -1, 1),
+          Vector3(1, -1, 1),
+          Vector3(1, 1, 1),
+          Vector3(-1, 1, 1),
+        ],
+      ),
+      (
+        CadStandardView.bottom,
+        'BOTTOM',
+        Vector3(0, 0, -1),
+        [
+          Vector3(-1, 1, -1),
+          Vector3(1, 1, -1),
+          Vector3(1, -1, -1),
+          Vector3(-1, -1, -1),
+        ],
+      ),
+    ];
+    for (final definition in definitions) {
+      final (view, label, normal, vertices) = definition;
+      if (normal.dot(forward) >= -.0001) continue;
+      final projected = vertices.map(project).toList();
+      final path = Path()..moveTo(projected.first.dx, projected.first.dy);
+      for (final point in projected.skip(1)) {
+        path.lineTo(point.dx, point.dy);
+      }
+      path.close();
+      final depth =
+          vertices.map((point) => point.dot(forward)).reduce((a, b) => a + b) /
+          vertices.length;
+      faces.add(
+        _ViewCubeFace(view: view, label: label, path: path, depth: depth),
+      );
+    }
+    faces.sort((a, b) => b.depth.compareTo(a.depth));
+    axisEndpoints['X'] = project(const Vector3(1.55, 0, 0));
+    axisEndpoints['Y'] = project(const Vector3(0, 1.55, 0));
+    axisEndpoints['Z'] = project(const Vector3(0, 0, 1.55));
+  }
+
+  CadStandardView? viewAt(Offset position) {
+    if ((position - center).distance <= isoRadius) {
+      return CadStandardView.isometric;
+    }
+    for (final face in faces.reversed) {
+      if (face.path.contains(position)) return face.view;
+    }
+    return null;
+  }
+}
+
+class _ViewCubePainter extends CustomPainter {
+  const _ViewCubePainter({required this.geometry, required this.colors});
+  final _ViewCubeGeometry geometry;
+  final ColorScheme colors;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(10)),
+      Paint()..color = colors.surfaceContainerHighest.withValues(alpha: .76),
+    );
+    for (var index = 0; index < geometry.faces.length; index++) {
+      final face = geometry.faces[index];
+      canvas.drawPath(
+        face.path,
+        Paint()
+          ..color = Color.lerp(
+            colors.surfaceContainer,
+            colors.primaryContainer,
+            .25 + index * .12,
+          )!,
+      );
+      canvas.drawPath(
+        face.path,
+        Paint()
+          ..color = colors.outline
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+      final bounds = face.path.getBounds();
+      final painter = TextPainter(
+        text: TextSpan(
+          text: face.label,
+          style: TextStyle(
+            color: colors.onSurface,
+            fontSize: face.label.length > 5 ? 7 : 8,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: bounds.width);
+      painter.paint(
+        canvas,
+        Offset(
+          bounds.center.dx - painter.width / 2,
+          bounds.center.dy - painter.height / 2,
+        ),
+      );
+    }
+    final axisColors = <String, Color>{
+      'X': Colors.redAccent,
+      'Y': Colors.green,
+      'Z': Colors.lightBlueAccent,
+    };
+    for (final entry in geometry.axisEndpoints.entries) {
+      canvas.drawLine(
+        geometry.center,
+        entry.value,
+        Paint()
+          ..color = axisColors[entry.key]!
+          ..strokeWidth = 1.3,
+      );
+      final painter = TextPainter(
+        text: TextSpan(
+          text: entry.key,
+          style: TextStyle(
+            color: axisColors[entry.key],
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      painter.paint(canvas, entry.value - const Offset(4, 5));
+    }
+    canvas.drawCircle(
+      geometry.center,
+      geometry.isoRadius,
+      Paint()..color = colors.primary,
+    );
+    final iso = TextPainter(
+      text: TextSpan(
+        text: 'ISO',
+        style: TextStyle(
+          color: colors.onPrimary,
+          fontSize: 9,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    iso.paint(canvas, geometry.center - Offset(iso.width / 2, iso.height / 2));
+  }
+
+  @override
+  bool shouldRepaint(covariant _ViewCubePainter oldDelegate) => true;
 }
 
 class _ProjectedTriangle {
@@ -485,6 +905,9 @@ class _CadScenePainter extends CustomPainter {
     required this.rotationCenterMarker,
     required this.renderMeshes,
     required this.paintBackground,
+    required this.highlightSketchSupports,
+    required this.navigationActive,
+    required this.orbitActive,
   }) : super(repaint: Listenable.merge([scene, camera]));
   final CadSceneGraph scene;
   final CadCameraController camera;
@@ -495,6 +918,9 @@ class _CadScenePainter extends CustomPainter {
   final String? hoveredEntityId;
   final Vector3? rotationCenterMarker;
   final bool renderMeshes, paintBackground;
+  final bool highlightSketchSupports;
+  final bool navigationActive;
+  final bool orbitActive;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -624,15 +1050,20 @@ class _CadScenePainter extends CustomPainter {
   }
 
   void _paintOrientationTriad(Canvas canvas, Size size) {
-    if (size.width < 90 || size.height < 90) return;
-    final origin = Offset(62, size.height - 62);
+    if (size.width < 70 || size.height < 70) return;
+    final origin = Offset(39, size.height - 39);
     final viewOrigin = camera.viewMatrix.transformPoint(Vector3.zero);
+    final passiveOpacity = orbitActive
+        ? .22
+        : navigationActive
+        ? .62
+        : .78;
 
     Offset direction(Vector3 axis) {
       final viewed = camera.viewMatrix.transformPoint(axis) - viewOrigin;
       final projected = Offset(viewed.x, -viewed.y);
       final length = projected.distance;
-      return length < 1e-8 ? Offset.zero : projected / length * 34;
+      return length < 1e-8 ? Offset.zero : projected / length * 22;
     }
 
     void axis(Vector3 vector, String label, Color color) {
@@ -641,21 +1072,25 @@ class _CadScenePainter extends CustomPainter {
       if (delta == Offset.zero) {
         canvas.drawCircle(
           origin,
-          6,
+          4,
           Paint()
-            ..color = color
+            ..color = color.withValues(alpha: passiveOpacity)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 2.2
+            ..strokeWidth = 1.25
             ..isAntiAlias = true,
         );
-        canvas.drawCircle(origin, 2, Paint()..color = color);
+        canvas.drawCircle(
+          origin,
+          1.4,
+          Paint()..color = color.withValues(alpha: passiveOpacity),
+        );
       } else {
         canvas.drawLine(
           origin,
           end,
           Paint()
-            ..color = color
-            ..strokeWidth = 2.4
+            ..color = color.withValues(alpha: passiveOpacity)
+            ..strokeWidth = 1.35
             ..strokeCap = StrokeCap.round
             ..isAntiAlias = true,
         );
@@ -664,39 +1099,43 @@ class _CadScenePainter extends CustomPainter {
         text: TextSpan(
           text: label,
           style: TextStyle(
-            color: color,
-            fontSize: 13,
-            fontWeight: FontWeight.w800,
+            color: color.withValues(alpha: passiveOpacity),
+            fontSize: 9.5,
+            fontWeight: FontWeight.w700,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
       final labelPosition = delta == Offset.zero
-          ? origin + const Offset(8, -18)
-          : end + delta / 7 - const Offset(4, 6);
+          ? origin + const Offset(6, -13)
+          : end + delta / 8 - const Offset(3, 5);
       painter.paint(canvas, labelPosition);
     }
 
     canvas.drawCircle(
       origin,
-      43,
+      28,
       Paint()
-        ..color = colors.surfaceContainerHighest.withValues(alpha: .86)
+        ..color = colors.surfaceContainerHighest.withValues(alpha: .34)
         ..isAntiAlias = true,
     );
     canvas.drawCircle(
       origin,
-      43,
+      28,
       Paint()
-        ..color = colors.outline.withValues(alpha: .38)
+        ..color = colors.outline.withValues(alpha: .18)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
+        ..strokeWidth = .65
         ..isAntiAlias = true,
     );
     axis(const Vector3(1, 0, 0), 'X', Colors.redAccent);
-    axis(const Vector3(0, 1, 0), 'Y', Colors.greenAccent.shade700);
+    axis(const Vector3(0, 1, 0), 'Y', Colors.green);
     axis(const Vector3(0, 0, 1), 'Z', Colors.lightBlueAccent);
-    canvas.drawCircle(origin, 3, Paint()..color = colors.onSurface);
+    canvas.drawCircle(
+      origin,
+      2,
+      Paint()..color = colors.onSurface.withValues(alpha: passiveOpacity),
+    );
   }
 
   void _paintMeshBatched(Canvas canvas, CadSceneEntity entity, Size size) {
@@ -725,6 +1164,7 @@ class _CadScenePainter extends CustomPainter {
       (true, _, _, _) => const Color(0xffffb02e),
       (_, true, _, _) => const Color(0xff38d6ff),
       (_, _, _, 'destructiveRed') => Colors.redAccent,
+      (_, _, _, 'surfacePreviewBlue') => const Color(0xff38bdf8),
       (_, _, CadSceneEntityKind.preview, _) => const Color(0xffff9f43),
       (_, _, CadSceneEntityKind.surface, _) => const Color(0xff53a8a6),
       (_, _, CadSceneEntityKind.solid, _) => const Color(0xff8296a3),
@@ -952,7 +1392,22 @@ class _CadScenePainter extends CustomPainter {
     final scale = (camera.eye - camera.target).length * .16;
     final isWorld = entity.id.contains(':world:');
     final worldScale = _worldReferenceScale();
+    final isPlanarSupport =
+        entity.kind == CadSceneEntityKind.plane ||
+        ((entity.kind == CadSceneEntityKind.surface ||
+                entity.kind == CadSceneEntityKind.preview) &&
+            entity.geometry['surfaceKind'] == 'plane');
     final highlighted = entity.selected || entity.id == hoveredEntityId;
+    final selectableSupport = highlightSketchSupports && isPlanarSupport;
+    // World references are permanent workspace context. Their visibility must
+    // never depend on which authoring command/tool window is active.
+    final persistentWorldSupport = isWorld && isPlanarSupport;
+    final visibleSupport = selectableSupport || persistentWorldSupport;
+    final passiveFactor = orbitActive
+        ? .28
+        : navigationActive
+        ? .55
+        : 1.0;
     if ((entity.kind == CadSceneEntityKind.surface ||
             entity.kind == CadSceneEntityKind.preview) &&
         entity.geometry['surfaceKind'] == 'plane') {
@@ -994,18 +1449,34 @@ class _CadScenePainter extends CustomPainter {
         path,
         Paint()
           ..style = PaintingStyle.fill
-          ..color = activeColor.withValues(alpha: preview ? .22 : .48),
+          ..color = activeColor.withValues(
+            alpha: preview
+                ? .22
+                : highlighted
+                ? .28
+                : selectableSupport
+                ? .065
+                : .035,
+          ),
       );
       canvas.drawPath(
         path,
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = highlighted
-              ? 1.8
+              ? 1.45
               : preview
               ? 1.25
-              : .8
-          ..color = activeColor,
+              : selectableSupport
+              ? .65
+              : .45
+          ..color = activeColor.withValues(
+            alpha: highlighted
+                ? 1
+                : selectableSupport
+                ? .52
+                : .32,
+          ),
       );
       return;
     }
@@ -1013,8 +1484,13 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.point:
         canvas.drawCircle(
           project(vector(entity.geometry['position'])),
-          entity.selected ? 7 : 5,
-          Paint()..color = colors.tertiary,
+          entity.selected
+              ? 7
+              : (entity.geometry['markerRadius'] as num?)?.toDouble() ?? 5,
+          Paint()
+            ..color = entity.geometry['displayColor'] == 'endpointSnap'
+                ? const Color(0xff62d98b)
+                : colors.tertiary,
         );
       case CadSceneEntityKind.axis:
         final origin = vector(entity.geometry['origin']);
@@ -1036,8 +1512,16 @@ class _CadScenePainter extends CustomPainter {
         line(
           start,
           end,
-          highlighted ? colors.tertiary : axisColor,
-          width: highlighted ? 2.2 : 1.15,
+          highlighted
+              ? colors.tertiary
+              : axisColor.withValues(
+                  alpha: isWorld ? .62 : .46 * passiveFactor,
+                ),
+          width: highlighted
+              ? 1.55
+              : isWorld
+              ? .82
+              : .68,
         );
         if (isWorld) {
           final label = switch (entity.geometry['axisColor']) {
@@ -1051,9 +1535,13 @@ class _CadScenePainter extends CustomPainter {
               text: TextSpan(
                 text: label,
                 style: TextStyle(
-                  color: highlighted ? colors.tertiary : axisColor,
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w700,
+                  color: highlighted
+                      ? colors.tertiary
+                      : axisColor.withValues(
+                          alpha: isWorld ? .68 : .55 * passiveFactor,
+                        ),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               textDirection: TextDirection.ltr,
@@ -1096,16 +1584,30 @@ class _CadScenePainter extends CustomPainter {
         canvas.drawPath(
           path,
           Paint()
-            ..color = planeColor.withValues(alpha: highlighted ? .11 : .024)
+            ..color = planeColor.withValues(
+              alpha: highlighted
+                  ? .10
+                  : visibleSupport
+                  ? .034
+                  : .012 * passiveFactor,
+            )
             ..style = PaintingStyle.fill,
         );
         canvas.drawPath(
           path,
           Paint()
             ..color = (highlighted ? colors.tertiary : planeColor).withValues(
-              alpha: highlighted ? .92 : .25,
+              alpha: highlighted
+                  ? .92
+                  : visibleSupport
+                  ? .42
+                  : .14 * passiveFactor,
             )
-            ..strokeWidth = highlighted ? 1.55 : .55
+            ..strokeWidth = highlighted
+                ? 1.45
+                : visibleSupport
+                ? .62
+                : .38
             ..style = PaintingStyle.stroke
             ..isAntiAlias = true,
         );
@@ -1170,6 +1672,7 @@ class _CadScenePainter extends CustomPainter {
             'sketchGreen' => const Color(0xff7cda72),
             'previewOrange' => const Color(0xffff9f43),
             'sectionBlue' => const Color(0xff4cb9e8),
+            'drivingDimension' => const Color(0xff65c7ff),
             _ => const Color(0xff55b8df),
           };
           canvas.drawPoints(
@@ -1185,6 +1688,29 @@ class _CadScenePainter extends CustomPainter {
                   (entity.geometry['strokeWidth'] as num?)?.toDouble() ?? 2
               ..strokeCap = StrokeCap.round
               ..isAntiAlias = true,
+          );
+        }
+        final dimensionLabel = entity.geometry['dimensionLabel'] as String?;
+        final labelPosition = entity.geometry['labelPosition'];
+        if (dimensionLabel != null && labelPosition is List) {
+          final position = project(vector(labelPosition));
+          final text = TextPainter(
+            text: TextSpan(
+              text: dimensionLabel,
+              style: TextStyle(
+                color: entity.selected
+                    ? const Color(0xffffb02e)
+                    : const Color(0xff65c7ff),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                backgroundColor: colors.surface.withValues(alpha: .82),
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          text.paint(
+            canvas,
+            position - Offset(text.width / 2, text.height / 2),
           );
         }
       case CadSceneEntityKind.mesh:
@@ -1221,7 +1747,9 @@ class _CadScenePainter extends CustomPainter {
       final diagonal = Vector3(maxX - minX, maxY - minY, maxZ - minZ).length;
       if (diagonal > 1e-9) return diagonal * .12;
     }
-    return math.max((camera.eye - camera.target).length * .075, .05);
+    // With no model bounds, world planes are the only available Sketch
+    // supports. Keep them large enough to remain visible and selectable.
+    return math.max((camera.eye - camera.target).length * .32, 1.0);
   }
 
   @override
@@ -1229,6 +1757,9 @@ class _CadScenePainter extends CustomPainter {
       oldDelegate.style != style ||
       oldDelegate.colors != colors ||
       oldDelegate.showGrid != showGrid ||
+      oldDelegate.highlightSketchSupports != highlightSketchSupports ||
+      oldDelegate.navigationActive != navigationActive ||
+      oldDelegate.orbitActive != orbitActive ||
       oldDelegate.hoveredEntityId != hoveredEntityId ||
       oldDelegate.rotationCenterMarker != rotationCenterMarker;
 }

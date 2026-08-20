@@ -68,6 +68,19 @@ class CadCameraSystem {
     }
   }
 
+  void SetProjectionOffset(float x, float y) {
+    if (std::isfinite(x) && std::isfinite(y)) {
+      projection_offset_x_ = x;
+      projection_offset_y_ = y;
+    }
+  }
+
+  void SetProjection(bool orthographic, float orthographic_height) {
+    orthographic_ = orthographic;
+    if (std::isfinite(orthographic_height) && orthographic_height > 0.0f)
+      orthographic_height_ = orthographic_height;
+  }
+
   void OrbitPixels(float dx, float dy) {
     OrbitRadians(dx / 180.0f, dy / 180.0f);
   }
@@ -126,6 +139,40 @@ class CadCameraSystem {
     eye_[2] += delta.z;
   }
 
+  // Exact screen-space translation used by the standalone R2-008 benchmark.
+  // One cursor pixel maps to the corresponding distance on the camera focal
+  // plane for the active lens and viewport, as in the current FLCAD path.
+  void PanViewportPixels(float dx, float dy, float viewport_height) {
+    if (!std::isfinite(dx) || !std::isfinite(dy) ||
+        !std::isfinite(viewport_height) || viewport_height <= 0.0f)
+      return;
+    const DirectX::XMVECTOR eye = Eye();
+    const DirectX::XMVECTOR target = Target();
+    const DirectX::XMVECTOR view = DirectX::XMVectorSubtract(target, eye);
+    const float view_distance = DirectX::XMVectorGetX(
+        DirectX::XMVector3Length(view));
+    if (view_distance <= 0.000001f) return;
+    const DirectX::XMVECTOR forward = DirectX::XMVector3Normalize(view);
+    const DirectX::XMVECTOR right = DirectX::XMVector3Normalize(
+        DirectX::XMVector3Cross(forward, Up()));
+    const DirectX::XMVECTOR camera_up = DirectX::XMVector3Normalize(
+        DirectX::XMVector3Cross(right, forward));
+    const float world_per_pixel =
+        2.0f * view_distance * std::tan(fov_radians_ * 0.5f) /
+        viewport_height;
+    DirectX::XMFLOAT3 delta;
+    DirectX::XMStoreFloat3(
+        &delta, DirectX::XMVectorAdd(
+                    DirectX::XMVectorScale(right, -dx * world_per_pixel),
+                    DirectX::XMVectorScale(camera_up, dy * world_per_pixel)));
+    eye_[0] += delta.x;
+    eye_[1] += delta.y;
+    eye_[2] += delta.z;
+    target_[0] += delta.x;
+    target_[1] += delta.y;
+    target_[2] += delta.z;
+  }
+
   void ZoomFactor(float factor) {
     distance_ = std::clamp(distance_ * factor, radius_ * 0.02f,
                            radius_ * 100.0f);
@@ -159,10 +206,20 @@ class CadCameraSystem {
 
   Frame BuildFrame(float aspect) const {
     const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
-    const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
+    // FLCAD's single spatial contract is right-handed: X cross Y = Z. The
+    // native renderer must not introduce a left-handed presentation mirror
+    // between persisted geometry and Flutter overlays/ViewCube/triad.
+    const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtRH(
         Eye(), Target(), Up());
-    const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
-        fov_radians_, aspect, near_plane_, far_plane_);
+    const DirectX::XMMATRIX base_projection = orthographic_
+        ? DirectX::XMMatrixOrthographicRH(
+              orthographic_height_ * aspect, orthographic_height_,
+              near_plane_, far_plane_)
+        : DirectX::XMMatrixPerspectiveFovRH(
+              fov_radians_, aspect, near_plane_, far_plane_);
+    const DirectX::XMMATRIX projection = base_projection *
+        DirectX::XMMatrixTranslation(projection_offset_x_,
+                                     projection_offset_y_, 0.0f);
     return {world, view, projection, world * view * projection};
   }
 
@@ -195,6 +252,10 @@ class CadCameraSystem {
   float fov_radians_ = DirectX::XMConvertToRadians(42.0f);
   float near_plane_ = 0.001f;
   float far_plane_ = 1000.0f;
+  float projection_offset_x_ = 0.0f;
+  float projection_offset_y_ = 0.0f;
+  bool orthographic_ = false;
+  float orthographic_height_ = 10.0f;
 };
 
 }  // namespace flcad::render

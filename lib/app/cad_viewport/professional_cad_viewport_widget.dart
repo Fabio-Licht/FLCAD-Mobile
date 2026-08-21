@@ -796,11 +796,13 @@ class _ProjectedTriangle {
     this.depth,
     this.intensity,
     this.selected,
+    this.reconstructionStatus,
   );
   final Path path;
   final double depth;
   final double intensity;
   final bool selected;
+  final String? reconstructionStatus;
 }
 
 class _MeshRenderChunk {
@@ -979,6 +981,10 @@ class _CadScenePainter extends CustomPainter {
     }
     final projected = <_ProjectedTriangle>[];
     for (final entity in scene.entities.where((item) => item.visible)) {
+      if (entity.kind == CadSceneEntityKind.surface &&
+          entity.geometry['shaded'] == false) {
+        continue;
+      }
       if (renderMeshes &&
           entity.geometry['nodes'] is List &&
           entity.geometry['triangles'] is List) {
@@ -994,7 +1000,15 @@ class _CadScenePainter extends CustomPainter {
     }
     projected.sort((a, b) => b.depth.compareTo(a.depth));
     for (final triangle in projected) {
-      final selected = triangle.selected ? colors.tertiary : colors.primary;
+      final selected = triangle.selected
+          ? colors.tertiary
+          : switch (triangle.reconstructionStatus) {
+              'reconstructed' => Colors.green,
+              'inProgress' => Colors.amber,
+              'pending' => Colors.red,
+              'ignored' => Colors.grey,
+              _ => colors.primary,
+            };
       final alpha = style == CadRenderStyle.transparent ? .22 : .82;
       if (style != CadRenderStyle.wireframe) {
         canvas.drawPath(
@@ -1171,7 +1185,21 @@ class _CadScenePainter extends CustomPainter {
       _ => const Color(0xff7899ad),
     };
     final foreground = foregroundColor.toARGB32();
-    final analysisMode = entity.geometry['surfaceAnalysisMode'] as String?;
+    final legacyAnalysisMode =
+        entity.geometry['surfaceAnalysisMode'] as String?;
+    final analysisModes = <String>[
+      ...(entity.geometry['surfaceAnalysisModes'] as List? ?? const [])
+          .whereType<String>(),
+      if (entity.geometry['surfaceAnalysisModes'] == null &&
+          legacyAnalysisMode != null)
+        legacyAnalysisMode,
+    ];
+    final analysisIntensities = Map<String, dynamic>.from(
+      entity.geometry['surfaceAnalysisIntensities'] as Map? ?? const {},
+    );
+    final reconstructionStatuses = Map<String, dynamic>.from(
+      entity.geometry['reconstructionTriangleStatuses'] as Map? ?? const {},
+    );
     final alphaByte = (alpha * 255).round();
     final forward = (camera.target - camera.eye).normalized;
     final right = forward.cross(camera.up).normalized;
@@ -1189,7 +1217,16 @@ class _CadScenePainter extends CustomPainter {
       cameraUp.y.toStringAsFixed(4),
       cameraUp.z.toStringAsFixed(4),
     );
-    final colorKey = Object.hash(foreground, alphaByte, analysisMode, viewKey);
+    final colorKey = Object.hash(
+      foreground,
+      alphaByte,
+      Object.hashAll(analysisModes),
+      Object.hashAll(
+        analysisModes.map((mode) => analysisIntensities[mode] ?? 1.0),
+      ),
+      Object.hashAll(reconstructionStatuses.entries),
+      viewKey,
+    );
     var minX = double.infinity,
         minY = double.infinity,
         maxX = double.negativeInfinity,
@@ -1237,6 +1274,12 @@ class _CadScenePainter extends CustomPainter {
     }
     final orderedChunks = cache.chunks.toList(growable: false)
       ..sort((a, b) => b.averageDepth.compareTo(a.averageDepth));
+    final chunkVertexOffsets = <_MeshRenderChunk, int>{};
+    var vertexOffset = 0;
+    for (final chunk in cache.chunks) {
+      chunkVertexOffsets[chunk] = vertexOffset;
+      vertexOffset += chunk.colors.length;
+    }
     for (final chunk in orderedChunks) {
       if (chunk.colorKey != colorKey) {
         for (var i = 0; i < chunk.colors.length; i++) {
@@ -1254,37 +1297,66 @@ class _CadScenePainter extends CustomPainter {
             .10,
             .97,
           );
-          if (analysisMode != null) {
+          final triangleIndex = ((chunkVertexOffsets[chunk] ?? 0) + i) ~/ 3;
+          final reconstructionStatus =
+              reconstructionStatuses['$triangleIndex'] as String?;
+          if (reconstructionStatus != null) {
+            final reconstructionColor = switch (reconstructionStatus) {
+              'reconstructed' => Colors.green,
+              'inProgress' => Colors.amber,
+              'pending' => Colors.red,
+              'ignored' => Colors.grey,
+              _ => foregroundColor,
+            };
+            chunk.colors[i] = CadTonalSeparation.shade(
+              reconstructionColor,
+              t,
+              alpha: alpha,
+            ).toARGB32();
+            continue;
+          }
+          if (analysisModes.isNotEmpty) {
             final x = chunk.xyz[i * 3];
             final y = chunk.xyz[i * 3 + 1];
             final z = chunk.xyz[i * 3 + 2];
-            final Color analysisColor = switch (analysisMode) {
-              'zebra' =>
-                math.sin((x + y + z + camera.eye.x * .03) * .12) > 0
-                    ? Colors.white
-                    : Colors.black,
-              'reflection' => Color.lerp(
-                Colors.indigo.shade900,
-                Colors.white,
-                (math.sin(t * 5 + z * .03) * .5 + .5),
-              )!,
-              'curvature' => Color.lerp(
-                Colors.blue,
-                Colors.red,
-                t.clamp(0.0, 1.0),
-              )!,
-              'gaussian' =>
-                t < .48
-                    ? Color.lerp(Colors.blue, Colors.white, t / .48)!
-                    : Color.lerp(Colors.white, Colors.red, (t - .48) / .52)!,
-              'draft' =>
-                t < .35
-                    ? Colors.red
-                    : t < .58
-                    ? Colors.yellow
-                    : Colors.green,
-              _ => Color(foreground),
-            };
+            var analysisColor = Color(foreground);
+            for (final analysisMode in analysisModes) {
+              final effect = switch (analysisMode) {
+                'zebra' =>
+                  math.sin((x + y + z + camera.eye.x * .03) * .12) > 0
+                      ? Colors.white
+                      : Colors.black,
+                'reflection' => Color.lerp(
+                  Colors.indigo.shade900,
+                  Colors.white,
+                  (math.sin(t * 5 + z * .03) * .5 + .5),
+                )!,
+                'curvature' => Color.lerp(
+                  Colors.blue,
+                  Colors.red,
+                  t.clamp(0.0, 1.0),
+                )!,
+                'gaussian' =>
+                  t < .48
+                      ? Color.lerp(Colors.blue, Colors.white, t / .48)!
+                      : Color.lerp(Colors.white, Colors.red, (t - .48) / .52)!,
+                'draft' =>
+                  t < .35
+                      ? Colors.red
+                      : t < .58
+                      ? Colors.yellow
+                      : Colors.green,
+                _ => Color(foreground),
+              };
+              final intensity =
+                  (analysisIntensities[analysisMode] as num?)?.toDouble() ??
+                  1.0;
+              analysisColor = Color.lerp(
+                analysisColor,
+                effect,
+                intensity.clamp(0.0, 1.0),
+              )!;
+            }
             chunk.colors[i] = analysisColor.withValues(alpha: alpha).toARGB32();
             continue;
           }
@@ -1318,6 +1390,9 @@ class _CadScenePainter extends CustomPainter {
   ) {
     final nodes = (entity.geometry['nodes'] as List).cast<num>();
     final indices = (entity.geometry['triangles'] as List).cast<num>();
+    final reconstructionStatuses = Map<String, dynamic>.from(
+      entity.geometry['reconstructionTriangleStatuses'] as Map? ?? const {},
+    );
     Vector3 vertex(int index) => Vector3(
       nodes[index * 3].toDouble(),
       nodes[index * 3 + 1].toDouble(),
@@ -1356,6 +1431,7 @@ class _CadScenePainter extends CustomPainter {
           (viewA.z + viewB.z + viewC.z) / 3,
           intensity,
           entity.selected,
+          reconstructionStatuses['${index ~/ 3}'] as String?,
         ),
       );
     }
@@ -1634,10 +1710,26 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.preview:
         final rawSegments = entity.geometry['segments'];
         if (rawSegments is List) {
+          final alignmentGuide =
+              entity.geometry['displayColor'] == 'alignmentGuide';
+          final referenceCurve =
+              entity.geometry['displayColor'] == 'referenceCurve';
+          final referenceCurveHighlight =
+              entity.geometry['displayColor'] == 'referenceCurveHighlight';
+          final assistantSuggestion =
+              entity.geometry['displayColor'] == 'assistantSuggestion';
           final referenceColor = entity.selected
               ? const Color(0xffffb02e)
               : highlighted
               ? const Color(0xff38d6ff)
+              : alignmentGuide
+              ? const Color(0x9965c7ff)
+              : referenceCurveHighlight
+              ? const Color(0xffffc857)
+              : referenceCurve
+              ? const Color(0xffb56cff)
+              : assistantSuggestion
+              ? const Color(0xff4de1d2)
               : entity.kind == CadSceneEntityKind.preview
               ? const Color(0xffff9f43)
               : entity.kind == CadSceneEntityKind.sketch
@@ -1652,12 +1744,24 @@ class _CadScenePainter extends CustomPainter {
             ..isAntiAlias = true;
           for (final raw in rawSegments) {
             final segment = raw as List;
-            line(
-              vector(segment[0]),
-              vector(segment[1]),
-              paint.color,
-              width: paint.strokeWidth,
-            );
+            final from = project(vector(segment[0]));
+            final to = project(vector(segment[1]));
+            if (entity.geometry['dashed'] == true) {
+              final delta = to - from;
+              final length = delta.distance;
+              if (length <= 1e-9) continue;
+              final direction = delta / length;
+              const dash = 5.0, gap = 4.0;
+              for (var offset = 0.0; offset < length; offset += dash + gap) {
+                canvas.drawLine(
+                  from + direction * offset,
+                  from + direction * math.min(offset + dash, length),
+                  paint,
+                );
+              }
+            } else {
+              canvas.drawLine(from, to, paint);
+            }
           }
           break;
         }
@@ -1671,6 +1775,7 @@ class _CadScenePainter extends CustomPainter {
             'splineMagenta' => const Color(0xffd489ff),
             'sketchGreen' => const Color(0xff7cda72),
             'previewOrange' => const Color(0xffff9f43),
+            'assistantSuggestion' => const Color(0xff4de1d2),
             'sectionBlue' => const Color(0xff4cb9e8),
             'drivingDimension' => const Color(0xff65c7ff),
             _ => const Color(0xff55b8df),

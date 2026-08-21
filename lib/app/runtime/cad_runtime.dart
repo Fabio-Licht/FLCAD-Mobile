@@ -534,6 +534,25 @@ class CadRuntime extends ChangeNotifier {
     );
   }
 
+  /// Publishes one Feature and its persistent topology in a single document
+  /// transaction, so Undo/Redo can never separate a face from its boundaries.
+  Future<void> upsertEntityBatch({
+    required String command,
+    required List<CadDocumentEntity> entities,
+    Iterable<String> remove = const [],
+    String? officialExportShapeId,
+  }) async {
+    for (final entity in entities) {
+      if (entity.shape != null) await _persistNativeShape(entity.shape!);
+    }
+    await mutate(
+      command: command,
+      upsert: entities,
+      remove: remove,
+      officialExportShapeId: officialExportShapeId,
+    );
+  }
+
   /// Resolves a persisted kernel shape into the active native kernel session.
   Future<ShapeHandle> loadShape(ShapeHandle handle) => _loadedShape(handle);
 
@@ -550,6 +569,7 @@ class CadRuntime extends ChangeNotifier {
     CadDocumentEntityKind.solid => 'collection:modified',
     CadDocumentEntityKind.import => 'collection:original',
     CadDocumentEntityKind.collection => 'collection:modified',
+    CadDocumentEntityKind.recognition => 'collection:modified',
     _ => 'collection:modified',
   };
 

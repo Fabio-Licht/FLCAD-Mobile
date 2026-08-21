@@ -102,6 +102,30 @@ typedef _ShellDart =
       Pointer<Utf8>,
       int,
     );
+typedef _ExtrudeNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Int32,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _ExtrudeDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _PlaneNative =
     Int32 Function(
       Pointer<Double>,
@@ -121,6 +145,28 @@ typedef _PlaneDart =
       Pointer<Double>,
       double,
       double,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
+typedef _PlanarFaceNative =
+    Int32 Function(
+      Pointer<Double>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _PlanarFaceDart =
+    int Function(
+      Pointer<Double>,
+      int,
       Pointer<Utf8>,
       int,
       Pointer<Utf8>,
@@ -594,8 +640,33 @@ class OpenCascadeFFI
           }
         case 'CREATE SOLID':
           ok = _oneToken('flcad_occ_create_solid', p['shell'], b);
+        case 'EXTRUDE':
+          final source = ((p['inputs'] as List).single as String)
+              .toNativeUtf8();
+          final vector = _nativeVector(_vector(p['direction'], 'direction'));
+          final fn = library.lookupFunction<_ExtrudeNative, _ExtrudeDart>(
+            'flcad_occ_extrude',
+          );
+          try {
+            ok = fn(
+              source,
+              vector,
+              p['output'] == 'surface' ? 0 : 1,
+              b.token,
+              256,
+              b.fingerprint,
+              256,
+              b.error,
+              4096,
+            );
+          } finally {
+            calloc.free(source);
+            calloc.free(vector);
+          }
         case 'GENERATE PLANE':
           ok = _plane(p, b);
+        case 'CREATE PLANAR FACE':
+          ok = _planarFace(p, b);
         case 'GENERATE CYLINDER':
           ok = _radial(
             'flcad_occ_create_cylinder',
@@ -735,6 +806,34 @@ class OpenCascadeFFI
     } finally {
       calloc.free(o);
       calloc.free(n);
+    }
+  }
+
+  int _planarFace(Map<String, dynamic> p, _Buffers b) {
+    final values = (p['profilePoints'] as List?)?.cast<num>();
+    if (values == null || values.length < 9 || values.length % 3 != 0) {
+      throw ArgumentError('profilePoints requires at least three XYZ points');
+    }
+    final points = calloc<Double>(values.length);
+    for (var i = 0; i < values.length; i++) {
+      points[i] = values[i].toDouble();
+    }
+    final fn = library.lookupFunction<_PlanarFaceNative, _PlanarFaceDart>(
+      'flcad_occ_create_planar_face',
+    );
+    try {
+      return fn(
+        points,
+        values.length ~/ 3,
+        b.token,
+        256,
+        b.fingerprint,
+        256,
+        b.error,
+        4096,
+      );
+    } finally {
+      calloc.free(points);
     }
   }
 

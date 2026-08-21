@@ -97,6 +97,12 @@ void main() {
         projectDirectory: directory,
       );
       controller.selectWorldSketchPlane(SketchPlaneType.xy);
+      final firstSupport = controller.activeSketchPlaneId;
+      controller.selectWorldSketchPlane(SketchPlaneType.yz);
+      expect(controller.activeSketchPlaneId, isNot(firstSupport));
+      expect(controller.activeSketchPlaneId, endsWith('yz-plane'));
+      expect(controller.activeSketchPlane!.normal.x.abs(), closeTo(1, 1e-12));
+      controller.selectWorldSketchPlane(SketchPlaneType.xy);
       await controller.openSketch();
       final line = controller.sketchApi!.builders.line.build(
         const SketchVector(0, 0),

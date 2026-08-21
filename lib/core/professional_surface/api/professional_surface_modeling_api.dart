@@ -142,12 +142,18 @@ class ProfessionalSurfaceModelingApi {
     required ProfessionalSurfaceTool tool,
     required List<String> references,
     Map<String, dynamic> parameters = const {},
+    String? featureId,
     String? name,
     SurfaceContinuity continuity = SurfaceContinuity.g0,
   }) {
     _validate(tool, references, parameters, continuity);
     final now = DateTime.now(),
-        id = 'surface-feature-${now.microsecondsSinceEpoch}-${_sequence++}';
+        id =
+            featureId ??
+            'surface-feature-${now.microsecondsSinceEpoch}-${_sequence++}';
+    if (_surfaces.containsKey(id)) {
+      throw StateError('Surface Feature $id already exists.');
+    }
     final definition = ProfessionalSurfaceDefinition(
       id: id,
       projectId: projectId,
@@ -233,6 +239,27 @@ class ProfessionalSurfaceModelingApi {
     return after;
   }
 
+  /// Updates Feature relations without asking the kernel to recreate geometry.
+  /// Used by lifecycle operations such as Unsew, where source Surfaces remain
+  /// the same objects and only their topological membership changes.
+  Future<ProfessionalSurfaceDefinition> updateRelations(
+    String id, {
+    required Map<String, dynamic> parameters,
+  }) async {
+    final before = _require(id);
+    final after = before.copyWith(
+      parameters: Map.unmodifiable(parameters),
+      status: SurfaceFeatureStatus.committed,
+      revision: before.revision + 1,
+      updatedAt: DateTime.now(),
+    );
+    _surfaces[id] = after;
+    _undo.add(_SurfaceHistoryEntry(before, after));
+    _redo.clear();
+    await repository.saveAll(_surfaces.values);
+    return after;
+  }
+
   void cancel(String id) {
     final current = _require(id);
     if (current.revision == 0) {
@@ -240,6 +267,11 @@ class ProfessionalSurfaceModelingApi {
     } else {
       _surfaces[id] = current.copyWith(status: SurfaceFeatureStatus.committed);
     }
+  }
+
+  Future<void> discard(String id) async {
+    _surfaces.remove(id);
+    await repository.saveAll(_surfaces.values);
   }
 
   Future<bool> undo() async {
@@ -349,9 +381,12 @@ class ProfessionalSurfaceModelingApi {
       final editing = !{
         ProfessionalSurfaceTool.loft,
         ProfessionalSurfaceTool.sweep,
+        ProfessionalSurfaceTool.blend,
         ProfessionalSurfaceTool.fill,
         ProfessionalSurfaceTool.patch,
         ProfessionalSurfaceTool.nurbs,
+        ProfessionalSurfaceTool.fillet,
+        ProfessionalSurfaceTool.sew,
       }.contains(value.tool);
       final kernelReferences = editing
           ? persistedHandles
@@ -369,6 +404,13 @@ class ProfessionalSurfaceModelingApi {
                 })
                 .toList(growable: false)
           : persistedHandles;
+      final supportHandles =
+          (value.parameters['supportShapeHandles'] as List? ?? const [])
+              .whereType<Map>()
+              .map(
+                (item) => ShapeHandle.fromJson(Map<String, dynamic>.from(item)),
+              )
+              .toList(growable: false);
       final handle = await kernel.create(
         _operation(value.tool),
         {
@@ -379,13 +421,19 @@ class ProfessionalSurfaceModelingApi {
               ? value.references
               : editing
               ? kernelReferences
-              : persistedHandles,
+              : [
+                  ...persistedHandles,
+                  if (value.tool == ProfessionalSurfaceTool.fill)
+                    ...supportHandles,
+                ],
           'continuity': value.continuity.name.toUpperCase(),
           'preview': preview,
         },
         persistentId:
             '${value.id}-r${value.revision + 1}${preview ? '-preview' : ''}',
-        expectedType: CADShapeType.face,
+        expectedType: value.tool == ProfessionalSurfaceTool.sew
+            ? CADShapeType.shell
+            : CADShapeType.face,
         transaction: transaction,
       );
       final diagnostics = await kernel.validate(handle, const {
@@ -439,6 +487,10 @@ class ProfessionalSurfaceModelingApi {
         if (references.length < 2) {
           throw ArgumentError('Blend requires two surface boundaries');
         }
+      case ProfessionalSurfaceTool.sew:
+        if (references.length < 2) {
+          throw ArgumentError('Sew requires two or more Surfaces');
+        }
       case ProfessionalSurfaceTool.nurbs:
         if (references.isEmpty && !parameters.containsKey('controlPoints')) {
           throw ArgumentError('NURBS requires a source or control points');
@@ -486,6 +538,8 @@ class ProfessionalSurfaceModelingApi {
     ProfessionalSurfaceTool.fill => 'CREATE SURFACE FILL',
     ProfessionalSurfaceTool.patch => 'CREATE SURFACE PATCH',
     ProfessionalSurfaceTool.blend => 'CREATE SURFACE BLEND',
+    ProfessionalSurfaceTool.fillet => 'CREATE SURFACE FILLET',
+    ProfessionalSurfaceTool.sew => 'CREATE SURFACE SEW',
     ProfessionalSurfaceTool.nurbs => 'CREATE OR EDIT NURBS SURFACE',
     ProfessionalSurfaceTool.mergeFaces => 'EDIT SURFACE MERGE FACES',
     ProfessionalSurfaceTool.healLocal => 'EDIT SURFACE HEAL LOCAL',

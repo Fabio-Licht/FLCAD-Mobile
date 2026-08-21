@@ -197,6 +197,7 @@ class DesktopCommandCoordinator {
       );
     }
     const workspaces = [
+      'Reverse Engineering',
       'AI Engineering',
       'Recognition',
       'Primitive Intelligence',
@@ -210,6 +211,7 @@ class DesktopCommandCoordinator {
       'Reference',
       'Curves',
       'Surfaces',
+      'Solids',
       'Sections',
       'Transform',
     ];

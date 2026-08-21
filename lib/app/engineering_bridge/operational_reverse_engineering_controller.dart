@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -8,6 +9,10 @@ import 'package:flutter/foundation.dart';
 import '../../core/cad_document/cad_document.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../cad_viewport/rendering/sketch_surface_preview_builder.dart';
+import '../cad_viewport/rendering/recognition_surface_preview_builder.dart';
+import 'adapters/planar_surface_feature_adapter.dart';
+import 'adapters/professional_surface_operations_adapter.dart';
+import 'adapters/recognition_surface_assistant_adapter.dart';
 import '../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../core/cad_kernel/models/kernel_models.dart';
 import '../../core/adaptive_surface/models/surface_geometry.dart';
@@ -17,6 +22,19 @@ import '../../core/geometric_kernel/linear_algebra/matrices.dart';
 import '../../core/geometric_kernel/transforms/transform3.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
 import '../../core/professional_recognition/models/professional_recognition_models.dart';
+import '../../core/professional_loft/professional_loft.dart';
+import '../../core/professional_sweep/professional_sweep.dart';
+import '../../core/professional_blend/professional_blend.dart';
+import '../../core/professional_fill/professional_fill.dart';
+import '../../core/professional_surface_fillet/professional_surface_fillet.dart';
+import '../../core/professional_sew/professional_sew.dart';
+import '../../core/professional_extrude/professional_extrude.dart';
+import '../../core/professional_revolve/professional_revolve.dart';
+import '../../core/professional_continuity/professional_continuity.dart';
+import '../../core/recognition_engine/recognition_result.dart';
+import '../../core/reverse_engineering_studio/reverse_engineering_studio.dart';
+import '../../core/surface_assistant/surface_assistant.dart';
+import '../../core/surface_reconstruction_manager/surface_reconstruction_manager.dart';
 import '../../core/professional_surface/api/professional_surface_modeling_api.dart';
 import '../../core/professional_surface/models/professional_surface_models.dart';
 import '../../core/professional_surface/repository/professional_surface_repository.dart';
@@ -35,6 +53,7 @@ import '../../core/sketch_editor/inferencing/sketch_inference_engine.dart';
 import '../../core/sketch_editor/health/sketch_health_analyzer.dart';
 import '../../core/sketch_editor/models/editor_models.dart';
 import '../../core/sketch_editor/snapping/editor_snapping.dart';
+import '../../core/sketch_assistant/sketch_assistant.dart';
 import '../../core/sketch_engine/api/sketch_engine_api.dart';
 import '../../core/sketch_engine/entities/sketch_entities.dart'
     hide ReferenceGeometry;
@@ -50,6 +69,7 @@ import '../../core/surface_recognition/segmentation/region_growing.dart';
 import '../../core/surface_generation/api/surface_generation_api.dart';
 import '../../core/surface_generation/integration/surface_generation_factory.dart';
 import '../../core/surface_generation/models/surface_generation_models.dart';
+import '../../core/surface_generation/models/surface_topology.dart';
 import '../../core/surface_intelligence/api/surface_api.dart';
 import '../../core/surface_intelligence/integration/surface_factory.dart';
 import '../../core/surface_intelligence/models/surface_models.dart';
@@ -67,7 +87,6 @@ import 'adapters/reference_bridge.dart';
 import 'adapters/recognition_bridge.dart';
 import 'adapters/sketch_bridge.dart';
 import 'adapters/smart_reference_recipe_mapper.dart';
-import 'adapters/surface_bridge.dart';
 import 'contracts/bridge_context.dart';
 import 'contracts/bridge_selection.dart';
 import 'selection/mesh_region_builder.dart';
@@ -159,6 +178,14 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.read('surface.preview');
   set professionalSurfacePreview(SurfacePreviewState? value) =>
       runtime.write('surface.preview', value);
+  Map<String, dynamic>? get professionalExtrudePreview =>
+      runtime.read<Map<String, dynamic>>('solid.extrude.preview');
+  set professionalExtrudePreview(Map<String, dynamic>? value) =>
+      runtime.write('solid.extrude.preview', value);
+  Map<String, dynamic>? get professionalRevolvePreview =>
+      runtime.read<Map<String, dynamic>>('solid.revolve.preview');
+  set professionalRevolvePreview(Map<String, dynamic>? value) =>
+      runtime.write('solid.revolve.preview', value);
   Map<String, dynamic>? get professionalSurfaceAnalysis =>
       runtime.read('surface.analysis');
   List<String> get professionalSurfaceValidation =>
@@ -181,17 +208,72 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return null;
   }
 
+  CadDocumentEntity? get selectedSurfaceEntity {
+    final document = runtime.document;
+    if (document == null) return null;
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where((entity) => entity.kind == CadDocumentEntityKind.surface)
+        .firstOrNull;
+  }
+
+  bool get canPreviewSelectedSurfaceOffset => selectedSurfaceEntity != null;
+
+  Future<void> previewSelectedSurfaceOffset(double distance) async {
+    final selected = selectedSurfaceEntity;
+    if (selected == null) throw StateError('Select one Surface for Offset.');
+    if (selected.data['professionalSurface'] is Map) {
+      await previewProfessionalSurfaceEdit(ProfessionalSurfaceTool.offset);
+      if (distance != 2.0) {
+        await updateProfessionalSurfacePreview(
+          parameters: {'distance': distance},
+        );
+      }
+      return;
+    }
+    previewSurfaceOffset(selected.id, distance);
+  }
+
+  String get professionalSurfaceSelectionGuidance {
+    final selected = runtime.selection.length;
+    if (selected == 0) {
+      return 'Select source entities: Loft 2 equal sections · Sweep profile + path · Blend 2 Surfaces · Offset 1 Surface.';
+    }
+    return '$selected selected · unavailable commands remain visible until their required inputs are complete.';
+  }
+
   ReferenceEntity? get activeReference => runtime.read('reference.active');
   set activeReference(ReferenceEntity? value) =>
       runtime.write('reference.active', value);
+
+  /// The support explicitly selected for the current Sketch entry always
+  /// wins. `activeReference` is only a fallback for legacy Reference flows;
+  /// otherwise a previous planar Reference can silently hijack the next
+  /// Sketch created on another plane.
   PlaneGeometry? get activeSketchPlane =>
-      activeReference?.geometry is PlaneGeometry
-      ? activeReference!.geometry as PlaneGeometry
-      : runtime.read<PlaneGeometry>('sketch.selectedPlane');
-  String? get activeSketchPlaneId => activeReference?.geometry is PlaneGeometry
-      ? activeReference!.id
-      : runtime.read<String>('sketch.selectedPlaneId');
-  Sketch? get activeSketch => runtime.read('sketch.active');
+      runtime.read<PlaneGeometry>('sketch.selectedPlane') ??
+      (activeReference?.geometry is PlaneGeometry
+          ? activeReference!.geometry as PlaneGeometry
+          : null);
+  String? get activeSketchPlaneId =>
+      runtime.read<String>('sketch.selectedPlaneId') ??
+      (activeReference?.geometry is PlaneGeometry ? activeReference!.id : null);
+  Sketch? get activeSketch {
+    final cached = runtime.read<Sketch>('sketch.active');
+    final api = sketchApi;
+    if (api == null) return cached;
+    final canonicalId = api.engine.activeSketchId ?? cached?.id;
+    if (canonicalId == null) return cached;
+    final canonical = api.sketches
+        .where((item) => item.id == canonicalId)
+        .firstOrNull;
+    if (canonical != null && !identical(canonical, cached)) {
+      runtime.write('sketch.active', canonical);
+    }
+    return canonical ?? cached;
+  }
+
   set activeSketch(Sketch? value) => runtime.write('sketch.active', value);
   SurfacePlan? get surfacePlan => runtime.read('surface.plan');
   set surfacePlan(SurfacePlan? value) => runtime.write('surface.plan', value);
@@ -270,8 +352,235 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Offset? get sketchInferenceCursor =>
       runtime.read<Offset>('sketch.inference.cursor');
   final SketchInferenceEngine _sketchInference = const SketchInferenceEngine();
+  final SketchAssistantEngine _sketchAssistant = const SketchAssistantEngine();
+  SketchAssistantSuggestion? get sketchAssistantSuggestion =>
+      runtime.read<SketchAssistantSuggestion>('sketch.assistant.suggestion');
+  SketchAssistantPrecision get sketchAssistantPrecision =>
+      runtime.read<SketchAssistantPrecision>('sketch.assistant.precision') ??
+      SketchAssistantPrecision.medium;
+  void setSketchAssistantPrecision(SketchAssistantPrecision value) {
+    runtime.write('sketch.assistant.precision', value);
+    runtime.write('sketch.assistant.suggestion', null);
+    runtime.hideTransient('sketch-assistant-preview');
+    notifyListeners();
+  }
+
   final SketchHealthAnalyzer _sketchHealthAnalyzer =
       const SketchHealthAnalyzer();
+  final RecognitionResultAdapter _recognitionResults =
+      const RecognitionResultAdapter();
+  final IntelligentSurfaceAssistant _surfaceAssistant =
+      const IntelligentSurfaceAssistant();
+  final RecognitionSurfacePreviewBuilder _recognitionSurfacePreview =
+      const RecognitionSurfacePreviewBuilder();
+  final RecognitionSurfaceAssistantAdapter _recognitionSurfaceAdapter =
+      const RecognitionSurfaceAssistantAdapter();
+  final ReverseEngineeringStudioEngine _reverseEngineeringStudio =
+      const ReverseEngineeringStudioEngine();
+  final SurfaceReconstructionManager _reconstructionManager =
+      const SurfaceReconstructionManager();
+  Map<String, ReconstructionRegionStatus> get reconstructionOverrides =>
+      runtime.readOrCreate(
+        'reconstruction.overrides',
+        () => <String, ReconstructionRegionStatus>{},
+      );
+  SurfaceReconstructionState get reconstructionState {
+    final previous = runtime.read<SurfaceReconstructionState>(
+      'reconstruction.state',
+    );
+    return _reconstructionManager.evaluate(
+      runtime.document?.entities.values ?? const <CadDocumentEntity>[],
+      overrides: reconstructionOverrides,
+      previous: previous,
+    );
+  }
+
+  Future<void> refreshReconstructionManager({bool persist = true}) async {
+    if (runtime.document == null) return;
+    final state = reconstructionState;
+    runtime.write('reconstruction.state', state);
+    _applyReconstructionMeshColors(state);
+    if (persist) {
+      await runtime.mutate(
+        command: 'surface-reconstruction-manager.refresh',
+        upsert: [
+          CadDocumentEntity(
+            id: 'SurfaceReconstructionManager',
+            kind: CadDocumentEntityKind.collection,
+            data: {
+              'name': 'Surface Reconstruction Manager',
+              'hiddenFromExplorer': true,
+              'reconstructionState': state.toJson(),
+              'overrides': {
+                for (final item in reconstructionOverrides.entries)
+                  item.key: item.value.name,
+              },
+              'sceneVisible': false,
+            },
+          ),
+        ],
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> setReconstructionRegionIgnored(
+    String recognitionResultId,
+    bool ignored,
+  ) async {
+    if (ignored) {
+      reconstructionOverrides[recognitionResultId] =
+          ReconstructionRegionStatus.ignored;
+    } else {
+      reconstructionOverrides.remove(recognitionResultId);
+    }
+    await refreshReconstructionManager();
+  }
+
+  void _applyReconstructionMeshColors(SurfaceReconstructionState state) {
+    for (final mesh in state.meshes) {
+      final visual = runtime.scene.find(mesh.meshId);
+      if (visual == null) continue;
+      final statuses = <String, String>{};
+      for (final region in mesh.regions) {
+        for (final triangle in region.triangleIndices) {
+          statuses['$triangle'] = region.status.name;
+        }
+      }
+      runtime.scene.upsert(
+        CadSceneEntity(
+          id: visual.id,
+          kind: visual.kind,
+          geometry: {
+            ...visual.geometry,
+            'reconstructionTriangleStatuses': statuses,
+          },
+          visible: visual.visible,
+          selected: visual.selected,
+          transparent: visual.transparent,
+        ),
+      );
+    }
+  }
+
+  final LoftConstraintAdapter _loftConstraints = const LoftConstraintAdapter();
+  final SweepConstraintAdapter _sweepConstraints =
+      const SweepConstraintAdapter();
+  final BlendConstraintAdapter _blendConstraints =
+      const BlendConstraintAdapter();
+  final ProfessionalExtrudeConstraintAdapter _extrudeConstraints =
+      const ProfessionalExtrudeConstraintAdapter();
+  final ProfessionalSurfaceFilletConstraintAdapter _surfaceFilletConstraints =
+      const ProfessionalSurfaceFilletConstraintAdapter();
+  final ProfessionalSewConstraintAdapter _sewConstraints =
+      const ProfessionalSewConstraintAdapter();
+  final ProfessionalRevolveConstraintAdapter _revolveConstraints =
+      const ProfessionalRevolveConstraintAdapter();
+  final ProfessionalContinuityEngine _continuityEngine =
+      const ProfessionalContinuityEngine();
+  SurfaceContinuityRelation? get continuityPreview =>
+      runtime.read<SurfaceContinuityRelation>('continuity.preview');
+  String? get continuityPreviewFeatureId =>
+      runtime.read<String>('continuity.previewFeatureId');
+
+  List<CadDocumentEntity> get selectedContinuitySurfaces {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              entity.kind == CadDocumentEntityKind.surface &&
+              entity.shape != null,
+        )
+        .toList(growable: false);
+  }
+
+  bool get canInspectSurfaceContinuity =>
+      selectedContinuitySurfaces.length == 2;
+
+  List<SurfaceContinuityRelation> continuityRelationsFor(String surfaceId) {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return document.entities.values
+        .map((entity) => entity.data['continuityRelation'])
+        .whereType<Map>()
+        .map(
+          (raw) => SurfaceContinuityRelation.fromJson(
+            Map<String, dynamic>.from(raw),
+          ),
+        )
+        .where(
+          (relation) =>
+              relation.firstSurfaceId == surfaceId ||
+              relation.secondSurfaceId == surfaceId,
+        )
+        .toList(growable: false);
+  }
+
+  Map<String, bool> surfaceContinuityHealth(String surfaceId) {
+    final relations = continuityRelationsFor(surfaceId);
+    return {
+      'g0': relations.any((item) => item.g0),
+      'g1': relations.any((item) => item.g1),
+      'g2': false,
+    };
+  }
+
+  CadDocumentEntity? get selectedSurfaceForQuality {
+    final document = runtime.document;
+    if (document == null) return null;
+    for (final id in runtime.selection) {
+      final entity = document.entities[id];
+      if (entity?.kind == CadDocumentEntityKind.surface &&
+          entity?.shape != null) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  List<SurfaceAnalysisSetting> get selectedSurfaceAnalysisSettings {
+    final raw =
+        selectedSurfaceForQuality?.data['surfaceAnalyses'] as List? ?? const [];
+    return raw
+        .whereType<Map>()
+        .map(
+          (item) =>
+              SurfaceAnalysisSetting.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList(growable: false);
+  }
+
+  ReverseEngineeringStudioState get reverseEngineeringStudioState =>
+      _reverseEngineeringStudio.evaluate(
+        runtime.document?.entities.values ?? const <CadDocumentEntity>[],
+        selectedEntityId: runtime.selection.firstOrNull,
+      );
+
+  Future<void> persistReverseEngineeringStudioState() async {
+    if (runtime.document == null) return;
+    await refreshReconstructionManager();
+    final state = reverseEngineeringStudioState;
+    await runtime.mutate(
+      command: 'reverse-engineering-studio.refresh',
+      upsert: [
+        CadDocumentEntity(
+          id: 'ReverseEngineeringStudio',
+          kind: CadDocumentEntityKind.collection,
+          data: {
+            'name': 'Reverse Engineering Studio',
+            'hiddenFromExplorer': true,
+            'workspaceState': state.toJson(),
+            'sceneVisible': false,
+          },
+        ),
+      ],
+    );
+    notifyListeners();
+  }
+
   SketchHealthReport get sketchHealth =>
       _sketchHealthAnalyzer.analyze(sketchEntities);
   SketchHealthReport healthForSketch(String sketchId) {
@@ -331,8 +640,16 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   final SurfaceSceneAdapter _surfaceScene = const SurfaceSceneAdapter();
   final SketchSurfacePreviewBuilder _sketchSurfacePreviewBuilder =
       const SketchSurfacePreviewBuilder();
+  final PlanarSurfaceFeatureAdapter _planarSurface =
+      const PlanarSurfaceFeatureAdapter();
+  final ProfessionalSurfaceOperationsAdapter _professionalSurfaceOperations =
+      const ProfessionalSurfaceOperationsAdapter();
+  SurfaceOperationKernelAPI? _surfaceOperationKernel;
+  SurfacePlan? _lastConfirmedSurfacePlan;
   bool get surfacePreviewActive =>
       runtime.read<bool>('sketch.surfacePreview.active') ?? false;
+  bool get surfaceOffsetPreviewActive =>
+      runtime.read<String>('surface.offset.source') != null;
   final ViewportPickingController _viewportPicking =
       ViewportPickingController();
   SectionManager get sections => SectionManager(runtime);
@@ -542,6 +859,33 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> createWorldReferenceCurve(SketchPlaneType type) async {
+    final definition = switch (type) {
+      SketchPlaneType.xy => (
+        '${WorldCoordinateSystem.prefix(configuredProjectId!)}xy-plane',
+        const Vector3(0, 0, 0),
+        const Vector3(0, 0, 1),
+      ),
+      SketchPlaneType.yz => (
+        '${WorldCoordinateSystem.prefix(configuredProjectId!)}yz-plane',
+        const Vector3(0, 0, 0),
+        const Vector3(1, 0, 0),
+      ),
+      SketchPlaneType.zx => (
+        '${WorldCoordinateSystem.prefix(configuredProjectId!)}xz-plane',
+        const Vector3(0, 0, 0),
+        const Vector3(0, 1, 0),
+      ),
+      _ => throw StateError('Only XY, YZ and ZX are supported.'),
+    };
+    await sections.create(
+      planeId: definition.$1,
+      origin: definition.$2,
+      normal: definition.$3,
+    );
+    notifyListeners();
+  }
+
   Future<void> createMultipleSections({
     int count = 5,
     double spacing = 5,
@@ -588,6 +932,29 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         selectedSection ??
         (throw StateError('Select a Section before moving it.'));
     await sections.updateOffset(section.id, offset);
+    runtime.select({section.id});
+    notifyListeners();
+  }
+
+  Future<void> setSelectedReferenceCurveOffset(double offset) async {
+    final section =
+        selectedSection ??
+        (throw StateError('Select a Reference Curve before moving its plane.'));
+    await sections.setOffset(section.id, offset);
+    runtime.select({section.id});
+    notifyListeners();
+  }
+
+  Future<void> setReferenceCurveDisplayMode(String id, String mode) async {
+    await sections.setDisplayMode(id, mode);
+    notifyListeners();
+  }
+
+  Future<void> recalculateSelectedReferenceCurve() async {
+    final section =
+        selectedSection ??
+        (throw StateError('Select a Reference Curve to recalculate.'));
+    await sections.recalculate(section.id);
     runtime.select({section.id});
     notifyListeners();
   }
@@ -1600,6 +1967,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       );
     }
     final surfaceKernel = activeKernel as SurfaceOperationKernelAPI;
+    _surfaceOperationKernel = surfaceKernel;
     professionalSurfaceApi = ProfessionalSurfaceModelingApi(
       projectId: projectId,
       kernel: activeKernel,
@@ -1649,6 +2017,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     } else if (activeReference != null) {
       stage = SketchSurfaceStage.referenceReady;
     }
+    final manager =
+        runtime.document?.entities['SurfaceReconstructionManager']?.data;
+    final persistedState = manager?['reconstructionState'];
+    if (persistedState is Map) {
+      runtime.write(
+        'reconstruction.state',
+        SurfaceReconstructionState.fromJson(
+          Map<String, dynamic>.from(persistedState),
+        ),
+      );
+    }
+    reconstructionOverrides.clear();
+    final rawOverrides = manager?['overrides'];
+    if (rawOverrides is Map) {
+      for (final item in rawOverrides.entries) {
+        if (item.key is String && item.value is String) {
+          reconstructionOverrides[item.key as String] =
+              ReconstructionRegionStatus.values.byName(item.value as String);
+        }
+      }
+    }
+    await refreshReconstructionManager(persist: false);
     notifyListeners();
   }
 
@@ -1669,6 +2059,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     surfaceGenerationApi = null;
     professionalSurfaceApi = null;
     professionalSurfacePreview = null;
+    runtime.write('reconstruction.state', null);
+    runtime.write('reconstruction.overrides', null);
     stage = SketchSurfaceStage.idle;
     notifyListeners();
   }
@@ -1724,6 +2116,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         region: region,
       );
       report = await recognition.recognize(context);
+      await _publishRecognitionResult(context);
       activeSelection = selection;
       activeContext = context;
       _showRecognitionRegion(geometry, surfaceRegion);
@@ -1789,6 +2182,150 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               .toList();
   }
 
+  List<CadDocumentEntity> get persistedRecognitionResults =>
+      runtime.document?.entities.values
+          .where((entity) => entity.kind == CadDocumentEntityKind.recognition)
+          .toList(growable: false) ??
+      const [];
+
+  RecognitionResult? get activeRecognitionResult =>
+      runtime.read<RecognitionResult>('recognition.activeResult');
+  SurfaceAssistantSuggestion? get activeSurfaceAssistantSuggestion =>
+      runtime.read<SurfaceAssistantSuggestion>('surfaceAssistant.suggestion');
+  SurfaceAssistantDecision get surfaceAssistantDecision =>
+      runtime.read<SurfaceAssistantDecision>('surfaceAssistant.decision') ??
+      SurfaceAssistantDecision.pending;
+
+  void openSurfaceAssistant(String recognitionResultId) {
+    final entity = runtime.document?.entities[recognitionResultId];
+    final raw = entity?.data['recognitionResult'];
+    if (entity?.kind != CadDocumentEntityKind.recognition || raw is! Map) {
+      throw StateError('Unknown Recognition Result: $recognitionResultId');
+    }
+    final result = RecognitionResult.fromJson(Map<String, dynamic>.from(raw));
+    final suggestion = _surfaceAssistant.suggest(result);
+    runtime.write('recognition.activeResult', result);
+    runtime.write('surfaceAssistant.suggestion', suggestion);
+    runtime.write(
+      'surfaceAssistant.decision',
+      SurfaceAssistantDecision.pending,
+    );
+    runtime.showTransient(_recognitionSurfacePreview.build(result, suggestion));
+    runtime.select({recognitionResultId});
+    notifyListeners();
+  }
+
+  void ignoreSurfaceAssistantSuggestion() {
+    runtime.hideTransient('surface-assistant-preview');
+    runtime.write(
+      'surfaceAssistant.decision',
+      SurfaceAssistantDecision.ignored,
+    );
+    runtime.write('surfaceAssistant.suggestion', null);
+    notifyListeners();
+  }
+
+  Future<void> confirmSurfaceAssistantSuggestion() async {
+    final recognition = activeRecognitionResult;
+    final suggestion = activeSurfaceAssistantSuggestion;
+    if (recognition == null || suggestion == null) {
+      throw StateError('Open a Recognition Result before confirming.');
+    }
+    if (!suggestion.canCreate) {
+      throw StateError(
+        recognition.type == RecognitionResultType.freeform
+            ? 'Freeform is advisory in G-136; choose a future supervised tool.'
+            : 'Recognition confidence is below the approved limit.',
+      );
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final surface = await _recognitionSurfaceAdapter.confirm(
+        featureId: _nextSurfaceId(),
+        recognition: recognition,
+        suggestion: suggestion,
+        generation: surfaceGenerationApi!,
+      );
+      activeSurface = surface;
+      await _upsertSurface(surface, command: 'surface-assistant.confirm');
+      runtime.hideTransient('surface-assistant-preview');
+      runtime.write(
+        'surfaceAssistant.decision',
+        SurfaceAssistantDecision.confirmed,
+      );
+      runtime.write('surfaceAssistant.suggestion', null);
+      stage = SketchSurfaceStage.surfaceGenerated;
+      runtime.select({surface.surfaceId});
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _publishRecognitionResult(BridgeContext context) async {
+    final region = context.region!;
+    final existing = persistedRecognitionResults.where((entity) {
+      final raw = entity.data['recognitionResult'];
+      return raw is Map && raw['regionId'] == region.id;
+    }).firstOrNull;
+    final id = existing?.id ?? _nextRecognitionResultId();
+    final oldHistory = existing?.data['recognitionResult'] is Map
+        ? RecognitionResult.fromJson(
+            Map<String, dynamic>.from(
+              existing!.data['recognitionResult'] as Map,
+            ),
+          ).history
+        : const <String>[];
+    final result = _recognitionResults.build(
+      id: id,
+      meshId: context.meshId,
+      regionId: region.id,
+      points: region.points,
+      area: region.area,
+      primitive: report?.primitives.firstOrNull,
+      history: [
+        ...oldHistory,
+        '${DateTime.now().toUtc().toIso8601String()} recognition evaluated',
+      ],
+    );
+    await runtime.mutate(
+      command: existing == null
+          ? 'recognition-result.create'
+          : 'recognition-result.update',
+      upsert: [
+        CadDocumentEntity(
+          id: id,
+          kind: CadDocumentEntityKind.recognition,
+          data: {
+            'name': id,
+            'authoringRoot': true,
+            'authoringWorkspace': 'Recognition',
+            'group': 'Recognition',
+            'references': [context.meshId],
+            'dependencies': [context.meshId],
+            'sceneVisible': false,
+            'recognitionResult': result.toJson(),
+          },
+        ),
+      ],
+    );
+    runtime.write('recognition.activeResult', result);
+  }
+
+  String _nextRecognitionResultId() {
+    final used = persistedRecognitionResults.map((entity) => entity.id).toSet();
+    var sequence = 1;
+    while (used.contains('Recognition${sequence.toString().padLeft(3, '0')}')) {
+      sequence++;
+    }
+    return 'Recognition${sequence.toString().padLeft(3, '0')}';
+  }
+
   bool get canDetect => activeContext != null;
 
   Future<void> detect(String primitiveType) async {
@@ -1802,6 +2339,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
     try {
       report = await recognition.recognize(context);
+      await _publishRecognitionResult(context);
       for (final primitive in hypotheses) {
         decisions.putIfAbsent(
           primitive.recognition.id,
@@ -2208,6 +2746,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.line.snapType', null);
     runtime.write('sketch.line.active', false);
     runtime.hideTransient('sketch-line-preview');
+    runtime.hideTransient('sketch-alignment-guides');
     runtime.write('sketch.circle.cursor', null);
     runtime.write('sketch.circle.snapType', null);
     runtime.write('sketch.circle.active', false);
@@ -2218,6 +2757,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.hideTransient('sketch-arc-preview');
     runtime.hideTransient('sketch-endpoint-snap-marker');
     runtime.write('sketch.inference', null);
+    _clearSketchAssistant();
     notifyListeners();
   }
 
@@ -2265,8 +2805,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.line.snapType', null);
     runtime.write('sketch.line.active', false);
     runtime.hideTransient('sketch-line-preview');
+    runtime.hideTransient('sketch-alignment-guides');
     runtime.hideTransient('sketch-endpoint-snap-marker');
     runtime.write('sketch.inference', null);
+    _clearSketchAssistant();
     notifyListeners();
   }
 
@@ -2279,6 +2821,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.hideTransient('sketch-circle-preview');
     runtime.hideTransient('sketch-endpoint-snap-marker');
     runtime.write('sketch.inference', null);
+    _clearSketchAssistant();
     activeTool = SketchToolType.point;
     notifyListeners();
   }
@@ -2291,6 +2834,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.arc.active', false);
     runtime.hideTransient('sketch-arc-preview');
     runtime.hideTransient('sketch-endpoint-snap-marker');
+    _clearSketchAssistant();
     activeTool = SketchToolType.point;
     notifyListeners();
   }
@@ -2334,7 +2878,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.inference.cursor', position);
     final point = _sketchPointAt(position, camera);
     if (point == null) return;
+    _refreshSketchAssistant(point);
     if (previewPoints.isEmpty) {
+      runtime.hideTransient('sketch-alignment-guides');
       notifyListeners();
       return;
     }
@@ -2433,6 +2979,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       return;
     }
     runtime.write('sketch.line.cursor', point);
+    _refreshSketchAlignmentGuides(point, camera);
     final coordinates = activeSketch!.coordinates;
     runtime.showTransient(
       CadSceneEntity(
@@ -2450,6 +2997,340 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       ),
     );
     notifyListeners();
+  }
+
+  List<SketchAssistantReference> _sketchAssistantReferences() {
+    final sketch = activeSketch;
+    final document = runtime.document;
+    if (sketch == null || document == null) return const [];
+    final result = <SketchAssistantReference>[];
+    for (final entity in document.entities.values) {
+      if (entity.data['referenceCurve'] != true ||
+          entity.data['sceneVisible'] == false) {
+        continue;
+      }
+      final geometry = entity.data['sceneGeometry'];
+      if (geometry is! Map || geometry['segments'] is! List) continue;
+      final segments = <(SketchVector, SketchVector)>[];
+      for (final raw in geometry['segments'] as List) {
+        if (raw is! List ||
+            raw.length < 2 ||
+            raw[0] is! List ||
+            raw[1] is! List) {
+          continue;
+        }
+        final a = sketch.coordinates.globalToLocal(
+          SketchVector.fromJson((raw[0] as List).cast<num>()),
+        );
+        final b = sketch.coordinates.globalToLocal(
+          SketchVector.fromJson((raw[1] as List).cast<num>()),
+        );
+        if (a.z.abs() <= sketchAssistantPrecision.tolerance * 2 &&
+            b.z.abs() <= sketchAssistantPrecision.tolerance * 2) {
+          segments.add((a, b));
+        }
+      }
+      if (segments.isNotEmpty) {
+        result.add(SketchAssistantReference(entity.id, segments));
+      }
+    }
+    return result;
+  }
+
+  void _refreshSketchAssistant(SketchVector cursor) {
+    final requested = lineCommandActive
+        ? SketchAssistantPrimitive.line
+        : circleCommandActive
+        ? SketchAssistantPrimitive.circle
+        : SketchAssistantPrimitive.arc;
+    final suggestion = _sketchAssistant.suggest(
+      requested: requested,
+      cursor: cursor,
+      anchor: lineCommandActive ? previewPoints.firstOrNull : null,
+      references: _sketchAssistantReferences(),
+      precision: sketchAssistantPrecision,
+    );
+    runtime.write('sketch.assistant.suggestion', suggestion);
+    if (suggestion == null || activeSketch == null) {
+      runtime.hideTransient('sketch-assistant-preview');
+      return;
+    }
+    final coordinates = activeSketch!.coordinates;
+    final points = switch (suggestion.type) {
+      SketchAssistantPrimitive.line => suggestion.points,
+      SketchAssistantPrimitive.circle => [
+        for (var i = 0; i <= 72; i++)
+          SketchVector(
+            suggestion.center!.x +
+                suggestion.radius! * math.cos(i * 2 * math.pi / 72),
+            suggestion.center!.y +
+                suggestion.radius! * math.sin(i * 2 * math.pi / 72),
+          ),
+      ],
+      SketchAssistantPrimitive.arc => [
+        for (var i = 0; i <= 48; i++)
+          SketchVector(
+            suggestion.center!.x +
+                suggestion.radius! *
+                    math.cos(
+                      suggestion.startAngle! +
+                          (suggestion.endAngle! - suggestion.startAngle!) *
+                              i /
+                              48,
+                    ),
+            suggestion.center!.y +
+                suggestion.radius! *
+                    math.sin(
+                      suggestion.startAngle! +
+                          (suggestion.endAngle! - suggestion.startAngle!) *
+                              i /
+                              48,
+                    ),
+          ),
+      ],
+    };
+    runtime.showTransient(
+      CadSceneEntity(
+        id: 'sketch-assistant-preview',
+        kind: CadSceneEntityKind.preview,
+        transparent: true,
+        geometry: {
+          'points': points
+              .map(coordinates.localToGlobal)
+              .map((p) => p.toJson())
+              .toList(),
+          'displayColor': 'assistantSuggestion',
+          'strokeWidth': .85,
+          'dashed': true,
+        },
+      ),
+    );
+  }
+
+  void _clearSketchAssistant() {
+    runtime.write('sketch.assistant.suggestion', null);
+    runtime.hideTransient('sketch-assistant-preview');
+  }
+
+  /// Explicitly accepts the current transient suggestion. No Reference Curve
+  /// is converted and no suggestion is persisted.
+  Future<void> acceptSketchAssistantSuggestion() async {
+    final suggestion = sketchAssistantSuggestion;
+    if (suggestion == null || stage != SketchSurfaceStage.sketchActive) return;
+    switch (suggestion.type) {
+      case SketchAssistantPrimitive.line:
+        await _run('reverse.sketch.draw', {
+          'tool': SketchToolType.line.name,
+          'points': suggestion.points.map((p) => p.toJson()).toList(),
+        });
+        previewPoints = [suggestion.points.last];
+        runtime.write('sketch.line.cursor', suggestion.points.last);
+      case SketchAssistantPrimitive.circle:
+        await _run('reverse.sketch.draw', {
+          'tool': SketchToolType.circle.name,
+          'points': [
+            suggestion.center!.toJson(),
+            SketchVector(
+              suggestion.center!.x + suggestion.radius!,
+              suggestion.center!.y,
+            ).toJson(),
+          ],
+        });
+        previewPoints = const [];
+      case SketchAssistantPrimitive.arc:
+        await _run('reverse.sketch.draw', {
+          'tool': SketchToolType.arc.name,
+          'points': [
+            suggestion.center!.toJson(),
+            SketchVector(
+              suggestion.center!.x + suggestion.radius!,
+              suggestion.center!.y,
+            ).toJson(),
+          ],
+          'operationParameters': {
+            'startAngle': suggestion.startAngle,
+            'endAngle': suggestion.endAngle,
+          },
+        });
+        previewPoints = const [];
+    }
+    _clearSketchAssistant();
+    notifyListeners();
+  }
+
+  Future<void> fitSelectedSketchEntityToReferenceCurve() async {
+    final id = selectedSketchEntityIds.singleOrNull;
+    final entity = id == null ? null : sketchApi?.entity(id);
+    if (entity == null || activeSketch == null) {
+      throw StateError('Select one Line, Arc or Circle to fit.');
+    }
+    SketchVector cursor;
+    SketchAssistantPrimitive requested;
+    if (entity is SketchLine) {
+      final a = SketchVector.fromJson(entity.parameters['start']);
+      final b = SketchVector.fromJson(entity.parameters['end']);
+      cursor = SketchVector((a.x + b.x) / 2, (a.y + b.y) / 2);
+      requested = SketchAssistantPrimitive.line;
+    } else if (entity is SketchCircle) {
+      final c = SketchVector.fromJson(entity.parameters['center']);
+      cursor = SketchVector(
+        c.x + (entity.parameters['radius'] as num).toDouble(),
+        c.y,
+      );
+      requested = SketchAssistantPrimitive.circle;
+    } else if (entity is SketchArc) {
+      final c = SketchVector.fromJson(entity.parameters['center']);
+      cursor = SketchVector(
+        c.x + (entity.parameters['radius'] as num).toDouble(),
+        c.y,
+      );
+      requested = SketchAssistantPrimitive.arc;
+    } else {
+      throw StateError('Only Line, Arc and Circle can be fitted in G-134.');
+    }
+    final suggestion = _sketchAssistant.suggest(
+      requested: requested,
+      cursor: cursor,
+      references: _sketchAssistantReferences(),
+      precision: sketchAssistantPrecision,
+    );
+    if (suggestion == null) {
+      throw StateError('No compatible Reference Curve found.');
+    }
+    final values = switch (entity) {
+      SketchLine() => {
+        'length': _sketchVectorLength(
+          suggestion.points.last - suggestion.points.first,
+        ),
+        'angle':
+            math.atan2(
+              suggestion.points.last.y - suggestion.points.first.y,
+              suggestion.points.last.x - suggestion.points.first.x,
+            ) *
+            180 /
+            math.pi,
+      },
+      SketchCircle() => {
+        'centerX': suggestion.center!.x,
+        'centerY': suggestion.center!.y,
+        'radius': suggestion.radius!,
+      },
+      SketchArc() => {
+        'centerX': suggestion.center!.x,
+        'centerY': suggestion.center!.y,
+        'radius': suggestion.radius!,
+        'startAngle': suggestion.startAngle! * 180 / math.pi,
+        'endAngle': suggestion.endAngle! * 180 / math.pi,
+      },
+      _ => <String, double>{},
+    };
+    await updateSketchEntityParameters(entity.id, values);
+  }
+
+  double _sketchVectorLength(SketchVector value) => math.sqrt(value.dot(value));
+
+  void _refreshSketchAlignmentGuides(
+    SketchVector cursor,
+    CadCameraController camera,
+  ) {
+    if (!lineCommandActive || previewPoints.isEmpty || activeSketch == null) {
+      runtime.hideTransient('sketch-alignment-guides');
+      return;
+    }
+    // Keep guide acquisition visually stable at every zoom level. This value
+    // affects presentation only; Snap and geometric inference retain their
+    // approved model-space tolerances.
+    final worldPerPixel =
+        camera.projectionMode == CadProjectionMode.orthographic
+        ? camera.viewScale / math.max(camera.viewportHeight, 1)
+        : 2 *
+              (camera.target - camera.eye).length *
+              math.tan(camera.fieldOfViewRadians / 2) /
+              math.max(camera.viewportHeight, 1);
+    final modelTolerance = editorApi?.engine.snapping.settings.tolerance ?? .5;
+    final tolerance = math.max(modelTolerance, worldPerPixel * 10);
+    final references = <SketchVector>[];
+    for (final entity in sketchEntities) {
+      switch (entity) {
+        case SketchLine():
+          final start = SketchVector.fromJson(entity.parameters['start']);
+          final end = SketchVector.fromJson(entity.parameters['end']);
+          references.addAll([
+            start,
+            end,
+            SketchVector((start.x + end.x) / 2, (start.y + end.y) / 2),
+          ]);
+        case SketchCircle():
+          references.add(SketchVector.fromJson(entity.parameters['center']));
+        case SketchArc():
+          final center = SketchVector.fromJson(entity.parameters['center']);
+          final radius = (entity.parameters['radius'] as num).toDouble();
+          final start = (entity.parameters['startAngle'] as num).toDouble();
+          final end = (entity.parameters['endAngle'] as num).toDouble();
+          references.addAll([
+            center,
+            SketchVector(
+              center.x + radius * math.cos(start),
+              center.y + radius * math.sin(start),
+            ),
+            SketchVector(
+              center.x + radius * math.cos(end),
+              center.y + radius * math.sin(end),
+            ),
+          ]);
+        default:
+          break;
+      }
+    }
+    final segments = <List<List<double>>>[];
+    SketchVector? vertical;
+    SketchVector? horizontal;
+    var verticalDistance = double.infinity;
+    var horizontalDistance = double.infinity;
+    for (final reference in references) {
+      final dx = (cursor.x - reference.x).abs();
+      if (dx <= tolerance && dx < verticalDistance) {
+        vertical = reference;
+        verticalDistance = dx;
+      }
+      final dy = (cursor.y - reference.y).abs();
+      if (dy <= tolerance && dy < horizontalDistance) {
+        horizontal = reference;
+        horizontalDistance = dy;
+      }
+    }
+    final coordinates = activeSketch!.coordinates;
+    if (vertical != null && (cursor.y - vertical.y).abs() > 1e-9) {
+      segments.add([
+        coordinates.localToGlobal(vertical).toJson(),
+        coordinates.localToGlobal(SketchVector(vertical.x, cursor.y)).toJson(),
+      ]);
+    }
+    if (horizontal != null && (cursor.x - horizontal.x).abs() > 1e-9) {
+      segments.add([
+        coordinates.localToGlobal(horizontal).toJson(),
+        coordinates
+            .localToGlobal(SketchVector(cursor.x, horizontal.y))
+            .toJson(),
+      ]);
+    }
+    if (segments.isEmpty) {
+      runtime.hideTransient('sketch-alignment-guides');
+      return;
+    }
+    runtime.showTransient(
+      CadSceneEntity(
+        id: 'sketch-alignment-guides',
+        kind: CadSceneEntityKind.preview,
+        transparent: true,
+        geometry: {
+          'segments': segments,
+          'displayColor': 'alignmentGuide',
+          'strokeWidth': .65,
+          'dashed': true,
+        },
+      ),
+    );
   }
 
   Future<void> captureSketchTap(
@@ -2541,11 +3422,12 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'tool': SketchToolType.line.name,
         'points': [start.toJson(), point.toJson()],
       });
-      // The Line command remains active, but every committed entity starts a
-      // fresh two-click capture. No tool reactivation is required.
-      previewPoints = const [];
-      runtime.write('sketch.line.cursor', null);
+      // Continue the polyline naturally from the endpoint just committed.
+      // ESC/right-click still finishes the persistent Line command.
+      previewPoints = [point];
+      runtime.write('sketch.line.cursor', point);
       runtime.hideTransient('sketch-line-preview');
+      runtime.hideTransient('sketch-alignment-guides');
       runtime.write('sketch.inference', null);
       notifyListeners();
     }
@@ -2576,9 +3458,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'tool': SketchToolType.line.name,
         'points': [start.toJson(), end.toJson()],
       });
-      previewPoints = const [];
-      runtime.write('sketch.line.cursor', null);
+      previewPoints = [end];
+      runtime.write('sketch.line.cursor', end);
       runtime.hideTransient('sketch-line-preview');
+      runtime.hideTransient('sketch-alignment-guides');
     } else if (circleCommandActive) {
       final center = previewPoints.first;
       final radius = diameter ? primary / 2 : primary;
@@ -3213,6 +4096,192 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   Future<void> confirmSurface() => _run('reverse.surface.confirm');
+  Future<void> setSurfaceDisplayMode(
+    String surfaceId,
+    SurfaceDisplayMode mode,
+  ) async {
+    final current = surfaceGenerationApi?.engine.registry.surfaces
+        .where((surface) => surface.surfaceId == surfaceId)
+        .firstOrNull;
+    if (current == null) throw StateError('Unknown Surface: $surfaceId');
+    final json = current.toJson();
+    json['parameters'] = {...current.parameters, 'displayMode': mode.name};
+    final updated = GeneratedSurface.fromJson(json);
+    await surfaceGenerationApi!.engine.restore(updated);
+    activeSurface = updated;
+    await _upsertSurface(updated, command: 'surface.display.${mode.name}');
+    notifyListeners();
+  }
+
+  SurfaceHealthSnapshot surfaceHealth(String surfaceId) {
+    final surface = surfaceGenerationApi?.engine.registry.surfaces
+        .where((item) => item.surfaceId == surfaceId)
+        .firstOrNull;
+    if (surface == null) {
+      return const SurfaceHealthSnapshot(
+        valid: false,
+        kernelOk: false,
+        topologyOk: false,
+        boundariesOk: false,
+        readyForLoft: false,
+      );
+    }
+    return _professionalSurfaceOperations.health(surface);
+  }
+
+  Future<void> reverseSurfaceNormal(String surfaceId) =>
+      _run('reverse.surface.reverseNormal', {'id': surfaceId});
+
+  Future<GeneratedSurface> _reverseSurfaceNormal(String surfaceId) async {
+    final source = _surfaceById(surfaceId);
+    final updated = await _professionalSurfaceOperations.reverseNormal(
+      source: source,
+      generation: surfaceGenerationApi!,
+      kernel: _surfaceOperationKernel!,
+    );
+    activeSurface = updated;
+    await _upsertSurface(updated, command: 'surface.reverse-normal');
+    notifyListeners();
+    return updated;
+  }
+
+  void previewSurfaceOffset(String surfaceId, double distance) {
+    if (!distance.isFinite || distance.abs() <= 1e-9) {
+      throw StateError('Offset distance must be non-zero.');
+    }
+    final source = _surfaceById(surfaceId);
+    final normal = (source.parameters['normal'] as List).cast<num>();
+    final nodes = (source.parameters['displayNodes'] as List).cast<num>();
+    final shifted = <double>[];
+    for (var index = 0; index + 2 < nodes.length; index += 3) {
+      shifted.addAll([
+        nodes[index].toDouble() + normal[0].toDouble() * distance,
+        nodes[index + 1].toDouble() + normal[1].toDouble() * distance,
+        nodes[index + 2].toDouble() + normal[2].toDouble() * distance,
+      ]);
+    }
+    runtime.write('surface.offset.source', surfaceId);
+    runtime.write('surface.offset.distance', distance);
+    runtime.showTransient(
+      CadSceneEntity(
+        id: 'surface-offset-preview',
+        kind: CadSceneEntityKind.preview,
+        transparent: true,
+        geometry: {
+          'surfaceKind': 'plane',
+          'displayColor': 'surfacePreviewBlue',
+          'previewOnly': true,
+          'nodes': shifted,
+          'triangles': source.parameters['displayTriangles'],
+        },
+      ),
+    );
+    notifyListeners();
+  }
+
+  void cancelSurfaceOffset() {
+    runtime.hideTransient('surface-offset-preview');
+    runtime.write('surface.offset.source', null);
+    runtime.write('surface.offset.distance', null);
+    notifyListeners();
+  }
+
+  Future<String> confirmSurfaceOffset() async {
+    await _run('reverse.surface.offset.confirm', {});
+    return activeSurface?.surfaceId ?? '';
+  }
+
+  Future<GeneratedSurface> _confirmSurfaceOffset() async {
+    final sourceId = runtime.read<String>('surface.offset.source');
+    final distance = runtime.read<double>('surface.offset.distance');
+    if (sourceId == null || distance == null) {
+      throw StateError('Preview Surface Offset first.');
+    }
+    final created = await _professionalSurfaceOperations.offset(
+      featureId: _nextSurfaceId(),
+      source: _surfaceById(sourceId),
+      distance: distance,
+      generation: surfaceGenerationApi!,
+      kernel: _surfaceOperationKernel!,
+    );
+    activeSurface = created;
+    runtime.hideTransient('surface-offset-preview');
+    runtime.write('surface.offset.source', null);
+    runtime.write('surface.offset.distance', null);
+    await _upsertSurface(created, command: 'surface.offset.confirm');
+    notifyListeners();
+    return created;
+  }
+
+  Future<void> joinSurfaces(String firstId, String secondId) =>
+      _run('reverse.surface.join', {'first': firstId, 'second': secondId});
+
+  Future<void> unjoinSurfaces(String firstId, String secondId) =>
+      _run('reverse.surface.unjoin', {'first': firstId, 'second': secondId});
+
+  Future<List<GeneratedSurface>> _setSurfacesJoined(
+    String firstId,
+    String secondId, {
+    required bool joined,
+  }) async {
+    if (firstId == secondId) throw StateError('Select two different Surfaces.');
+    final values = await _professionalSurfaceOperations.setJoined(
+      first: _surfaceById(firstId),
+      second: _surfaceById(secondId),
+      joined: joined,
+      generation: surfaceGenerationApi!,
+    );
+    for (final value in values) {
+      await _upsertSurface(
+        value,
+        command: joined ? 'surface.join' : 'surface.unjoin',
+      );
+    }
+    activeSurface = values.last;
+    notifyListeners();
+    return values;
+  }
+
+  GeneratedSurface _surfaceById(String id) =>
+      surfaceGenerationApi?.engine.registry.surfaces
+          .where((surface) => surface.surfaceId == id)
+          .firstOrNull ??
+      (throw StateError('Unknown Surface: $id'));
+
+  String _nextSurfaceId() {
+    final used =
+        surfaceGenerationApi?.engine.registry.surfaces
+            .map((surface) => surface.surfaceId)
+            .toSet() ??
+        <String>{};
+    var number = 1;
+    while (used.contains('Surface${number.toString().padLeft(3, '0')}')) {
+      number++;
+    }
+    return 'Surface${number.toString().padLeft(3, '0')}';
+  }
+
+  Future<void> setSurfaceVisibility(String surfaceId, bool visible) async {
+    final topology =
+        runtime.document?.entities.values.where(
+          (entity) => entity.data['parentSurfaceId'] == surfaceId,
+        ) ??
+        const <CadDocumentEntity>[];
+    await runtime.setEntityVisibility(surfaceId, visible);
+    for (final entity in topology) {
+      final mode = activeSurface?.surfaceId == surfaceId
+          ? activeSurface?.parameters['displayMode'] as String?
+          : (runtime.document?.entities[surfaceId]?.data['parameters']
+                    as Map?)?['displayMode']
+                as String?;
+      final topologyVisible =
+          visible &&
+          mode != SurfaceDisplayMode.shaded.name &&
+          mode != SurfaceDisplayMode.transparent.name;
+      await runtime.setEntityVisibility(entity.id, topologyVisible);
+    }
+  }
+
   bool canCreateRecognizedSurface(SurfaceKind kind) {
     final primitive = (report?.primitives ?? const <ProfessionalPrimitive>[])
         .where((item) => item.recognition.winner.type.name == kind.name)
@@ -3327,7 +4396,625 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     }
   }
 
+  CadDocumentEntity? get selectedExtrudeSource {
+    final document = runtime.document;
+    if (document == null || runtime.selection.length != 1) return null;
+    final entity = document.entities[runtime.selection.single];
+    if (entity == null) return null;
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['sketch'] is Map) {
+      return entity;
+    }
+    if (entity.kind == CadDocumentEntityKind.surface && entity.shape != null) {
+      return entity;
+    }
+    return null;
+  }
+
+  bool get canPreviewExtrude => selectedExtrudeSource != null;
+
+  CadDocumentEntity? get selectedExtrudeFeature {
+    final document = runtime.document;
+    if (document == null) return null;
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              (entity.kind == CadDocumentEntityKind.solid ||
+                  entity.kind == CadDocumentEntityKind.surface) &&
+              entity.data['extrudeFeature'] is Map,
+        )
+        .firstOrNull;
+  }
+
+  Future<void> setExtrudeDisplayMode(String mode) async {
+    const allowed = {'shaded', 'wireframe', 'shadedWithEdges', 'transparent'};
+    if (!allowed.contains(mode)) {
+      throw ArgumentError.value(mode, 'mode');
+    }
+    final current = selectedExtrudeFeature;
+    if (current == null || current.shape == null) {
+      throw StateError('Select an Extrude Feature.');
+    }
+    final raw = Map<String, dynamic>.from(
+      current.data['extrudeFeature'] as Map,
+    );
+    raw['displayMode'] = mode;
+    await runtime.mutate(
+      command: 'extrude.display.$mode',
+      upsert: [
+        CadDocumentEntity(
+          id: current.id,
+          kind: current.kind,
+          shape: current.shape,
+          mesh: current.mesh,
+          data: {...current.data, 'extrudeFeature': raw, 'displayMode': mode},
+        ),
+      ],
+    );
+    runtime.scene.upsert(
+      CadSceneEntity(
+        id: current.id,
+        kind: current.kind == CadDocumentEntityKind.solid
+            ? CadSceneEntityKind.solid
+            : CadSceneEntityKind.surface,
+        transparent: mode == 'transparent',
+        geometry: {
+          'featureId': current.id,
+          'tool': 'extrude',
+          'handle': current.shape!.toJson(),
+          'displayMode': mode,
+        },
+      ),
+    );
+    notifyListeners();
+  }
+
+  Future<void> previewProfessionalExtrude({
+    double distance = 10,
+    ProfessionalExtrudeDirection direction =
+        ProfessionalExtrudeDirection.normal,
+    ProfessionalExtrudeOutput output = ProfessionalExtrudeOutput.solid,
+    String? featureId,
+  }) async {
+    final source = selectedExtrudeSource;
+    if (source == null) {
+      throw StateError('Select exactly one Sketch or Surface.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final sourceKind = source.kind == CadDocumentEntityKind.sketch
+          ? ProfessionalExtrudeSourceKind.sketch
+          : ProfessionalExtrudeSourceKind.surface;
+      if (sourceKind == ProfessionalExtrudeSourceKind.sketch &&
+          output == ProfessionalExtrudeOutput.solid &&
+          !healthForSketch(source.id).readyForSurface) {
+        throw StateError('Extrude requires a healthy closed Sketch profile.');
+      }
+      final sourceHandle = sourceKind == ProfessionalExtrudeSourceKind.sketch
+          ? await _ensureSketchWire(
+              sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+            )
+          : await runtime.loadShape(source.shape!);
+      final contract = ProfessionalExtrudeContract(
+        sourceEntityId: source.id,
+        sourceKind: sourceKind,
+        sourceRevision: _loftSourceRevision(source),
+        sourceShapeId: sourceHandle.persistentId,
+        distance: distance,
+        direction: direction,
+        output: output,
+      );
+      final plan = _extrudeConstraints.solve(contract);
+      final health = _extrudeConstraints.health(contract);
+      final id =
+          featureId ??
+          ProfessionalExtrudeNaming.nextId(runtime.document!.entities.keys);
+      final kernel = runtime.kernels.active;
+      final transaction = KernelTransaction(
+        'preview-$id-${DateTime.now().microsecondsSinceEpoch}',
+        runtime.document!.projectId,
+        kernel.descriptor.id,
+        DateTime.now(),
+        TransactionStatus.active,
+        const [],
+      );
+      await kernel.begin(transaction);
+      final handle = await kernel.create(
+        'EXTRUDE',
+        {
+          'inputs': [sourceHandle],
+          'distance': distance,
+          'reverse': contract.reverse,
+          'direction': [0.0, 0.0, contract.reverse ? -distance : distance],
+          'output': output.name,
+        },
+        persistentId: '$id:shape',
+        expectedType: output == ProfessionalExtrudeOutput.solid
+            ? CADShapeType.solid
+            : CADShapeType.shell,
+        transaction: transaction,
+      );
+      await kernel.commit(transaction);
+      final value = <String, dynamic>{
+        'id': id,
+        'name': id,
+        'contract': contract.toJson(),
+        'health': health.toJson(),
+        'solverContract': 'flcad.geometry-constraint-solver/v1',
+        'solverAnchor': plan.anchor,
+        'solverMoving': plan.moving,
+        'handle': handle.toJson(),
+        'revision': featureId == null
+            ? 1
+            : ((runtime.document?.entities[id]?.data['revision'] as num?)
+                          ?.toInt() ??
+                      1) +
+                  1,
+        'displayMode': 'shadedWithEdges',
+        'status': 'preview',
+      };
+      professionalExtrudePreview = value;
+      await runtime.showTransientShape(
+        CadSceneEntity(
+          id: 'preview:$id',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            'featureId': id,
+            'tool': 'extrude',
+            'handle': handle.toJson(),
+            'parameters': value,
+          },
+        ),
+        handle,
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateProfessionalExtrudePreview({
+    double? distance,
+    ProfessionalExtrudeDirection? direction,
+    ProfessionalExtrudeOutput? output,
+  }) async {
+    final current = professionalExtrudePreview;
+    if (current == null) return;
+    final contract = ProfessionalExtrudeContract.fromJson(
+      Map<String, dynamic>.from(current['contract'] as Map),
+    );
+    final sourceId = contract.sourceEntityId;
+    runtime.select({sourceId});
+    runtime.hideTransient('preview:${current['id']}');
+    await previewProfessionalExtrude(
+      featureId: current['id'] as String,
+      distance: distance ?? contract.distance,
+      direction: direction ?? contract.direction,
+      output: output ?? contract.output,
+    );
+  }
+
+  Future<void> confirmProfessionalExtrude() async {
+    final value = professionalExtrudePreview;
+    if (value == null) return;
+    final id = value['id'] as String;
+    final contract = ProfessionalExtrudeContract.fromJson(
+      Map<String, dynamic>.from(value['contract'] as Map),
+    );
+    _extrudeConstraints.solve(contract);
+    final handle = ShapeHandle.fromJson(
+      Map<String, dynamic>.from(value['handle'] as Map),
+    );
+    final previous = runtime.document?.entities[id];
+    final history = (previous?.data['history'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    runtime.hideTransient('preview:$id');
+    await runtime.upsertEntity(
+      command: 'extrude.confirm',
+      kind: contract.output == ProfessionalExtrudeOutput.solid
+          ? CadDocumentEntityKind.solid
+          : CadDocumentEntityKind.surface,
+      entity: CadSceneEntity(
+        id: id,
+        kind: contract.output == ProfessionalExtrudeOutput.solid
+            ? CadSceneEntityKind.solid
+            : CadSceneEntityKind.surface,
+        geometry: {
+          'featureId': id,
+          'tool': 'extrude',
+          'handle': handle.toJson(),
+          'parameters': value,
+        },
+      ),
+      shape: handle,
+      officialShape: true,
+      data: {
+        'name': id,
+        'authoringRoot': true,
+        'authoringWorkspace': contract.output == ProfessionalExtrudeOutput.solid
+            ? 'Solids'
+            : 'Surfaces',
+        'group': contract.output == ProfessionalExtrudeOutput.solid
+            ? 'Solids'
+            : 'Surfaces',
+        'featureType': 'extrude',
+        'extrudeFeature': {...value, 'status': 'committed'},
+        'parameters': contract.toJson(),
+        'references': [contract.sourceEntityId],
+        'dependencies': [contract.sourceEntityId],
+        'children': [contract.sourceEntityId],
+        'revision': value['revision'],
+        'history': [...history, previous == null ? 'create' : 'edit'],
+      },
+    );
+    await runtime.transitionFeature(
+      id,
+      FeatureLifecycleState.closed,
+      command: 'extrude.lifecycle.commit',
+    );
+    professionalExtrudePreview = null;
+    notifyListeners();
+  }
+
+  void cancelProfessionalExtrude() {
+    final value = professionalExtrudePreview;
+    if (value != null) runtime.hideTransient('preview:${value['id']}');
+    professionalExtrudePreview = null;
+    notifyListeners();
+  }
+
+  Future<void> reenterProfessionalExtrude(String id) async {
+    final raw = runtime.document?.entities[id]?.data['extrudeFeature'];
+    if (raw is! Map) throw StateError('Extrude Feature $id is unavailable.');
+    final contract = ProfessionalExtrudeContract.fromJson(
+      Map<String, dynamic>.from(raw['contract'] as Map),
+    );
+    runtime.select({contract.sourceEntityId});
+    await previewProfessionalExtrude(
+      featureId: id,
+      distance: contract.distance,
+      direction: contract.direction,
+      output: contract.output,
+    );
+    await runtime.transitionFeature(
+      id,
+      FeatureLifecycleState.editing,
+      command: 'extrude.reenter',
+    );
+  }
+
+  List<CadDocumentEntity> get selectedRevolveInputs {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .toList(growable: false);
+  }
+
+  RevolveProfileKind? _revolveProfileKind(CadDocumentEntity entity) {
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['sketch'] is Map) {
+      return RevolveProfileKind.sketch;
+    }
+    if (entity.kind == CadDocumentEntityKind.surface && entity.shape != null) {
+      return RevolveProfileKind.surface;
+    }
+    return null;
+  }
+
+  RevolveAxisKind? _revolveAxisKind(CadDocumentEntity entity) {
+    if (entity.kind == CadDocumentEntityKind.reference) {
+      final rawReference = entity.data['reference'] as Map?;
+      final rawGeometry = rawReference?['geometry'] as Map?;
+      if (rawGeometry?['type'] == 'axis') {
+        return RevolveAxisKind.referenceAxis;
+      }
+      return null;
+    }
+    if (entity.kind == CadDocumentEntityKind.curve &&
+        entity.data['parentSketchId'] != null) {
+      return entity.data['construction'] == true
+          ? RevolveAxisKind.constructionLine
+          : RevolveAxisKind.sketchAxis;
+    }
+    return null;
+  }
+
+  bool get canPreviewRevolve {
+    final inputs = selectedRevolveInputs;
+    return inputs.length == 2 &&
+        _revolveProfileKind(inputs.first) != null &&
+        _revolveAxisKind(inputs.last) != null;
+  }
+
+  Future<ShapeHandle> _ensureRevolveAxis(CadDocumentEntity axis) async {
+    if (axis.shape != null) return runtime.loadShape(axis.shape!);
+    final raw =
+        axis.data['sceneGeometry'] ??
+        axis.data['geometry'] ??
+        (axis.data['reference'] as Map?)?['geometry'];
+    if (raw is Map) {
+      final geometry = geometryFromJson(Map<String, dynamic>.from(raw));
+      if (geometry is AxisGeometry) {
+        final origin = geometry.origin;
+        final direction = geometry.direction.normalized;
+        final end = Vec3(
+          origin.x + direction.x * 100,
+          origin.y + direction.y * 100,
+          origin.z + direction.z * 100,
+        );
+        return _createWireFromPoints(
+          sourceId: axis.id,
+          sourceName: '${axis.data['name'] ?? axis.id}',
+          sourceRevision: _loftSourceRevision(axis),
+          points: [
+            SketchVector(origin.x, origin.y, origin.z),
+            SketchVector(end.x, end.y, end.z),
+          ],
+          curveType: ProfessionalCurveType.line3d,
+          color: 'axisBlue',
+        );
+      }
+    }
+    final points = (axis.data['sceneGeometry'] as Map?)?['points'] as List?;
+    if (points != null && points.length >= 2) {
+      final parsed = points.take(2).map((item) {
+        final value = (item as List).cast<num>();
+        return SketchVector(
+          value[0].toDouble(),
+          value[1].toDouble(),
+          value.length > 2 ? value[2].toDouble() : 0,
+        );
+      }).toList();
+      return _createWireFromPoints(
+        sourceId: axis.id,
+        sourceName: '${axis.data['name'] ?? axis.id}',
+        sourceRevision: _loftSourceRevision(axis),
+        points: parsed,
+        curveType: ProfessionalCurveType.line3d,
+        color: 'axisBlue',
+      );
+    }
+    throw StateError('${axis.id} does not provide a usable axis.');
+  }
+
+  Future<void> previewProfessionalRevolve({
+    double angleDegrees = 360,
+    RevolveDirection direction = RevolveDirection.counterClockwise,
+    String? featureId,
+  }) async {
+    final inputs = selectedRevolveInputs;
+    if (!canPreviewRevolve) {
+      throw StateError(
+        'Select one Sketch or Surface first, then one Sketch/Reference Axis.',
+      );
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final profile = inputs.first, axis = inputs.last;
+      final profileKind = _revolveProfileKind(profile)!;
+      if (profileKind == RevolveProfileKind.sketch &&
+          !healthForSketch(profile.id).readyForSurface) {
+        throw StateError(
+          'Solid Revolve requires a healthy closed Sketch profile.',
+        );
+      }
+      final profileHandle = profileKind == RevolveProfileKind.sketch
+          ? await _ensureSketchWire(
+              sketchApi!.sketches.firstWhere((item) => item.id == profile.id),
+            )
+          : await runtime.loadShape(profile.shape!);
+      final axisHandle = await _ensureRevolveAxis(axis);
+      final contract = ProfessionalRevolveContract(
+        profileEntityId: profile.id,
+        profileKind: profileKind,
+        profileRevision: _loftSourceRevision(profile),
+        profileShapeId: profileHandle.persistentId,
+        axisEntityId: axis.id,
+        axisKind: _revolveAxisKind(axis)!,
+        axisRevision: _loftSourceRevision(axis),
+        axisShapeId: axisHandle.persistentId,
+        angleDegrees: angleDegrees,
+        direction: direction,
+        output: profileKind == RevolveProfileKind.sketch
+            ? RevolveOutput.solid
+            : RevolveOutput.surface,
+      );
+      final plan = _revolveConstraints.solve(contract),
+          health = _revolveConstraints.health(contract);
+      final id =
+          featureId ??
+          ProfessionalRevolveNaming.nextId(runtime.document!.entities.keys);
+      final kernel = runtime.kernels.active;
+      final transaction = KernelTransaction(
+        'preview-$id-${DateTime.now().microsecondsSinceEpoch}',
+        runtime.document!.projectId,
+        kernel.descriptor.id,
+        DateTime.now(),
+        TransactionStatus.active,
+        const [],
+      );
+      await kernel.begin(transaction);
+      final handle = await kernel.create(
+        'REVOLVE',
+        {
+          'inputs': [profileHandle],
+          'axis': axisHandle,
+          'angle': contract.signedAngle,
+          'angleDegrees': contract.signedAngle,
+        },
+        persistentId: '$id:shape',
+        expectedType: contract.output == RevolveOutput.solid
+            ? CADShapeType.solid
+            : CADShapeType.face,
+        transaction: transaction,
+      );
+      await kernel.commit(transaction);
+      final value = <String, dynamic>{
+        'id': id,
+        'name': id,
+        'contract': contract.toJson(),
+        'health': health.toJson(),
+        'solverContract': 'flcad.geometry-constraint-solver/v1',
+        'solverAnchor': plan.anchor,
+        'solverMoving': plan.moving,
+        'handle': handle.toJson(),
+        'revision': featureId == null
+            ? 1
+            : ((runtime.document?.entities[id]?.data['revision'] as num?)
+                          ?.toInt() ??
+                      1) +
+                  1,
+        'displayMode': 'shadedWithEdges',
+        'status': 'preview',
+      };
+      professionalRevolvePreview = value;
+      await runtime.showTransientShape(
+        CadSceneEntity(
+          id: 'preview:$id',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            'featureId': id,
+            'tool': 'revolve',
+            'handle': handle.toJson(),
+            'parameters': value,
+          },
+        ),
+        handle,
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateProfessionalRevolvePreview({
+    double? angleDegrees,
+    RevolveDirection? direction,
+  }) async {
+    final current = professionalRevolvePreview;
+    if (current == null) return;
+    final contract = ProfessionalRevolveContract.fromJson(
+      Map<String, dynamic>.from(current['contract'] as Map),
+    );
+    runtime.select({contract.profileEntityId, contract.axisEntityId});
+    runtime.hideTransient('preview:${current['id']}');
+    await previewProfessionalRevolve(
+      featureId: current['id'] as String,
+      angleDegrees: angleDegrees ?? contract.angleDegrees,
+      direction: direction ?? contract.direction,
+    );
+  }
+
+  Future<void> confirmProfessionalRevolve() async {
+    final value = professionalRevolvePreview;
+    if (value == null) return;
+    final id = value['id'] as String;
+    final contract = ProfessionalRevolveContract.fromJson(
+      Map<String, dynamic>.from(value['contract'] as Map),
+    );
+    _revolveConstraints.solve(contract);
+    final handle = ShapeHandle.fromJson(
+      Map<String, dynamic>.from(value['handle'] as Map),
+    );
+    final previous = runtime.document?.entities[id];
+    final history = (previous?.data['history'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    runtime.hideTransient('preview:$id');
+    final kind = contract.output == RevolveOutput.solid
+        ? CadDocumentEntityKind.solid
+        : CadDocumentEntityKind.surface;
+    final sceneKind = contract.output == RevolveOutput.solid
+        ? CadSceneEntityKind.solid
+        : CadSceneEntityKind.surface;
+    await runtime.upsertEntity(
+      command: 'revolve.confirm',
+      kind: kind,
+      entity: CadSceneEntity(
+        id: id,
+        kind: sceneKind,
+        geometry: {
+          'featureId': id,
+          'tool': 'revolve',
+          'handle': handle.toJson(),
+          'parameters': value,
+        },
+      ),
+      shape: handle,
+      officialShape: true,
+      data: {
+        'name': id,
+        'authoringRoot': true,
+        'authoringWorkspace': contract.output == RevolveOutput.solid
+            ? 'Solids'
+            : 'Surfaces',
+        'group': contract.output == RevolveOutput.solid ? 'Solids' : 'Surfaces',
+        'featureType': 'revolve',
+        'revolveFeature': {...value, 'status': 'committed'},
+        'parameters': contract.toJson(),
+        'references': [contract.profileEntityId, contract.axisEntityId],
+        'dependencies': [contract.profileEntityId, contract.axisEntityId],
+        'children': [contract.profileEntityId, contract.axisEntityId],
+        'revision': value['revision'],
+        'history': [...history, previous == null ? 'create' : 'edit'],
+      },
+    );
+    await runtime.transitionFeature(
+      id,
+      FeatureLifecycleState.closed,
+      command: 'revolve.lifecycle.commit',
+    );
+    professionalRevolvePreview = null;
+    notifyListeners();
+  }
+
+  void cancelProfessionalRevolve() {
+    final value = professionalRevolvePreview;
+    if (value != null) runtime.hideTransient('preview:${value['id']}');
+    professionalRevolvePreview = null;
+    notifyListeners();
+  }
+
+  Future<void> reenterProfessionalRevolve(String id) async {
+    final raw = runtime.document?.entities[id]?.data['revolveFeature'];
+    if (raw is! Map) throw StateError('Revolve Feature $id is unavailable.');
+    final contract = ProfessionalRevolveContract.fromJson(
+      Map<String, dynamic>.from(raw['contract'] as Map),
+    );
+    runtime.select({contract.profileEntityId, contract.axisEntityId});
+    await previewProfessionalRevolve(
+      featureId: id,
+      angleDegrees: contract.angleDegrees,
+      direction: contract.direction,
+    );
+    await runtime.transitionFeature(
+      id,
+      FeatureLifecycleState.editing,
+      command: 'revolve.reenter',
+    );
+  }
+
   bool canPreviewProfessional(ProfessionalSurfaceTool tool) {
+    if (tool == ProfessionalSurfaceTool.loft) return canPreviewLoft;
+    if (tool == ProfessionalSurfaceTool.sweep) return canPreviewSweep;
+    if (tool == ProfessionalSurfaceTool.blend) return canPreviewBlend;
     final count = _selectedProfessionalInputCount;
     return switch (tool) {
       ProfessionalSurfaceTool.loft ||
@@ -3337,6 +5024,852 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       ProfessionalSurfaceTool.patch => count >= 1,
       _ => false,
     };
+  }
+
+  List<CadDocumentEntity> get _selectedBlendSurfaces {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              entity.kind == CadDocumentEntityKind.surface &&
+              entity.shape != null,
+        )
+        .toList(growable: false);
+  }
+
+  List<CadDocumentEntity> get _selectedBlendBoundaries {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              entity.kind == CadDocumentEntityKind.edge && entity.shape != null,
+        )
+        .toList(growable: false);
+  }
+
+  bool get canPreviewBlend {
+    final surfaces = _selectedBlendSurfaces;
+    final boundaries = _selectedBlendBoundaries;
+    if (surfaces.length != 2 || boundaries.length != 2) {
+      return false;
+    }
+    final owners = boundaries
+        .map((edge) => edge.data['parentSurfaceId'])
+        .whereType<String>()
+        .toSet();
+    return owners.length == 2 &&
+        surfaces.every((surface) => owners.contains(surface.id));
+  }
+
+  List<CadDocumentEntity> get _selectedFillBoundaries {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              (entity.kind == CadDocumentEntityKind.edge ||
+                  entity.kind == CadDocumentEntityKind.boundary) &&
+              entity.shape != null,
+        )
+        .toList(growable: false);
+  }
+
+  bool get canPreviewFill => _selectedFillBoundaries.isNotEmpty;
+
+  List<CadDocumentEntity> get _selectedSurfaceFilletSources {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where(
+          (entity) =>
+              {
+                CadDocumentEntityKind.surface,
+                CadDocumentEntityKind.face,
+                CadDocumentEntityKind.shell,
+                CadDocumentEntityKind.solid,
+              }.contains(entity.kind) &&
+              entity.shape != null,
+        )
+        .toList(growable: false);
+  }
+
+  List<CadDocumentEntity> get _selectedSurfaceFilletEdges =>
+      _selectedBlendBoundaries;
+
+  List<String> get selectedSurfaceFilletSourceIds =>
+      _selectedSurfaceFilletSources.map((item) => item.id).toList();
+  List<String> get selectedSurfaceFilletEdgeIds =>
+      _selectedSurfaceFilletEdges.map((item) => item.id).toList();
+
+  bool canPreviewSurfaceFillet(SurfaceFilletSelectionMode mode) {
+    final sources = _selectedSurfaceFilletSources;
+    final edges = _selectedSurfaceFilletEdges;
+    if (mode == SurfaceFilletSelectionMode.faceToFace) {
+      return sources.length == 2;
+    }
+    if (mode == SurfaceFilletSelectionMode.face) return sources.isNotEmpty;
+    return sources.isNotEmpty && edges.isNotEmpty;
+  }
+
+  double? get selectedRecognitionFilletRadius {
+    final document = runtime.document;
+    if (document == null) return null;
+    for (final id in runtime.selection) {
+      final raw = document.entities[id]?.data['recognitionResult'];
+      if (raw is Map && raw['type'] == 'fillet') {
+        return ((raw['parameters'] as Map?)?['meanRadius'] as num?)?.toDouble();
+      }
+    }
+    return null;
+  }
+
+  List<CadDocumentEntity> get selectedSewSurfaces => _selectedBlendSurfaces;
+
+  bool get canPreviewSew => selectedSewSurfaces.length >= 2;
+
+  CadDocumentEntity? get selectedSewBody {
+    final document = runtime.document;
+    if (document == null) return null;
+    for (final id in runtime.selection) {
+      final entity = document.entities[id];
+      final raw = entity?.data['professionalSurface'];
+      if (entity?.kind == CadDocumentEntityKind.shell &&
+          raw is Map &&
+          raw['tool'] == 'sew') {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  SewGapAnalysis analyzeSelectedSewGaps() {
+    final values = <double>[];
+    var coincident = 0, incompatible = 0;
+    for (final surface in selectedSewSurfaces) {
+      final raw =
+          surface.data['topologyGap'] ??
+          surface.data['boundaryGap'] ??
+          surface.data['gap'];
+      if (raw is num) values.add(raw.toDouble().abs());
+      coincident += (surface.data['coincidentEdges'] as num?)?.toInt() ?? 0;
+      incompatible +=
+          (surface.data['incompatibleRegions'] as num?)?.toInt() ?? 0;
+    }
+    if (values.isEmpty) values.add(0);
+    values.sort();
+    return SewGapAnalysis(
+      minimum: values.first,
+      maximum: values.last,
+      average: values.reduce((a, b) => a + b) / values.length,
+      coincidentEdges: coincident,
+      incompatibleRegions: incompatible,
+    );
+  }
+
+  Future<void> previewProfessionalSew({
+    required double tolerance,
+    required bool compensate,
+    SewSelectionMode selectionMode = SewSelectionMode.individual,
+    String? featureId,
+  }) async {
+    final api = professionalSurfaceApi;
+    final surfaces = selectedSewSurfaces;
+    if (api == null || surfaces.length < 2) {
+      throw StateError('Select two or more Surfaces for Sew.');
+    }
+    final gaps = analyzeSelectedSewGaps();
+    final contract = ProfessionalSewContract(
+      surfaceEntityIds: surfaces.map((item) => item.id).toList(),
+      selectionMode: selectionMode,
+      tolerance: tolerance,
+      compensate: compensate,
+      gaps: gaps,
+    );
+    _sewConstraints.solve(contract);
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final handles = <ShapeHandle>[];
+      for (final surface in surfaces) {
+        handles.add(await runtime.loadShape(surface.shape!));
+      }
+      final id =
+          featureId ??
+          ProfessionalSewNaming.nextId(runtime.document!.entities.keys);
+      final parameters = {
+        ...contract.toJson(),
+        'featureType': 'sewBody',
+        'shapeHandles': handles.map((item) => item.toJson()).toList(),
+        'sourceEntityIds': contract.surfaceEntityIds,
+        'sourceRevisions': {
+          for (final surface in surfaces)
+            surface.id: _loftSourceRevision(surface),
+        },
+        'health': {
+          'sewed': true,
+          'closed': contract.closed,
+          'topologyOk': gaps.incompatibleRegions == 0,
+          'readyForSolid': contract.closed,
+        },
+        'reconstruction': {
+          'bodyCreated': true,
+          'topologyCompleted': contract.closed,
+        },
+      };
+      final existing = runtime.document?.entities[id];
+      if (existing != null && featureId != null) {
+        professionalSurfacePreview = await api.preview(
+          id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: parameters,
+        );
+      } else {
+        final draft = api.begin(
+          tool: ProfessionalSurfaceTool.sew,
+          featureId: id,
+          name: id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: parameters,
+        );
+        professionalSurfacePreview = await api.preview(draft.definition.id);
+      }
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> unsewBody(String bodyId, {Set<String>? surfaceIds}) async {
+    final raw = runtime.document?.entities[bodyId]?.data['professionalSurface'];
+    if (raw is! Map || professionalSurfaceApi == null) {
+      throw StateError('Body $bodyId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.sew) {
+      throw StateError('$bodyId is not a Sew Body.');
+    }
+    final current = ProfessionalSewContract.fromJson(definition.parameters);
+    final detached = surfaceIds == null
+        ? current.surfaceEntityIds
+        : {...current.detachedSurfaceIds, ...surfaceIds}.toList();
+    final next = ProfessionalSewContract(
+      surfaceEntityIds: current.surfaceEntityIds,
+      selectionMode: current.selectionMode,
+      tolerance: current.tolerance,
+      compensate: current.compensate,
+      gaps: current.gaps,
+      detachedSurfaceIds: detached,
+      state: detached.length == current.surfaceEntityIds.length
+          ? SewRelationState.unsewed
+          : SewRelationState.partiallyUnsewed,
+    );
+    final updated = await professionalSurfaceApi!.updateRelations(
+      bodyId,
+      parameters: {
+        ...definition.parameters,
+        ...next.toJson(),
+        'health': {
+          'sewed': next.state == SewRelationState.sewed,
+          'closed': false,
+          'topologyOk': true,
+          'readyForSolid': false,
+        },
+        'reconstruction': {
+          'bodyCreated': next.state != SewRelationState.unsewed,
+          'topologyCompleted': false,
+        },
+      },
+    );
+    await _upsertProfessionalSurface(updated, command: 'body.unsew');
+    await refreshReconstructionManager();
+    notifyListeners();
+  }
+
+  Future<void> reenterProfessionalSew(String bodyId) async {
+    final raw = runtime.document?.entities[bodyId]?.data['professionalSurface'];
+    if (raw is! Map || professionalSurfaceApi == null) {
+      throw StateError('Body $bodyId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    final contract = ProfessionalSewContract.fromJson(definition.parameters);
+    runtime.select(contract.surfaceEntityIds.toSet());
+    await previewProfessionalSew(
+      tolerance: contract.tolerance,
+      compensate: contract.compensate,
+      selectionMode: contract.selectionMode,
+      featureId: bodyId,
+    );
+    await runtime.transitionFeature(
+      bodyId,
+      FeatureLifecycleState.editing,
+      command: 'body.sew.reenter',
+    );
+  }
+
+  Future<void> previewProfessionalSurfaceFillet(
+    ProfessionalSurfaceFilletContract contract,
+  ) async {
+    final api = professionalSurfaceApi;
+    _surfaceFilletConstraints.solve(contract);
+    if (api == null || !canPreviewSurfaceFillet(contract.selectionMode)) {
+      throw StateError('Complete the Surface Fillet selection.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final selectedById = {
+        for (final entity in [
+          ..._selectedSurfaceFilletSources,
+          ..._selectedSurfaceFilletEdges,
+        ])
+          entity.id: entity,
+      };
+      final ordered = [
+        ...contract.sourceEntityIds,
+        ...contract.edgeEntityIds,
+      ].map((id) => selectedById[id]).whereType<CadDocumentEntity>();
+      final handles = <ShapeHandle>[];
+      for (final entity in ordered) {
+        handles.add(await runtime.loadShape(entity.shape!));
+      }
+      final id = ProfessionalSurfaceFilletNaming.nextId(
+        runtime.document!.entities.keys,
+      );
+      final recognitionRadius = selectedRecognitionFilletRadius;
+      final parameters = {
+        ...contract.toJson(),
+        'recognitionRadius': recognitionRadius,
+        'featureType': 'surfaceFillet',
+        'shapeHandles': handles.map((item) => item.toJson()).toList(),
+        'sourceEntityIds': contract.sourceEntityIds,
+        'edgeEntityIds': contract.edgeEntityIds,
+        'sourceRevisions': {
+          for (final entity in ordered) entity.id: _loftSourceRevision(entity),
+        },
+        'surfaceAnalyses': const <Map<String, dynamic>>[],
+      };
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.fillet,
+        featureId: id,
+        name: id,
+        references: handles.map((item) => item.persistentId).toList(),
+        parameters: parameters,
+        continuity: contract.continuity == SurfaceFilletContinuity.g1
+            ? SurfaceContinuity.g1
+            : SurfaceContinuity.g0,
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> previewProfessionalFill() async {
+    final api = professionalSurfaceApi;
+    final boundaries = _selectedFillBoundaries;
+    if (api == null || boundaries.isEmpty) {
+      throw StateError(
+        'Select one closed Wire or all Edges of the Fill loops.',
+      );
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final boundaryHandles = <ShapeHandle>[];
+      final supportHandles = <String, ShapeHandle>{};
+      for (final boundary in boundaries) {
+        boundaryHandles.add(await runtime.loadShape(boundary.shape!));
+        final supportId = boundary.data['parentSurfaceId'] as String?;
+        final support = runtime.document?.entities[supportId];
+        if (supportId != null && support?.shape != null) {
+          supportHandles[supportId] = await runtime.loadShape(support!.shape!);
+        }
+      }
+      final conditions = <FillBoundaryCondition>[];
+      for (var index = 0; index < boundaries.length; index++) {
+        final boundary = boundaries[index];
+        final supportId = boundary.data['parentSurfaceId'] as String?;
+        conditions.add(
+          FillBoundaryCondition(
+            boundaryEntityId: boundary.id,
+            boundaryShapeId: boundaryHandles[index].persistentId,
+            loopId: boundary.data['loopId'] as String? ?? 'outer',
+            revision: _loftSourceRevision(boundary),
+            supportSurfaceId: supportId,
+            supportShapeId: supportHandles[supportId]?.persistentId,
+          ),
+        );
+      }
+      final id = ProfessionalFillNaming.nextId(runtime.document!.entities.keys);
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.fill,
+        featureId: id,
+        name: id,
+        references: boundaryHandles.map((item) => item.persistentId).toList(),
+        parameters: {
+          'featureType': 'fill',
+          'shapeHandles': boundaryHandles.map((item) => item.toJson()).toList(),
+          'supportShapeHandles': [
+            for (var index = 0; index < conditions.length; index++)
+              (supportHandles[conditions[index].supportSurfaceId] ??
+                      boundaryHandles[index])
+                  .toJson(),
+          ],
+          'boundaryCount': boundaryHandles.length,
+          'sourceEntityIds': boundaries.map((item) => item.id).toList(),
+          'boundaryConditions': conditions
+              .map((item) => item.toJson())
+              .toList(),
+          'boundaryContinuities': conditions
+              .map((item) => item.continuity.name)
+              .toList(),
+          'boundaryInfluences': conditions
+              .map((item) => item.influence)
+              .toList(),
+          'loopIds': conditions.map((item) => item.loopId).toList(),
+          'supportShapeIds': conditions
+              .map((item) => item.supportShapeId)
+              .toList(),
+          'g2Supported': false,
+          'unlimitedBoundaryCount': true,
+        },
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> previewProfessionalBlend({
+    BlendContinuity firstContinuity = BlendContinuity.g0,
+    BlendContinuity secondContinuity = BlendContinuity.g0,
+    double firstInfluence = 1,
+    double secondInfluence = 1,
+  }) async {
+    final api = professionalSurfaceApi;
+    final surfaces = _selectedBlendSurfaces;
+    final boundaries = _selectedBlendBoundaries;
+    if (api == null || !canPreviewBlend) {
+      throw StateError(
+        'Select two Surfaces and, optionally, one Edge from each Surface.',
+      );
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final surfaceHandles = <ShapeHandle>[];
+      final boundaryHandles = <ShapeHandle>[];
+      for (final surface in surfaces) {
+        surfaceHandles.add(await runtime.loadShape(surface.shape!));
+      }
+      for (final boundary in boundaries) {
+        boundaryHandles.add(await runtime.loadShape(boundary.shape!));
+      }
+      BlendSurfaceReference referenceFor(int index) {
+        final surface = surfaces[index];
+        final boundary = boundaries
+            .where((edge) => edge.data['parentSurfaceId'] == surface.id)
+            .firstOrNull;
+        final boundaryIndex = boundary == null
+            ? -1
+            : boundaries.indexOf(boundary);
+        return BlendSurfaceReference(
+          entityId: surface.id,
+          revision: _loftSourceRevision(surface),
+          shapeId: surfaceHandles[index].persistentId,
+          boundaryEntityId: boundary?.id,
+          boundaryShapeId: boundaryIndex < 0
+              ? null
+              : boundaryHandles[boundaryIndex].persistentId,
+          continuity: index == 0 ? firstContinuity : secondContinuity,
+          influence: index == 0 ? firstInfluence : secondInfluence,
+        );
+      }
+
+      final participants = [referenceFor(0), referenceFor(1)];
+      final continuity =
+          firstContinuity == BlendContinuity.g1 ||
+              secondContinuity == BlendContinuity.g1
+          ? BlendContinuity.g1
+          : BlendContinuity.g0;
+      final plan = _blendConstraints.solve(
+        first: participants.first,
+        second: participants.last,
+        continuity: continuity,
+      );
+      final health = _blendConstraints.health(
+        first: participants.first,
+        second: participants.last,
+        continuity: continuity,
+      );
+      final blendId = ProfessionalBlendNaming.nextId(
+        runtime.document!.entities.keys,
+      );
+      final handles = [...surfaceHandles, ...boundaryHandles];
+      final surfaceContinuity = continuity == BlendContinuity.g1
+          ? SurfaceContinuity.g1
+          : SurfaceContinuity.g0;
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.blend,
+        featureId: blendId,
+        name: blendId,
+        references: handles.map((item) => item.persistentId).toList(),
+        parameters: {
+          'featureType': 'blend',
+          'shapeHandles': handles.map((item) => item.toJson()).toList(),
+          'sourceEntityIds': surfaces.map((item) => item.id).toList(),
+          'participants': participants.map((item) => item.toJson()).toList(),
+          'boundaryEntityIds': boundaries.map((item) => item.id).toList(),
+          'continuity': surfaceContinuity.name.toUpperCase(),
+          'sideContinuities': participants
+              .map((item) => item.continuity.name)
+              .toList(),
+          'sideInfluences': participants.map((item) => item.influence).toList(),
+          'solverContract': 'flcad.geometry-constraint-solver/v1',
+          'solverAnchor': plan.anchor,
+          'solverMoving': plan.moving,
+          'health': health.toJson(),
+          'area': 0.0,
+          'g2Supported': false,
+          'multiBlend': false,
+          'variableBlend': false,
+          'classABlend': false,
+        },
+        continuity: surfaceContinuity,
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+      await _reportProfessionalSurfaceResult(
+        tool: ProfessionalSurfaceTool.blend,
+        handle: handle,
+        affectedEntities: 2,
+        parameters: professionalSurfacePreview!.definition.parameters,
+        state: 'Preview',
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  bool get canPreviewSweep {
+    final sources = _selectedSweepSourceEntities;
+    if (sources.length != 2) return false;
+    final profileKind = _sweepInputKind(sources.first);
+    final pathKind = _sweepInputKind(sources.last);
+    if (profileKind == null || pathKind == null) return false;
+    final profile = SweepInputReference(
+      entityId: sources.first.id,
+      kind: profileKind,
+      revision: _loftSourceRevision(sources.first),
+      shapeId: 'selection',
+    );
+    final path = SweepInputReference(
+      entityId: sources.last.id,
+      kind: pathKind,
+      revision: _loftSourceRevision(sources.last),
+      shapeId: 'selection',
+    );
+    return _sweepConstraints.health(profile: profile, path: path).ready;
+  }
+
+  List<CadDocumentEntity> get _selectedSweepSourceEntities {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where((entity) => _sweepInputKind(entity) != null)
+        .toList(growable: false);
+  }
+
+  SweepInputKind? _sweepInputKind(CadDocumentEntity entity) {
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['sketch'] is Map) {
+      return SweepInputKind.sketch;
+    }
+    if (entity.kind == CadDocumentEntityKind.section) {
+      return SweepInputKind.referenceCurve;
+    }
+    if (entity.kind == CadDocumentEntityKind.edge && entity.shape != null) {
+      return SweepInputKind.edge;
+    }
+    return null;
+  }
+
+  Future<void> previewProfessionalSweep() async {
+    final api = professionalSurfaceApi;
+    final sources = _selectedSweepSourceEntities;
+    if (api == null || sources.length != 2 || !canPreviewSweep) {
+      throw StateError('Select profile first, then a compatible Sweep path.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      Future<ShapeHandle> resolve(CadDocumentEntity source) =>
+          switch (source.kind) {
+            CadDocumentEntityKind.sketch => _ensureSketchWire(
+              sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+            ),
+            CadDocumentEntityKind.section => _ensureSectionWire(source),
+            CadDocumentEntityKind.edge => runtime.loadShape(source.shape!),
+            _ => throw StateError('${source.id} is not a Sweep input.'),
+          };
+      final profileHandle = await resolve(sources.first);
+      final pathHandle = await resolve(sources.last);
+      final profile = SweepInputReference(
+        entityId: sources.first.id,
+        kind: _sweepInputKind(sources.first)!,
+        revision: _loftSourceRevision(sources.first),
+        shapeId: profileHandle.persistentId,
+      );
+      final path = SweepInputReference(
+        entityId: sources.last.id,
+        kind: _sweepInputKind(sources.last)!,
+        revision: _loftSourceRevision(sources.last),
+        shapeId: pathHandle.persistentId,
+      );
+      final plan = _sweepConstraints.solve(profile: profile, path: path);
+      final health = _sweepConstraints.health(profile: profile, path: path);
+      final sweepId = ProfessionalSweepNaming.nextId(
+        runtime.document!.entities.keys,
+      );
+      final handles = [profileHandle, pathHandle];
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.sweep,
+        featureId: sweepId,
+        name: sweepId,
+        references: handles.map((item) => item.persistentId).toList(),
+        parameters: {
+          'featureType': 'sweep',
+          'shapeHandles': handles.map((item) => item.toJson()).toList(),
+          'sourceEntityIds': sources.map((item) => item.id).toList(),
+          'profile': profile.toJson(),
+          'path': path.toJson(),
+          'continuity': 'G0',
+          'solverContract': 'flcad.geometry-constraint-solver/v1',
+          'solverAnchor': plan.anchor,
+          'solverMoving': plan.moving,
+          'health': health.toJson(),
+          'multiplePaths': false,
+          'guideCurves': const <String>[],
+          'twist': false,
+          'scaling': false,
+        },
+        continuity: SurfaceContinuity.g0,
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+      await _reportProfessionalSurfaceResult(
+        tool: ProfessionalSurfaceTool.sweep,
+        handle: handle,
+        affectedEntities: 2,
+        parameters: professionalSurfacePreview!.definition.parameters,
+        state: 'Preview',
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  bool get canPreviewLoft {
+    final sources = _selectedLoftSourceEntities;
+    if (sources.length != 2) return false;
+    final first = _loftSectionKind(sources.first);
+    final second = _loftSectionKind(sources.last);
+    return first != null && first == second;
+  }
+
+  List<CadDocumentEntity> get _selectedLoftSourceEntities {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return runtime.selection
+        .map((id) => document.entities[id])
+        .whereType<CadDocumentEntity>()
+        .where((entity) => _loftSectionKind(entity) != null)
+        .toList(growable: false);
+  }
+
+  LoftSectionKind? _loftSectionKind(CadDocumentEntity entity) {
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['sketch'] is Map) {
+      return LoftSectionKind.sketch;
+    }
+    if (entity.kind == CadDocumentEntityKind.section) {
+      return LoftSectionKind.referenceCurve;
+    }
+    if (entity.kind == CadDocumentEntityKind.edge && entity.shape != null) {
+      return LoftSectionKind.edge;
+    }
+    return null;
+  }
+
+  Future<void> previewProfessionalLoft() async {
+    final api = professionalSurfaceApi;
+    final sources = _selectedLoftSourceEntities;
+    if (api == null || sources.length != 2 || !canPreviewLoft) {
+      throw StateError(
+        'Select two Sketches, two Reference Curves, or two Edges.',
+      );
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final handles = <ShapeHandle>[];
+      final sections = <LoftSectionReference>[];
+      for (final source in sources) {
+        final handle = switch (source.kind) {
+          CadDocumentEntityKind.sketch => await _ensureSketchWire(
+            sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+          ),
+          CadDocumentEntityKind.section => await _ensureSectionWire(source),
+          CadDocumentEntityKind.edge => await runtime.loadShape(source.shape!),
+          _ => throw StateError('${source.id} is not a Loft section.'),
+        };
+        handles.add(handle);
+        sections.add(
+          LoftSectionReference(
+            entityId: source.id,
+            kind: _loftSectionKind(source)!,
+            revision: _loftSourceRevision(source),
+            shapeId: handle.persistentId,
+          ),
+        );
+      }
+      final plan = _loftConstraints.solve(sections);
+      final health = _loftConstraints.health(sections);
+      final loftId = ProfessionalLoftNaming.nextId(
+        runtime.document!.entities.keys,
+      );
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.loft,
+        featureId: loftId,
+        name: loftId,
+        references: handles.map((item) => item.persistentId).toList(),
+        parameters: {
+          'featureType': 'loft',
+          'shapeHandles': handles.map((item) => item.toJson()).toList(),
+          'sourceEntityIds': sources.map((item) => item.id).toList(),
+          'sections': sections.map((item) => item.toJson()).toList(),
+          'continuity': 'G0',
+          'solverContract': 'flcad.geometry-constraint-solver/v1',
+          'solverAnchor': plan.anchor,
+          'solverMoving': plan.moving,
+          'health': health.toJson(),
+        },
+        continuity: SurfaceContinuity.g0,
+      );
+      professionalSurfacePreview = await api.preview(draft.definition.id);
+      final handle = professionalSurfacePreview!.definition.handle!;
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+      await _reportProfessionalSurfaceResult(
+        tool: ProfessionalSurfaceTool.loft,
+        handle: handle,
+        affectedEntities: 2,
+        parameters: professionalSurfacePreview!.definition.parameters,
+        state: 'Preview',
+      );
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  int _loftSourceRevision(CadDocumentEntity source) {
+    final sketch = source.data['sketch'] as Map?;
+    final section = source.data['section'] as Map?;
+    final topology = source.data['topology'] as Map?;
+    return source.shape?.revision ??
+        (sketch?['version'] as num?)?.toInt() ??
+        (section?['revision'] as num?)?.toInt() ??
+        (source.data['revision'] as num?)?.toInt() ??
+        (topology?['revision'] as num?)?.toInt() ??
+        0;
   }
 
   Future<void> previewProfessionalSurface(ProfessionalSurfaceTool tool) async {
@@ -3940,6 +6473,43 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
+      if (preview.definition.tool == ProfessionalSurfaceTool.loft) {
+        _validateLoftDefinition(preview.definition);
+      }
+      if (preview.definition.tool == ProfessionalSurfaceTool.sweep) {
+        _validateSweepDefinition(preview.definition);
+      }
+      if (preview.definition.tool == ProfessionalSurfaceTool.blend) {
+        _validateBlendDefinition(preview.definition);
+      }
+      if (preview.definition.tool == ProfessionalSurfaceTool.fill) {
+        _validateFillDefinition(preview.definition);
+      }
+      if (preview.definition.tool == ProfessionalSurfaceTool.fillet) {
+        _validateSurfaceFilletDefinition(preview.definition);
+      }
+      if (preview.definition.tool == ProfessionalSurfaceTool.sew) {
+        _sewConstraints.solve(
+          ProfessionalSewContract.fromJson(preview.definition.parameters),
+        );
+        final contract = ProfessionalSewContract.fromJson(
+          preview.definition.parameters,
+        );
+        await professionalSurfaceApi!.preview(
+          preview.definition.id,
+          parameters: {
+            ...preview.definition.parameters,
+            ...ProfessionalSewContract(
+              surfaceEntityIds: contract.surfaceEntityIds,
+              selectionMode: contract.selectionMode,
+              tolerance: contract.tolerance,
+              compensate: contract.compensate,
+              gaps: contract.gaps,
+              state: SewRelationState.sewed,
+            ).toJson(),
+          },
+        );
+      }
       final confirmed = await professionalSurfaceApi!.confirm(
         preview.definition.id,
       );
@@ -3948,6 +6518,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         confirmed,
         command: 'surface.professional.confirm',
       );
+      await refreshReconstructionManager();
       if (confirmed.tool == ProfessionalSurfaceTool.offsetWalls &&
           confirmed.parameters['offsetMode'] == 'replace') {
         final sources =
@@ -3978,6 +6549,271 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     }
   }
 
+  void _validateBlendDefinition(ProfessionalSurfaceDefinition definition) {
+    final raw = definition.parameters['participants'] as List? ?? const [];
+    final participants = raw
+        .whereType<Map>()
+        .map(
+          (item) =>
+              BlendSurfaceReference.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList(growable: false);
+    if (participants.length != 2) {
+      throw StateError('Blend requires exactly two participating Surfaces.');
+    }
+    final continuity = switch (definition.continuity) {
+      SurfaceContinuity.g0 => BlendContinuity.g0,
+      SurfaceContinuity.g1 => BlendContinuity.g1,
+      SurfaceContinuity.g2 => BlendContinuity.g2Prepared,
+    };
+    final health = _blendConstraints.health(
+      first: participants.first,
+      second: participants.last,
+      continuity: continuity,
+    );
+    if (!health.ready) throw StateError(health.message);
+    _blendConstraints.solve(
+      first: participants.first,
+      second: participants.last,
+      continuity: continuity,
+    );
+  }
+
+  void _validateFillDefinition(ProfessionalSurfaceDefinition definition) {
+    final conditions =
+        (definition.parameters['boundaryConditions'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (item) => FillBoundaryCondition.fromJson(
+                Map<String, dynamic>.from(item),
+              ),
+            )
+            .toList(growable: false);
+    if (conditions.isEmpty) {
+      throw StateError('Fill requires at least one persistent boundary.');
+    }
+    for (final condition in conditions) {
+      condition.validate();
+    }
+  }
+
+  Future<void> reenterProfessionalBlend(String blendId) async {
+    final api = professionalSurfaceApi;
+    final entity = runtime.document?.entities[blendId];
+    final raw = entity?.data['professionalSurface'];
+    if (api == null || raw is! Map) {
+      throw StateError('Blend Feature $blendId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.blend) {
+      throw StateError('$blendId is not a Blend Feature.');
+    }
+    _validateBlendDefinition(definition);
+    professionalSurfacePreview = await api.preview(definition.id);
+    final handle = professionalSurfacePreview!.definition.handle;
+    if (handle != null) {
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    }
+    await runtime.transitionFeature(
+      blendId,
+      FeatureLifecycleState.editing,
+      command: 'blend.reenter',
+    );
+    notifyListeners();
+  }
+
+  Future<void> reenterProfessionalFill(String fillId) async {
+    final api = professionalSurfaceApi;
+    final entity = runtime.document?.entities[fillId];
+    final raw = entity?.data['professionalSurface'];
+    if (api == null || raw is! Map) {
+      throw StateError('Fill Feature $fillId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.fill) {
+      throw StateError('$fillId is not a Fill Feature.');
+    }
+    final conditions =
+        (definition.parameters['boundaryConditions'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (item) => FillBoundaryCondition.fromJson(
+                Map<String, dynamic>.from(item),
+              ),
+            )
+            .toList(growable: false);
+    if (conditions.isEmpty) {
+      throw StateError('Fill requires at least one persistent boundary.');
+    }
+    for (final condition in conditions) {
+      condition.validate();
+    }
+    professionalSurfacePreview = await api.preview(definition.id);
+    final handle = professionalSurfacePreview!.definition.handle;
+    if (handle != null) {
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    }
+    await runtime.transitionFeature(
+      fillId,
+      FeatureLifecycleState.editing,
+      command: 'fill.reenter',
+    );
+    notifyListeners();
+  }
+
+  void _validateSurfaceFilletDefinition(
+    ProfessionalSurfaceDefinition definition,
+  ) {
+    _surfaceFilletConstraints.solve(
+      ProfessionalSurfaceFilletContract.fromJson(definition.parameters),
+    );
+  }
+
+  Future<void> reenterProfessionalSurfaceFillet(String id) async {
+    final api = professionalSurfaceApi;
+    final raw = runtime.document?.entities[id]?.data['professionalSurface'];
+    if (api == null || raw is! Map) {
+      throw StateError('Surface Fillet $id is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.fillet) {
+      throw StateError('$id is not a Surface Fillet.');
+    }
+    _validateSurfaceFilletDefinition(definition);
+    professionalSurfacePreview = await api.preview(id);
+    final handle = professionalSurfacePreview!.definition.handle;
+    if (handle != null) {
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    }
+    await runtime.transitionFeature(
+      id,
+      FeatureLifecycleState.editing,
+      command: 'surface-fillet.reenter',
+    );
+    notifyListeners();
+  }
+
+  void _validateSweepDefinition(ProfessionalSurfaceDefinition definition) {
+    final rawProfile = definition.parameters['profile'];
+    final rawPath = definition.parameters['path'];
+    if (rawProfile is! Map || rawPath is! Map) {
+      throw StateError('Sweep profile or path contract is unavailable.');
+    }
+    final profile = SweepInputReference.fromJson(
+      Map<String, dynamic>.from(rawProfile),
+    );
+    final path = SweepInputReference.fromJson(
+      Map<String, dynamic>.from(rawPath),
+    );
+    final health = _sweepConstraints.health(profile: profile, path: path);
+    if (!health.ready) throw StateError(health.message);
+    _sweepConstraints.solve(profile: profile, path: path);
+  }
+
+  Future<void> reenterProfessionalSweep(String sweepId) async {
+    final api = professionalSurfaceApi;
+    final entity = runtime.document?.entities[sweepId];
+    final raw = entity?.data['professionalSurface'];
+    if (api == null || raw is! Map) {
+      throw StateError('Sweep Feature $sweepId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.sweep) {
+      throw StateError('$sweepId is not a Sweep Feature.');
+    }
+    _validateSweepDefinition(definition);
+    professionalSurfacePreview = await api.preview(definition.id);
+    final handle = professionalSurfacePreview!.definition.handle;
+    if (handle != null) {
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    }
+    await runtime.transitionFeature(
+      sweepId,
+      FeatureLifecycleState.editing,
+      command: 'sweep.reenter',
+    );
+    notifyListeners();
+  }
+
+  void _validateLoftDefinition(ProfessionalSurfaceDefinition definition) {
+    final raw = definition.parameters['sections'] as List? ?? const [];
+    final sections = raw
+        .whereType<Map>()
+        .map(
+          (item) =>
+              LoftSectionReference.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList(growable: false);
+    final health = _loftConstraints.health(sections);
+    if (!health.ready) throw StateError(health.message);
+    _loftConstraints.solve(sections);
+  }
+
+  Future<void> reenterProfessionalLoft(String loftId) async {
+    final api = professionalSurfaceApi;
+    final entity = runtime.document?.entities[loftId];
+    final raw = entity?.data['professionalSurface'];
+    if (api == null || raw is! Map) {
+      throw StateError('Loft Feature $loftId is unavailable.');
+    }
+    final definition = ProfessionalSurfaceDefinition.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (definition.tool != ProfessionalSurfaceTool.loft) {
+      throw StateError('$loftId is not a Loft Feature.');
+    }
+    _validateLoftDefinition(definition);
+    professionalSurfacePreview = await api.preview(definition.id);
+    final handle = professionalSurfacePreview!.definition.handle;
+    if (handle != null) {
+      await runtime.showTransientShape(
+        _professionalSurfaceVisual(
+          professionalSurfacePreview!.definition,
+          preview: true,
+        ),
+        handle,
+      );
+    }
+    await runtime.transitionFeature(
+      loftId,
+      FeatureLifecycleState.editing,
+      command: 'loft.reenter',
+    );
+    notifyListeners();
+  }
+
   Future<void> updateProfessionalSurfacePreview({
     Map<String, dynamic> parameters = const {},
     SurfaceContinuity? continuity,
@@ -3985,6 +6821,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final api = professionalSurfaceApi;
     final current = professionalSurfacePreview;
     if (api == null || current == null) return;
+    if (current.definition.tool == ProfessionalSurfaceTool.blend &&
+        continuity == SurfaceContinuity.g2) {
+      throw UnsupportedError('G2 is prepared but not implemented for Blend.');
+    }
     busy = true;
     error = null;
     notifyListeners();
@@ -4221,6 +7061,227 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     }
   }
 
+  ContinuitySurfaceReference _continuityReference(CadDocumentEntity surface) {
+    final document = runtime.document!;
+    final boundaries = <String>{
+      ...(surface.data['sourceEntityIds'] as List? ?? const [])
+          .whereType<String>(),
+    };
+    for (final child in document.entities.values.where(
+      (item) => item.data['parentSurfaceId'] == surface.id,
+    )) {
+      final topology = child.data['topology'] as Map?;
+      final source = topology?['sourceEntityId'];
+      if (source is String) boundaries.add(source);
+      boundaries.addAll(
+        (child.data['references'] as List? ?? const [])
+            .whereType<String>()
+            .where((id) => id != surface.id),
+      );
+    }
+    return ContinuitySurfaceReference(
+      id: surface.id,
+      shapeId: surface.shape!.persistentId,
+      boundaryIds: boundaries,
+      revision: surface.shape!.revision,
+    );
+  }
+
+  Future<SurfaceContinuityRelation> inspectSelectedG0() async {
+    final surfaces = selectedContinuitySurfaces;
+    if (surfaces.length != 2) {
+      throw StateError('Select exactly two Surfaces for continuity analysis.');
+    }
+    final relation = _continuityEngine.inspectG0(
+      _continuityReference(surfaces.first),
+      _continuityReference(surfaces.last),
+    );
+    await _persistContinuityRelation(relation);
+    notifyListeners();
+    return relation;
+  }
+
+  Future<void> previewSelectedG1() async {
+    final api = professionalSurfaceApi;
+    final surfaces = selectedContinuitySurfaces;
+    if (api == null || surfaces.length != 2) {
+      throw StateError('Select exactly two Surfaces for G1.');
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final relation = _continuityEngine.previewG1(
+        _continuityReference(surfaces.first),
+        _continuityReference(surfaces.last),
+      );
+      final handles = <ShapeHandle>[
+        await runtime.loadShape(surfaces.last.shape!),
+        await runtime.loadShape(surfaces.first.shape!),
+      ];
+      final previewId =
+          'continuity-preview-${DateTime.now().microsecondsSinceEpoch}';
+      final draft = api.begin(
+        tool: ProfessionalSurfaceTool.match,
+        featureId: previewId,
+        name: 'G1 Preview',
+        references: handles.map((item) => item.persistentId).toList(),
+        parameters: {
+          'shapeHandles': handles.map((item) => item.toJson()).toList(),
+          'sourceEntityIds': surfaces.map((item) => item.id).toList(),
+          'continuity': 1,
+          'pointsOnCurve': 16,
+          'tolerance3d': 1e-4,
+          'angularTolerance': 1e-2,
+          'curvatureTolerance': 1e-1,
+          'relation': relation.toJson(),
+          'solverContract': 'flcad.geometry-constraint-solver/v1',
+        },
+        continuity: SurfaceContinuity.g1,
+      );
+      final preview = await api.preview(draft.definition.id);
+      professionalSurfacePreview = preview;
+      runtime.write('continuity.preview', relation);
+      runtime.write('continuity.previewFeatureId', previewId);
+      if (preview.definition.handle != null) {
+        await runtime.showTransientShape(
+          _professionalSurfaceVisual(preview.definition, preview: true),
+          preview.definition.handle!,
+        );
+      }
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> confirmSelectedG1() async {
+    final api = professionalSurfaceApi;
+    final relation = continuityPreview;
+    final previewId = continuityPreviewFeatureId;
+    if (api == null || relation == null || previewId == null) return;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final result = await api.confirm(previewId);
+      final handle = result.handle!;
+      await runtime.persistShape(handle);
+      final target = runtime.document!.entities[relation.secondSurfaceId]!;
+      final previous = runtime.document!.entities[relation.id];
+      final confirmed = _continuityEngine.confirmG1(
+        relation,
+        previousRevision: previous?.data['continuityRelation'] is Map
+            ? ((previous!.data['continuityRelation'] as Map)['revision']
+                      as num?)
+                  ?.toInt()
+            : null,
+      );
+      await _persistContinuityRelation(
+        confirmed,
+        replacementSurface: CadDocumentEntity(
+          id: target.id,
+          kind: target.kind,
+          shape: handle,
+          data: _surfaceDataWithHandle(target.data, handle),
+        ),
+      );
+      runtime.hideTransient('preview:$previewId');
+      await api.discard(previewId);
+      professionalSurfacePreview = null;
+      runtime.write('continuity.preview', null);
+      runtime.write('continuity.previewFeatureId', null);
+    } catch (value) {
+      error = value.toString().replaceFirst('Bad state: ', '');
+      rethrow;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  void cancelSelectedG1() {
+    final api = professionalSurfaceApi;
+    final previewId = continuityPreviewFeatureId;
+    if (api != null && previewId != null) api.cancel(previewId);
+    if (previewId != null) runtime.hideTransient('preview:$previewId');
+    professionalSurfacePreview = null;
+    runtime.write('continuity.preview', null);
+    runtime.write('continuity.previewFeatureId', null);
+    notifyListeners();
+  }
+
+  Map<String, dynamic> _surfaceDataWithHandle(
+    Map<String, dynamic> source,
+    ShapeHandle handle,
+  ) {
+    final data = Map<String, dynamic>.from(source);
+    final geometry = Map<String, dynamic>.from(
+      data['sceneGeometry'] as Map? ?? const {},
+    )..['handle'] = handle.toJson();
+    data['sceneGeometry'] = geometry;
+    for (final key in const ['surface', 'professionalSurface']) {
+      final raw = data[key];
+      if (raw is Map) {
+        data[key] = Map<String, dynamic>.from(raw)
+          ..['handle'] = handle.toJson()
+          ..['revision'] = ((raw['revision'] as num?)?.toInt() ?? 0) + 1;
+      }
+    }
+    return data;
+  }
+
+  Future<void> _persistContinuityRelation(
+    SurfaceContinuityRelation relation, {
+    CadDocumentEntity? replacementSurface,
+  }) async {
+    final document = runtime.document!;
+    final first = document.entities[relation.firstSurfaceId]!;
+    final second =
+        replacementSurface ?? document.entities[relation.secondSurfaceId]!;
+    CadDocumentEntity withRelation(CadDocumentEntity source) {
+      final ids = <String>{
+        ...(source.data['surfaceContinuityRelations'] as List? ?? const [])
+            .whereType<String>(),
+        relation.id,
+      };
+      return CadDocumentEntity(
+        id: source.id,
+        kind: source.kind,
+        shape: source.shape,
+        mesh: source.mesh,
+        data: {...source.data, 'surfaceContinuityRelations': ids.toList()},
+      );
+    }
+
+    await runtime.mutate(
+      command: relation.g1
+          ? 'surface.continuity.g1.confirm'
+          : 'surface.continuity.g0.inspect',
+      upsert: [
+        withRelation(first),
+        withRelation(second),
+        CadDocumentEntity(
+          id: relation.id,
+          kind: CadDocumentEntityKind.constraint,
+          data: {
+            'name': '${relation.level.name.toUpperCase()} Continuity',
+            'group': 'Continuity',
+            'parentSurfaceIds': [
+              relation.firstSurfaceId,
+              relation.secondSurfaceId,
+            ],
+            'continuityRelation': relation.toJson(),
+            'sceneVisible': false,
+          },
+        ),
+      ],
+    );
+  }
+
   void clearProfessionalSurfaceAnalysis() {
     final selected = selectedProfessionalSurface;
     if (selected == null) return;
@@ -4241,6 +7302,84 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       );
     }
     runtime.write('surface.analysis', null);
+    notifyListeners();
+  }
+
+  Future<void> setSurfaceQualityAnalysis(
+    ProfessionalAnalysisKind kind, {
+    required bool enabled,
+    double? intensity,
+  }) async {
+    final surface = selectedSurfaceForQuality;
+    final api = professionalSurfaceApi;
+    if (surface == null ||
+        api == null ||
+        api.kernel is! SurfaceQualityKernelAPI) {
+      throw StateError('Select a Surface supported by the quality kernel.');
+    }
+    final current = {
+      for (final item in selectedSurfaceAnalysisSettings) item.kind: item,
+    };
+    final previous = current[kind];
+    current[kind] = SurfaceAnalysisSetting(
+      kind: kind,
+      enabled: enabled,
+      intensity: (intensity ?? previous?.intensity ?? 0.7).clamp(0.0, 1.0),
+    );
+    Map<String, dynamic>? metrics;
+    if (enabled) {
+      metrics = await (api.kernel as SurfaceQualityKernelAPI)
+          .inspectSurfaceQuality(
+            await runtime.loadShape(surface.shape!),
+            draftDirection: const [0, 0, 1],
+          );
+    }
+    final settings = ProfessionalAnalysisKind.values
+        .map(
+          (item) =>
+              current[item] ??
+              SurfaceAnalysisSetting(
+                kind: item,
+                enabled: false,
+                intensity: 0.7,
+              ),
+        )
+        .toList(growable: false);
+    final modes = settings
+        .where((item) => item.enabled)
+        .map((item) => item.kind.name)
+        .toList(growable: false);
+    final intensities = {
+      for (final item in settings) item.kind.name: item.intensity,
+    };
+    final geometry =
+        Map<String, dynamic>.from(
+            surface.data['sceneGeometry'] as Map? ??
+                runtime.scene.find(surface.id)?.geometry ??
+                const {},
+          )
+          ..['surfaceAnalysisModes'] = modes
+          ..['surfaceAnalysisIntensities'] = intensities;
+    await runtime.mutate(
+      command: 'surface.analysis.${kind.name}.${enabled ? 'on' : 'off'}',
+      upsert: [
+        CadDocumentEntity(
+          id: surface.id,
+          kind: surface.kind,
+          shape: surface.shape,
+          mesh: surface.mesh,
+          data: {
+            ...surface.data,
+            'surfaceAnalyses': settings.map((item) => item.toJson()).toList(),
+            'surfaceAnalysisMetrics': {
+              ...(surface.data['surfaceAnalysisMetrics'] as Map? ?? const {}),
+              kind.name: ?metrics,
+            },
+            'sceneGeometry': geometry,
+          },
+        ),
+      ],
+    );
     notifyListeners();
   }
 
@@ -5141,6 +8280,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       execute: (_) async {
         if (!sketchReadyForSurface) throw StateError(sketchSurfaceBlockReason);
         final sketch = activeSketch ?? (throw StateError('No active Sketch.'));
+        final definitiveExists =
+            surfaceGenerationApi?.engine.registry.surfaces.any(
+              (surface) =>
+                  surface.parameters['sourceSketchId'] == sketch.id &&
+                  runtime.document?.entities.containsKey(surface.surfaceId) ==
+                      true,
+            ) ??
+            false;
+        if (definitiveExists) {
+          throw StateError(
+            'A definitive planar Surface already follows this Sketch.',
+          );
+        }
+        final profile = _sketchSurfacePreviewBuilder.buildProfile(
+          entities: sketchEntities,
+          coordinates: sketch.coordinates,
+        );
+        if (profile.loops.length != 1) {
+          throw StateError(
+            'Planar Surface requires exactly one closed profile in this Sprint.',
+          );
+        }
         runtime.showTransient(
           _sketchSurfacePreviewBuilder.build(
             entities: sketchEntities,
@@ -5148,7 +8309,36 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           ),
         );
         runtime.write('sketch.surfacePreview.active', true);
-        surfacePlan = null;
+        final candidate = _planarSurface.candidateFor(sketch);
+        final strategy = SurfaceStrategy(
+          id: '${sketch.id}:planar-strategy',
+          candidateId: candidate.id,
+          score: 1,
+          cost: 0,
+          robustness: 1,
+          maintainability: 1,
+          predictedQuality: 1,
+          explanation: 'Healthy Sketch approved for one planar surface.',
+        );
+        surfacePlan = SurfacePlan(
+          id: '${sketch.id}:planar-preview',
+          projectId: configuredProjectId!,
+          candidates: [candidate],
+          strategies: [strategy],
+          selectedStrategyIds: [strategy.id],
+          boundaryReport: const BoundaryReport(
+            loops: 1,
+            openEdges: 0,
+            regions: 1,
+            crossings: 0,
+            islands: 0,
+            holes: 0,
+            quality: 1,
+          ),
+          createdAt: DateTime.now().toUtc(),
+          valid: true,
+          diagnostics: const [],
+        );
         stage = SketchSurfaceStage.surfacePreview;
         return 'surface-preview';
       },
@@ -5166,43 +8356,58 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       execute: (_) async {
         final plan =
             surfacePlan ?? (throw StateError('Preview the surface first.'));
-        final plane = activeReference!.geometry as PlaneGeometry;
-        final rectangle = _rectangleBounds();
+        if (!surfacePreviewActive || !plan.valid || !sketchReadyForSurface) {
+          throw StateError('Approve a valid Surface Preview first.');
+        }
+        final sketch = activeSketch ?? (throw StateError('No active Sketch.'));
         final candidate = plan.candidates.firstWhere(
           (item) => item.kind == SurfaceKind.plane,
         );
-        final results = await SurfaceBridge(surfaceGenerationApi!)
-            .generateApproved(
-              context: activeContext!.copyWith(userConfirmed: true),
-              sketch: activeSketch!,
-              plan: plan,
-              parameters: {
-                candidate.id: {
-                  'origin': plane.origin.toJson(),
-                  'normal': plane.normal.toJson(),
-                  'lowerBound': -rectangle.$1 / 2,
-                  'upperBound': rectangle.$1 / 2,
-                  'width': rectangle.$1,
-                  'height': rectangle.$2,
-                },
-              },
-            );
-        final result = results.where((item) => item.success).firstOrNull;
-        if (result?.surface == null) {
-          throw StateError('CAD kernel rejected surface generation.');
-        }
-        activeSurface = result!.surface;
+        final featureId = _planarSurfaceId(sketch.id);
+        activeSurface = await _planarSurface.build(
+          featureId: featureId,
+          sketch: sketch,
+          entities: sketchEntities,
+          health: sketchHealth,
+          candidate: candidate,
+          generation: surfaceGenerationApi!,
+        );
+        _lastConfirmedSurfacePlan = plan;
         runtime.hideTransient('surface-preview');
+        runtime.write('sketch.surfacePreview.active', false);
+        surfacePlan = null;
         await _upsertSurface(activeSurface!, command: 'surface.confirm');
         stage = SketchSurfaceStage.surfaceGenerated;
         return activeSurface!.surfaceId;
       },
       undo: (_) async {
         if (activeSurface != null) {
-          await runtime.removeEntity(
-            activeSurface!.surfaceId,
+          await surfaceGenerationApi!.engine.delete(activeSurface!.surfaceId);
+          final topologyIds =
+              runtime.document?.entities.values
+                  .where(
+                    (entity) =>
+                        entity.data['parentSurfaceId'] ==
+                        activeSurface!.surfaceId,
+                  )
+                  .map((entity) => entity.id)
+                  .toList() ??
+              const <String>[];
+          await runtime.mutate(
             command: 'surface.undo',
+            remove: [activeSurface!.surfaceId, ...topologyIds],
           );
+        }
+        final sketch = activeSketch;
+        if (sketch != null && sketchReadyForSurface) {
+          runtime.showTransient(
+            _sketchSurfacePreviewBuilder.build(
+              entities: sketchEntities,
+              coordinates: sketch.coordinates,
+            ),
+          );
+          runtime.write('sketch.surfacePreview.active', true);
+          surfacePlan = _lastConfirmedSurfacePlan;
         }
         stage = SketchSurfaceStage.surfacePreview;
         return 'surface hidden';
@@ -5211,30 +8416,146 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         if (activeSurface == null) {
           throw StateError('No generated surface to restore.');
         }
+        await surfaceGenerationApi!.engine.restore(activeSurface!);
+        runtime.hideTransient('surface-preview');
+        runtime.write('sketch.surfacePreview.active', false);
+        surfacePlan = null;
         await _upsertSurface(activeSurface!, command: 'surface.redo');
         stage = SketchSurfaceStage.surfaceGenerated;
         return activeSurface!.surfaceId;
       },
     );
+    register(
+      id: 'reverse.surface.reverseNormal',
+      execute: (parameters) async {
+        final before = _surfaceById(parameters['id']! as String);
+        parameters['before'] = before.toJson();
+        final after = await _reverseSurfaceNormal(before.surfaceId);
+        parameters['after'] = after.toJson();
+        return after.surfaceId;
+      },
+      undo: (parameters) async {
+        final before = GeneratedSurface.fromJson(
+          (parameters['before']! as Map).cast<String, dynamic>(),
+        );
+        await surfaceGenerationApi!.engine.restore(before);
+        activeSurface = before;
+        await _upsertSurface(before, command: 'surface.reverse-normal.undo');
+        return before.surfaceId;
+      },
+      redo: (parameters) async {
+        final after = GeneratedSurface.fromJson(
+          (parameters['after']! as Map).cast<String, dynamic>(),
+        );
+        await surfaceGenerationApi!.engine.restore(after);
+        activeSurface = after;
+        await _upsertSurface(after, command: 'surface.reverse-normal.redo');
+        return after.surfaceId;
+      },
+    );
+    register(
+      id: 'reverse.surface.offset.confirm',
+      execute: (parameters) async {
+        final created = await _confirmSurfaceOffset();
+        parameters['created'] = created.toJson();
+        return created.surfaceId;
+      },
+      undo: (parameters) async {
+        final created = GeneratedSurface.fromJson(
+          (parameters['created']! as Map).cast<String, dynamic>(),
+        );
+        await surfaceGenerationApi!.engine.delete(created.surfaceId);
+        final children =
+            runtime.document?.entities.values
+                .where(
+                  (entity) =>
+                      entity.data['parentSurfaceId'] == created.surfaceId,
+                )
+                .map((entity) => entity.id)
+                .toList() ??
+            const <String>[];
+        await runtime.mutate(
+          command: 'surface.offset.undo',
+          remove: [created.surfaceId, ...children],
+        );
+        activeSurface =
+            surfaceGenerationApi!.engine.registry.surfaces.lastOrNull;
+        return created.surfaceId;
+      },
+      redo: (parameters) async {
+        final created = GeneratedSurface.fromJson(
+          (parameters['created']! as Map).cast<String, dynamic>(),
+        );
+        await surfaceGenerationApi!.engine.restore(created);
+        activeSurface = created;
+        await _upsertSurface(created, command: 'surface.offset.redo');
+        return created.surfaceId;
+      },
+    );
+    for (final joined in const [true, false]) {
+      register(
+        id: joined ? 'reverse.surface.join' : 'reverse.surface.unjoin',
+        execute: (parameters) async {
+          final first = _surfaceById(parameters['first']! as String);
+          final second = _surfaceById(parameters['second']! as String);
+          parameters['before'] = [first.toJson(), second.toJson()];
+          final after = await _setSurfacesJoined(
+            first.surfaceId,
+            second.surfaceId,
+            joined: joined,
+          );
+          parameters['after'] = after.map((item) => item.toJson()).toList();
+          return joined ? 'joined' : 'unjoined';
+        },
+        undo: (parameters) async {
+          final values = (parameters['before']! as List)
+              .whereType<Map>()
+              .map(
+                (raw) => GeneratedSurface.fromJson(raw.cast<String, dynamic>()),
+              )
+              .toList();
+          for (final value in values) {
+            await surfaceGenerationApi!.engine.restore(value);
+            await _upsertSurface(value, command: 'surface.relation.undo');
+          }
+          activeSurface = values.last;
+          return 'relation restored';
+        },
+        redo: (parameters) async {
+          final values = (parameters['after']! as List)
+              .whereType<Map>()
+              .map(
+                (raw) => GeneratedSurface.fromJson(raw.cast<String, dynamic>()),
+              )
+              .toList();
+          for (final value in values) {
+            await surfaceGenerationApi!.engine.restore(value);
+            await _upsertSurface(value, command: 'surface.relation.redo');
+          }
+          activeSurface = values.last;
+          return 'relation reapplied';
+        },
+      );
+    }
     _commandsRegistered = true;
   }
 
-  (double, double) _rectangleBounds() {
-    final points = sketchEntities
-        .whereType<SketchLine>()
-        .expand(
-          (line) => [
-            SketchVector.fromJson(line.parameters['start']),
-            SketchVector.fromJson(line.parameters['end']),
-          ],
-        )
-        .toList();
-    if (points.isEmpty) throw StateError('A rectangular profile is required.');
-    final xs = points.map((point) => point.x).toList();
-    final ys = points.map((point) => point.y).toList();
-    xs.sort();
-    ys.sort();
-    return (xs.last - xs.first, ys.last - ys.first);
+  String _planarSurfaceId(String sketchId) {
+    final existing = surfaceGenerationApi?.engine.registry.surfaces
+        .where((surface) => surface.parameters['sourceSketchId'] == sketchId)
+        .firstOrNull;
+    if (existing != null) return existing.surfaceId;
+    final used =
+        runtime.document?.entities.values
+            .where((entity) => entity.kind == CadDocumentEntityKind.surface)
+            .map((entity) => entity.id)
+            .toSet() ??
+        const <String>{};
+    var number = 1;
+    while (used.contains('Surface${number.toString().padLeft(3, '0')}')) {
+      number++;
+    }
+    return 'Surface${number.toString().padLeft(3, '0')}';
   }
 
   Future<void> _upsertReference(
@@ -5255,7 +8576,11 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     bool preview = false,
   }) => CadSceneEntity(
     id: preview ? 'preview:${value.id}' : value.id,
-    kind: preview ? CadSceneEntityKind.preview : CadSceneEntityKind.surface,
+    kind: preview
+        ? CadSceneEntityKind.preview
+        : value.tool == ProfessionalSurfaceTool.sew
+        ? CadSceneEntityKind.surface
+        : CadSceneEntityKind.surface,
     transparent: preview,
     geometry: {
       'featureId': value.id,
@@ -5289,12 +8614,35 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               const <String>[];
     await runtime.upsertEntity(
       command: command,
-      kind: CadDocumentEntityKind.surface,
+      kind: value.tool == ProfessionalSurfaceTool.sew
+          ? CadDocumentEntityKind.shell
+          : CadDocumentEntityKind.surface,
       entity: _professionalSurfaceVisual(value),
       shape: value.handle,
       officialShape: value.handle != null,
       data: {
         'name': value.name,
+        if ({
+          ProfessionalSurfaceTool.loft,
+          ProfessionalSurfaceTool.sweep,
+          ProfessionalSurfaceTool.blend,
+          ProfessionalSurfaceTool.sew,
+        }.contains(value.tool)) ...{
+          'authoringRoot': true,
+          'authoringWorkspace': value.tool == ProfessionalSurfaceTool.sew
+              ? 'Bodies'
+              : 'Surfaces',
+          'group': value.tool == ProfessionalSurfaceTool.sew
+              ? 'Bodies'
+              : 'Surfaces',
+          'featureType': value.tool.name,
+          'parameters': value.parameters,
+          'references': sourceIds,
+          'dependencies': sourceIds,
+          'children': sourceIds,
+          'continuity': value.continuity.name.toUpperCase(),
+          'health': value.parameters['health'],
+        },
         'professionalSurface': value.toJson(),
         'sourceEntityIds': sourceIds,
         'associationState': 'current',
@@ -5361,18 +8709,164 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Future<void> _upsertSurface(
     GeneratedSurface surface, {
     required String command,
-  }) => runtime.upsertEntity(
-    command: command,
-    kind: CadDocumentEntityKind.surface,
-    entity: _surfaceScene.adapt(surface),
-    shape: surface.handle,
-    officialShape: true,
-    data: {'surface': surface.toJson()},
-  );
+  }) async {
+    final visual = _surfaceScene.adapt(surface);
+    final topology = SurfaceTopology.fromJson(
+      (surface.parameters['topology'] as Map).cast<String, dynamic>(),
+    );
+    final mode = SurfaceDisplayMode.values.byName(
+      surface.parameters['displayMode'] as String? ??
+          SurfaceDisplayMode.shadedWithEdges.name,
+    );
+    final previous = runtime.document?.entities[surface.surfaceId];
+    final parentVisible = previous?.data['sceneVisible'] as bool? ?? true;
+    final showEdges =
+        parentVisible &&
+        {
+          SurfaceDisplayMode.wireframe,
+          SurfaceDisplayMode.shadedWithEdges,
+        }.contains(mode);
+    final childIds = {
+      ...topology.edges.map((edge) => edge.id),
+      ...topology.vertices.map((vertex) => vertex.id),
+    };
+    final staleChildren =
+        runtime.document?.entities.values
+            .where(
+              (entity) =>
+                  entity.data['parentSurfaceId'] == surface.surfaceId &&
+                  !childIds.contains(entity.id),
+            )
+            .map((entity) => entity.id) ??
+        const <String>[];
+    CadDocumentEntity sceneEntity({
+      required String id,
+      required CadDocumentEntityKind kind,
+      required CadSceneEntityKind sceneKind,
+      required Map<String, dynamic> geometry,
+      required Map<String, dynamic> data,
+      bool visible = true,
+      bool transparent = false,
+      ShapeHandle? shape,
+    }) => CadDocumentEntity(
+      id: id,
+      kind: kind,
+      shape: shape,
+      data: {
+        ...data,
+        'collectionId': 'collection:modified',
+        'sceneKind': sceneKind.name,
+        'sceneGeometry': geometry,
+        'sceneVisible': visible,
+        'sceneTransparent': transparent,
+      },
+    );
+    await runtime.upsertEntityBatch(
+      command: command,
+      officialExportShapeId: surface.surfaceId,
+      remove: staleChildren,
+      entities: [
+        sceneEntity(
+          id: surface.surfaceId,
+          kind: CadDocumentEntityKind.surface,
+          sceneKind: CadSceneEntityKind.surface,
+          geometry: visual.geometry,
+          visible: parentVisible,
+          transparent: visual.transparent,
+          shape: surface.handle,
+          data: {
+            'name': surface.surfaceId,
+            'authoringRoot': true,
+            'authoringWorkspace': 'Surfaces',
+            'group': 'Surfaces',
+            'surface': surface.toJson(),
+            'parameters': surface.parameters,
+            'references': [
+              if (surface.parameters['sourceSketchId'] is String)
+                surface.parameters['sourceSketchId'],
+              if (surface.parameters['sourceSurfaceId'] is String)
+                surface.parameters['sourceSurfaceId'],
+              if (surface.parameters['sourceRecognitionId'] is String)
+                surface.parameters['sourceRecognitionId'],
+              ...(surface.parameters['joinedSurfaceIds'] as List? ?? const [])
+                  .whereType<String>(),
+            ],
+            'dependencies': [
+              if (surface.parameters['sourceSketchId'] is String)
+                surface.parameters['sourceSketchId'],
+              if (surface.parameters['sourceSurfaceId'] is String)
+                surface.parameters['sourceSurfaceId'],
+              if (surface.parameters['sourceRecognitionId'] is String)
+                surface.parameters['sourceRecognitionId'],
+            ],
+            'associationState': 'current',
+            'health': surface.parameters['health'],
+            'surfaceHealth': _professionalSurfaceOperations
+                .health(surface)
+                .toJson(),
+          },
+        ),
+        for (final edge in topology.edges)
+          sceneEntity(
+            id: edge.id,
+            kind: CadDocumentEntityKind.edge,
+            sceneKind: CadSceneEntityKind.curve,
+            visible: showEdges,
+            geometry: {
+              'points': edge.points,
+              'displayColor': 'surfaceEdge',
+              'strokeWidth': 1.0,
+            },
+            data: {
+              'name': edge.id,
+              'authoringRoot': true,
+              'authoringWorkspace': 'Surfaces',
+              'parentSurfaceId': surface.surfaceId,
+              'surfaceTopology': 'edge',
+              'topology': edge.toJson(),
+              'references': [surface.surfaceId, edge.sourceEntityId],
+              'dependencies': [surface.surfaceId, edge.sourceEntityId],
+            },
+          ),
+        for (final vertex in topology.vertices)
+          sceneEntity(
+            id: vertex.id,
+            kind: CadDocumentEntityKind.vertex,
+            sceneKind: CadSceneEntityKind.point,
+            visible: showEdges,
+            geometry: {
+              'origin': vertex.position,
+              'displayColor': 'surfaceVertex',
+            },
+            data: {
+              'name': vertex.id,
+              'authoringRoot': true,
+              'authoringWorkspace': 'Surfaces',
+              'parentSurfaceId': surface.surfaceId,
+              'surfaceTopology': 'vertex',
+              'topology': vertex.toJson(),
+              'references': [surface.surfaceId],
+              'dependencies': [surface.surfaceId],
+            },
+          ),
+      ],
+    );
+  }
 
   Future<void> _synchronizeSketchScene() async {
     final document = runtime.document;
     if (document == null) return;
+    // Undo/Redo restores deserialized Sketch instances. Rebind the Workspace
+    // to the canonical engine instance before publishing SceneGraph or Health.
+    final cachedActive = runtime.read<Sketch>('sketch.active');
+    final canonicalActiveId =
+        sketchApi?.engine.activeSketchId ?? cachedActive?.id;
+    if (canonicalActiveId != null) {
+      final canonicalActive = sketchApi?.sketches
+          .where((item) => item.id == canonicalActiveId)
+          .firstOrNull;
+      if (canonicalActive != null) activeSketch = canonicalActive;
+    }
     final allSketches = sketchApi?.sketches ?? const <Sketch>[];
     final allSketchEntities = <SketchEntity>[];
     final sketchByEntityId = <String, Sketch>{};
@@ -5539,12 +9033,673 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     await sketchApi?.persist();
     await editorApi?.persist();
     await constraintApi?.persist();
+    await _updateDependentPlanarSurfaces();
+    await refreshDependentProfessionalLofts();
+    await refreshDependentProfessionalSweeps();
+    await refreshDependentProfessionalBlends();
+    await refreshDependentProfessionalFills();
+    await refreshDependentProfessionalSurfaceFillets();
+    await refreshDependentProfessionalSewBodies();
+    await refreshDependentProfessionalExtrudes();
+    await refreshDependentProfessionalRevolves();
     _refreshSketchSurfacePreview();
     runtime.select(
       selectedConstraintIds.isNotEmpty
           ? selectedConstraintIds
           : _selectionWithDimensions(),
     );
+  }
+
+  Future<void> refreshDependentProfessionalLofts() async {
+    if (runtime.read<bool>('loft.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('loft.solverUpdate.active', true);
+    try {
+      final lofts = api.surfaces
+          .where(
+            (item) =>
+                item.tool == ProfessionalSurfaceTool.loft &&
+                item.status == SurfaceFeatureStatus.committed,
+          )
+          .toList(growable: false);
+      for (final loft in lofts) {
+        final rawSections = loft.parameters['sections'] as List? ?? const [];
+        final previous = rawSections
+            .whereType<Map>()
+            .map(
+              (item) => LoftSectionReference.fromJson(
+                Map<String, dynamic>.from(item),
+              ),
+            )
+            .toList(growable: false);
+        if (previous.length != 2) continue;
+        final sources = previous
+            .map((section) => document.entities[section.entityId])
+            .whereType<CadDocumentEntity>()
+            .toList(growable: false);
+        if (sources.length != 2) continue;
+        final currentRevisions = sources
+            .map(_loftSourceRevision)
+            .toList(growable: false);
+        if (currentRevisions[0] == previous[0].revision &&
+            currentRevisions[1] == previous[1].revision) {
+          continue;
+        }
+        final handles = <ShapeHandle>[];
+        final sections = <LoftSectionReference>[];
+        for (var index = 0; index < sources.length; index++) {
+          final source = sources[index];
+          final handle = switch (source.kind) {
+            CadDocumentEntityKind.sketch => await _ensureSketchWire(
+              sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+            ),
+            CadDocumentEntityKind.section => await _ensureSectionWire(source),
+            CadDocumentEntityKind.edge => await runtime.loadShape(
+              source.shape!,
+            ),
+            _ => throw StateError('${source.id} is not a Loft section.'),
+          };
+          handles.add(handle);
+          sections.add(
+            LoftSectionReference(
+              entityId: source.id,
+              kind: previous[index].kind,
+              revision: currentRevisions[index],
+              shapeId: handle.persistentId,
+            ),
+          );
+        }
+        _loftConstraints.solve(sections);
+        final health = _loftConstraints.health(sections);
+        final updated = await api.edit(
+          loft.id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...loft.parameters,
+            'shapeHandles': handles.map((item) => item.toJson()).toList(),
+            'sections': sections.map((item) => item.toJson()).toList(),
+            'health': health.toJson(),
+          },
+          continuity: SurfaceContinuity.g0,
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'loft.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('loft.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalSweeps() async {
+    if (runtime.read<bool>('sweep.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('sweep.solverUpdate.active', true);
+    try {
+      final sweeps = api.surfaces
+          .where(
+            (item) =>
+                item.tool == ProfessionalSurfaceTool.sweep &&
+                item.status == SurfaceFeatureStatus.committed,
+          )
+          .toList(growable: false);
+      for (final sweep in sweeps) {
+        final rawProfile = sweep.parameters['profile'];
+        final rawPath = sweep.parameters['path'];
+        if (rawProfile is! Map || rawPath is! Map) continue;
+        final previousProfile = SweepInputReference.fromJson(
+          Map<String, dynamic>.from(rawProfile),
+        );
+        final previousPath = SweepInputReference.fromJson(
+          Map<String, dynamic>.from(rawPath),
+        );
+        final profileSource = document.entities[previousProfile.entityId];
+        final pathSource = document.entities[previousPath.entityId];
+        if (profileSource == null || pathSource == null) continue;
+        final profileRevision = _loftSourceRevision(profileSource);
+        final pathRevision = _loftSourceRevision(pathSource);
+        if (profileRevision == previousProfile.revision &&
+            pathRevision == previousPath.revision) {
+          continue;
+        }
+        Future<ShapeHandle> resolve(CadDocumentEntity source) =>
+            switch (source.kind) {
+              CadDocumentEntityKind.sketch => _ensureSketchWire(
+                sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+              ),
+              CadDocumentEntityKind.section => _ensureSectionWire(source),
+              CadDocumentEntityKind.edge => runtime.loadShape(source.shape!),
+              _ => throw StateError('${source.id} is not a Sweep input.'),
+            };
+        final profileHandle = await resolve(profileSource);
+        final pathHandle = await resolve(pathSource);
+        final profile = SweepInputReference(
+          entityId: profileSource.id,
+          kind: previousProfile.kind,
+          revision: profileRevision,
+          shapeId: profileHandle.persistentId,
+        );
+        final path = SweepInputReference(
+          entityId: pathSource.id,
+          kind: previousPath.kind,
+          revision: pathRevision,
+          shapeId: pathHandle.persistentId,
+        );
+        _sweepConstraints.solve(profile: profile, path: path);
+        final health = _sweepConstraints.health(profile: profile, path: path);
+        final handles = [profileHandle, pathHandle];
+        final updated = await api.edit(
+          sweep.id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...sweep.parameters,
+            'shapeHandles': handles.map((item) => item.toJson()).toList(),
+            'profile': profile.toJson(),
+            'path': path.toJson(),
+            'health': health.toJson(),
+          },
+          continuity: SurfaceContinuity.g0,
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'sweep.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('sweep.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalSurfaceFillets() async {
+    if (runtime.read<bool>('surfaceFillet.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('surfaceFillet.solverUpdate.active', true);
+    try {
+      for (final fillet in api.surfaces.where(
+        (item) =>
+            item.tool == ProfessionalSurfaceTool.fillet &&
+            item.status == SurfaceFeatureStatus.committed,
+      )) {
+        final contract = ProfessionalSurfaceFilletContract.fromJson(
+          fillet.parameters,
+        );
+        final ids = [...contract.sourceEntityIds, ...contract.edgeEntityIds];
+        final entities = ids
+            .map((id) => document.entities[id])
+            .whereType<CadDocumentEntity>()
+            .toList(growable: false);
+        if (entities.length != ids.length) continue;
+        final previous = Map<String, dynamic>.from(
+          fillet.parameters['sourceRevisions'] as Map? ?? const {},
+        );
+        final changed = entities.any(
+          (entity) =>
+              (previous[entity.id] as num?)?.toInt() !=
+              _loftSourceRevision(entity),
+        );
+        if (!changed) continue;
+        final handles = <ShapeHandle>[];
+        for (final entity in entities) {
+          if (entity.shape == null) continue;
+          handles.add(await runtime.loadShape(entity.shape!));
+        }
+        if (handles.length != entities.length) continue;
+        final updated = await api.edit(
+          fillet.id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...fillet.parameters,
+            'shapeHandles': handles.map((item) => item.toJson()).toList(),
+            'sourceRevisions': {
+              for (final entity in entities)
+                entity.id: _loftSourceRevision(entity),
+            },
+          },
+          continuity: fillet.continuity,
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'surface-fillet.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('surfaceFillet.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalSewBodies() async {
+    if (runtime.read<bool>('sew.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('sew.solverUpdate.active', true);
+    try {
+      for (final body in api.surfaces.where(
+        (item) =>
+            item.tool == ProfessionalSurfaceTool.sew &&
+            item.status == SurfaceFeatureStatus.committed,
+      )) {
+        final contract = ProfessionalSewContract.fromJson(body.parameters);
+        if (contract.state == SewRelationState.unsewed) continue;
+        final entities = contract.attachedSurfaceIds
+            .map((id) => document.entities[id])
+            .whereType<CadDocumentEntity>()
+            .toList(growable: false);
+        if (entities.length < 2) continue;
+        final previous = Map<String, dynamic>.from(
+          body.parameters['sourceRevisions'] as Map? ?? const {},
+        );
+        if (entities.every(
+          (entity) =>
+              (previous[entity.id] as num?)?.toInt() ==
+              _loftSourceRevision(entity),
+        )) {
+          continue;
+        }
+        _sewConstraints.solve(contract);
+        final handles = <ShapeHandle>[];
+        for (final entity in entities) {
+          if (entity.shape != null) {
+            handles.add(await runtime.loadShape(entity.shape!));
+          }
+        }
+        if (handles.length != entities.length) continue;
+        final updated = await api.edit(
+          body.id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...body.parameters,
+            'shapeHandles': handles.map((item) => item.toJson()).toList(),
+            'sourceRevisions': {
+              for (final entity in entities)
+                entity.id: _loftSourceRevision(entity),
+            },
+          },
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'body.sew.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('sew.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalFills() async {
+    if (runtime.read<bool>('fill.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('fill.solverUpdate.active', true);
+    try {
+      final fills = api.surfaces.where(
+        (item) =>
+            item.tool == ProfessionalSurfaceTool.fill &&
+            item.status == SurfaceFeatureStatus.committed,
+      );
+      for (final fill in fills) {
+        final previous =
+            (fill.parameters['boundaryConditions'] as List? ?? const [])
+                .whereType<Map>()
+                .map(
+                  (item) => FillBoundaryCondition.fromJson(
+                    Map<String, dynamic>.from(item),
+                  ),
+                )
+                .toList(growable: false);
+        if (previous.isEmpty) continue;
+        final boundaries = previous
+            .map((item) => document.entities[item.boundaryEntityId])
+            .whereType<CadDocumentEntity>()
+            .toList(growable: false);
+        if (boundaries.length != previous.length ||
+            boundaries.every(
+              (item) =>
+                  _loftSourceRevision(item) ==
+                  previous
+                      .firstWhere(
+                        (condition) => condition.boundaryEntityId == item.id,
+                      )
+                      .revision,
+            )) {
+          continue;
+        }
+        final boundaryHandles = <ShapeHandle>[];
+        final supportHandles = <ShapeHandle>[];
+        final conditions = <FillBoundaryCondition>[];
+        for (var index = 0; index < boundaries.length; index++) {
+          final boundary = boundaries[index];
+          final old = previous[index];
+          final boundaryHandle = await runtime.loadShape(boundary.shape!);
+          boundaryHandles.add(boundaryHandle);
+          final support = old.supportSurfaceId == null
+              ? null
+              : document.entities[old.supportSurfaceId];
+          final supportHandle = support?.shape == null
+              ? boundaryHandle
+              : await runtime.loadShape(support!.shape!);
+          supportHandles.add(supportHandle);
+          conditions.add(
+            FillBoundaryCondition(
+              boundaryEntityId: boundary.id,
+              boundaryShapeId: boundaryHandle.persistentId,
+              loopId: old.loopId,
+              revision: _loftSourceRevision(boundary),
+              continuity: old.continuity,
+              influence: old.influence,
+              supportSurfaceId: old.supportSurfaceId,
+              supportShapeId: support?.shape == null
+                  ? null
+                  : supportHandle.persistentId,
+            ),
+          );
+        }
+        final updated = await api.edit(
+          fill.id,
+          references: boundaryHandles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...fill.parameters,
+            'shapeHandles': boundaryHandles
+                .map((item) => item.toJson())
+                .toList(),
+            'supportShapeHandles': supportHandles
+                .map((item) => item.toJson())
+                .toList(),
+            'boundaryConditions': conditions
+                .map((item) => item.toJson())
+                .toList(),
+          },
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'fill.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('fill.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalBlends() async {
+    if (runtime.read<bool>('blend.solverUpdate.active') == true) return;
+    final api = professionalSurfaceApi;
+    final document = runtime.document;
+    if (api == null || document == null) return;
+    runtime.write('blend.solverUpdate.active', true);
+    try {
+      final blends = api.surfaces.where(
+        (item) =>
+            item.tool == ProfessionalSurfaceTool.blend &&
+            item.status == SurfaceFeatureStatus.committed,
+      );
+      for (final blend in blends) {
+        final previous = (blend.parameters['participants'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (item) => BlendSurfaceReference.fromJson(
+                Map<String, dynamic>.from(item),
+              ),
+            )
+            .toList(growable: false);
+        if (previous.length != 2) continue;
+        final sources = previous
+            .map((item) => document.entities[item.entityId])
+            .whereType<CadDocumentEntity>()
+            .toList(growable: false);
+        if (sources.length != 2 || sources.any((item) => item.shape == null)) {
+          continue;
+        }
+        final revisions = sources
+            .map(_loftSourceRevision)
+            .toList(growable: false);
+        if (revisions[0] == previous[0].revision &&
+            revisions[1] == previous[1].revision) {
+          continue;
+        }
+        final surfaceHandles = <ShapeHandle>[];
+        final boundaryHandles = <ShapeHandle>[];
+        final participants = <BlendSurfaceReference>[];
+        for (var index = 0; index < sources.length; index++) {
+          final surfaceHandle = await runtime.loadShape(sources[index].shape!);
+          surfaceHandles.add(surfaceHandle);
+          final boundaryId = previous[index].boundaryEntityId;
+          final boundary = boundaryId == null
+              ? null
+              : document.entities[boundaryId];
+          ShapeHandle? boundaryHandle;
+          if (boundary?.shape != null) {
+            boundaryHandle = await runtime.loadShape(boundary!.shape!);
+            boundaryHandles.add(boundaryHandle);
+          }
+          participants.add(
+            BlendSurfaceReference(
+              entityId: sources[index].id,
+              revision: revisions[index],
+              shapeId: surfaceHandle.persistentId,
+              boundaryEntityId: boundaryId,
+              boundaryShapeId: boundaryHandle?.persistentId,
+            ),
+          );
+        }
+        final continuity = blend.continuity == SurfaceContinuity.g1
+            ? BlendContinuity.g1
+            : BlendContinuity.g0;
+        _blendConstraints.solve(
+          first: participants.first,
+          second: participants.last,
+          continuity: continuity,
+        );
+        final health = _blendConstraints.health(
+          first: participants.first,
+          second: participants.last,
+          continuity: continuity,
+        );
+        final handles = [...surfaceHandles, ...boundaryHandles];
+        final updated = await api.edit(
+          blend.id,
+          references: handles.map((item) => item.persistentId).toList(),
+          parameters: {
+            ...blend.parameters,
+            'shapeHandles': handles.map((item) => item.toJson()).toList(),
+            'participants': participants.map((item) => item.toJson()).toList(),
+            'health': health.toJson(),
+          },
+          continuity: blend.continuity,
+        );
+        await _upsertProfessionalSurface(
+          updated,
+          command: 'blend.solver.propagate',
+        );
+      }
+    } finally {
+      runtime.write('blend.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalExtrudes() async {
+    if (runtime.read<bool>('extrude.solverUpdate.active') == true) return;
+    final document = runtime.document;
+    if (document == null) return;
+    runtime.write('extrude.solverUpdate.active', true);
+    final previousSelection = Set<String>.from(runtime.selection);
+    try {
+      final extrudes = document.entities.values
+          .where((entity) => entity.data['extrudeFeature'] is Map)
+          .toList();
+      for (final entity in extrudes) {
+        final raw = Map<String, dynamic>.from(
+          entity.data['extrudeFeature'] as Map,
+        );
+        final contract = ProfessionalExtrudeContract.fromJson(
+          Map<String, dynamic>.from(raw['contract'] as Map),
+        );
+        final source = document.entities[contract.sourceEntityId];
+        if (source == null ||
+            _loftSourceRevision(source) == contract.sourceRevision) {
+          continue;
+        }
+        runtime.select({source.id});
+        await previewProfessionalExtrude(
+          featureId: entity.id,
+          distance: contract.distance,
+          direction: contract.direction,
+          output: contract.output,
+        );
+        await confirmProfessionalExtrude();
+      }
+    } finally {
+      runtime.select(previousSelection);
+      runtime.write('extrude.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> refreshDependentProfessionalRevolves() async {
+    if (runtime.read<bool>('revolve.solverUpdate.active') == true) return;
+    final document = runtime.document;
+    if (document == null) return;
+    runtime.write('revolve.solverUpdate.active', true);
+    final previousSelection = Set<String>.from(runtime.selection);
+    try {
+      final features = document.entities.values
+          .where((entity) => entity.data['revolveFeature'] is Map)
+          .toList();
+      for (final entity in features) {
+        final raw = Map<String, dynamic>.from(
+          entity.data['revolveFeature'] as Map,
+        );
+        final contract = ProfessionalRevolveContract.fromJson(
+          Map<String, dynamic>.from(raw['contract'] as Map),
+        );
+        final profile = document.entities[contract.profileEntityId],
+            axis = document.entities[contract.axisEntityId];
+        if (profile == null || axis == null) {
+          continue;
+        }
+        if (_loftSourceRevision(profile) == contract.profileRevision &&
+            _loftSourceRevision(axis) == contract.axisRevision) {
+          continue;
+        }
+        runtime.select({profile.id, axis.id});
+        await previewProfessionalRevolve(
+          featureId: entity.id,
+          angleDegrees: contract.angleDegrees,
+          direction: contract.direction,
+        );
+        await confirmProfessionalRevolve();
+      }
+    } finally {
+      runtime.select(previousSelection);
+      runtime.write('revolve.solverUpdate.active', false);
+    }
+  }
+
+  Future<void> _updateDependentPlanarSurfaces() async {
+    if (runtime.read<bool>('surface.solverUpdate.active') == true) return;
+    final generation = surfaceGenerationApi;
+    final sketchEngine = sketchApi;
+    if (generation == null || sketchEngine == null) return;
+    runtime.write('surface.solverUpdate.active', true);
+    try {
+      for (final current in generation.engine.registry.surfaces.toList()) {
+        if (current.kind != SurfaceKind.plane) continue;
+        if (current.parameters['operation'] == 'offset') continue;
+        final sketchId = current.parameters['sourceSketchId'] as String?;
+        if (sketchId == null) continue;
+        final sketch = sketchEngine.sketches
+            .where((item) => item.id == sketchId)
+            .firstOrNull;
+        if (sketch == null) continue;
+        final entities = sketch.entityIds
+            .map(sketchEngine.entity)
+            .whereType<SketchEntity>()
+            .toList(growable: false);
+        final versions = {
+          for (final entity in entities) entity.id: entity.version,
+        };
+        if (jsonEncode(current.parameters['sourceEntityVersions']) ==
+            jsonEncode(versions)) {
+          continue;
+        }
+        final health = healthForSketch(sketchId);
+        if (!health.readyForSurface) {
+          final documentEntity = runtime.document?.entities[current.surfaceId];
+          if (documentEntity != null &&
+              documentEntity.data['associationState'] != 'update-blocked') {
+            await runtime.mutate(
+              command: 'surface.solver.update-blocked',
+              upsert: [
+                CadDocumentEntity(
+                  id: documentEntity.id,
+                  kind: documentEntity.kind,
+                  shape: documentEntity.shape,
+                  mesh: documentEntity.mesh,
+                  data: {
+                    ...documentEntity.data,
+                    'associationState': 'update-blocked',
+                    'updateDiagnostic':
+                        'Source Sketch is not Ready for Surface.',
+                  },
+                ),
+              ],
+            );
+          }
+          continue;
+        }
+        var updated = await _planarSurface.build(
+          featureId: current.surfaceId,
+          sketch: sketch,
+          entities: entities,
+          health: health,
+          candidate: _planarSurface.candidateFor(sketch),
+          generation: generation,
+        );
+        if (current.parameters['normalReversed'] == true) {
+          updated = await _professionalSurfaceOperations.reverseNormal(
+            source: updated,
+            generation: generation,
+            kernel: _surfaceOperationKernel!,
+          );
+        }
+        await _upsertSurface(updated, command: 'surface.solver.update');
+        if (activeSurface?.surfaceId == updated.surfaceId) {
+          activeSurface = updated;
+        }
+        final offsets = generation.engine.registry.surfaces
+            .where(
+              (surface) =>
+                  surface.parameters['operation'] == 'offset' &&
+                  surface.parameters['sourceSurfaceId'] == updated.surfaceId,
+            )
+            .toList();
+        for (final offset in offsets) {
+          final refreshed = await _professionalSurfaceOperations.offset(
+            featureId: offset.surfaceId,
+            source: updated,
+            distance: (offset.parameters['offsetDistance'] as num).toDouble(),
+            generation: generation,
+            kernel: _surfaceOperationKernel!,
+            existing: offset,
+          );
+          await _upsertSurface(
+            refreshed,
+            command: 'surface.offset.solver.update',
+          );
+          if (activeSurface?.surfaceId == refreshed.surfaceId) {
+            activeSurface = refreshed;
+          }
+        }
+      }
+    } finally {
+      runtime.write('surface.solverUpdate.active', false);
+    }
   }
 
   CadSceneEntity _dimensionVisual(SketchDimension dimension, Sketch? sketch) {

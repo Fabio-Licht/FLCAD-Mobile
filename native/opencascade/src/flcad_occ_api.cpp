@@ -8,6 +8,7 @@
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -17,6 +18,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <ChFi3d_FilletShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -25,6 +27,7 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -37,9 +40,11 @@
 #include <GeomPlate_MakeApprox.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BoundedSurface.hxx>
+#include <Geom_Curve.hxx>
 #include <IGESControl_Reader.hxx>
 #include <IGESControl_Writer.hxx>
 #include <Interface_Static.hxx>
+#include <NCollection_Array1.hxx>
 #include <OSD_OpenFile.hxx>
 #include <Poly_Triangulation.hxx>
 #include <RWStl.hxx>
@@ -54,10 +59,12 @@
 #include <Standard_Version.hxx>
 #include <StlAPI_Writer.hxx>
 #include <TopExp.hxx>
+#include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
@@ -79,6 +86,7 @@
 #include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Sphere.hxx>
 #include <gp_Torus.hxx>
 #include <gp_Trsf.hxx>
@@ -282,6 +290,30 @@ int flcad_occ_create_solid(const char *id, char *t, size_t ts, char *f,
     return fail(x.GetMessageString(), e, es);
   }
 }
+int flcad_occ_extrude(const char *id, const double *d, int solid_output,
+                      char *t, size_t ts, char *f, size_t fs, char *e,
+                      size_t es) {
+  try {
+    if (!d)
+      return fail("Extrude requires a direction vector", e, es);
+    TopoDS_Shape source = get(id);
+    if (solid_output && source.ShapeType() == TopAbs_WIRE) {
+      BRepBuilderAPI_MakeFace face(TopoDS::Wire(source), true);
+      if (!face.IsDone())
+        return fail("Extrude solid requires a closed planar profile", e, es);
+      source = face.Face();
+    } else if (!solid_output && source.ShapeType() == TopAbs_FACE) {
+      source = BRepTools::OuterWire(TopoDS::Face(source));
+    }
+    BRepPrimAPI_MakePrism prism(source, gp_Vec(d[0], d[1], d[2]), false, true);
+    prism.Build();
+    if (!prism.IsDone())
+      return fail("Extrude builder did not complete", e, es);
+    return output(prism.Shape(), t, ts, f, fs, e, es);
+  } catch (const Standard_Failure &x) {
+    return fail(x.GetMessageString(), e, es);
+  }
+}
 int flcad_occ_create_plane(const double *o, const double *n, double l, double u,
                            char *t, size_t ts, char *f, size_t fs, char *e,
                            size_t es) {
@@ -289,6 +321,26 @@ int flcad_occ_create_plane(const double *o, const double *n, double l, double u,
     return output(
         BRepBuilderAPI_MakeFace(gp_Pln(point(o), direction(n)), l, u, l, u), t,
         ts, f, fs, e, es);
+  } catch (const Standard_Failure &x) {
+    return fail(x.GetMessageString(), e, es);
+  }
+}
+int flcad_occ_create_planar_face(const double *points, size_t point_count,
+                                 char *t, size_t ts, char *f, size_t fs,
+                                 char *e, size_t es) {
+  try {
+    if (!points || point_count < 3)
+      return fail("Planar face requires at least three profile points", e, es);
+    BRepBuilderAPI_MakePolygon polygon;
+    for (size_t i = 0; i < point_count; ++i)
+      polygon.Add(gp_Pnt(points[i * 3], points[i * 3 + 1], points[i * 3 + 2]));
+    polygon.Close();
+    if (!polygon.IsDone())
+      return fail("Planar profile wire could not be created", e, es);
+    BRepBuilderAPI_MakeFace face(polygon.Wire(), true);
+    if (!face.IsDone())
+      return fail("Planar profile does not define a valid face", e, es);
+    return output(face.Face(), t, ts, f, fs, e, es);
   } catch (const Standard_Failure &x) {
     return fail(x.GetMessageString(), e, es);
   }
@@ -728,22 +780,65 @@ int flcad_occ_surface_operation(const char *op, const char *source,
                                       n > 3 ? v[3] : 1e-4, n > 4 ? v[4] : 1e-4,
                                       n > 5 ? v[5] : 1e-3, n > 6 ? v[6] : .1,
                                       n > 7 ? v[7] : 1e-2);
+      const size_t declaredCount = n > 8 ? static_cast<size_t>(v[8]) : ids.size();
+      const size_t boundaryCount = std::min(declaredCount, ids.size());
+      std::vector<std::vector<TopoDS_Edge>> loopEdges;
       size_t boundaryIndex = 0;
-      for (const auto &id : ids) {
+      for (size_t idIndex = 0; idIndex < boundaryCount; ++idIndex) {
+        const auto &id = ids[idIndex];
         const TopoDS_Shape boundary = get(id.c_str());
-        const int requested = n > 8 + boundaryIndex * 2
-                                  ? static_cast<int>(v[8 + boundaryIndex * 2])
+        const int requested = n > 9 + boundaryIndex * 3
+                                  ? static_cast<int>(v[9 + boundaryIndex * 3])
                                   : 0;
+        const int loopIndex = n > 11 + boundaryIndex * 3
+                                  ? static_cast<int>(v[11 + boundaryIndex * 3])
+                                  : 0;
+        const double influence = n > 10 + boundaryIndex * 3
+                                     ? std::max(.05, std::min(1.0, v[10 + boundaryIndex * 3]))
+                                     : 1.0;
+        if (loopEdges.size() <= static_cast<size_t>(std::max(0, loopIndex)))
+          loopEdges.resize(static_cast<size_t>(std::max(0, loopIndex)) + 1);
         const GeomAbs_Shape continuity = requested >= 2   ? GeomAbs_C2
                                          : requested == 1 ? GeomAbs_C1
                                                           : GeomAbs_C0;
         if (boundary.ShapeType() == TopAbs_EDGE) {
-          maker.Add(TopoDS::Edge(boundary), continuity);
+          loopEdges[static_cast<size_t>(std::max(0, loopIndex))].push_back(
+              TopoDS::Edge(boundary));
+          if (requested == 1 && boundaryCount + boundaryIndex < ids.size() &&
+              get(ids[boundaryCount + boundaryIndex].c_str()).ShapeType() == TopAbs_FACE) {
+            Standard_Real first = 0.0, last = 0.0;
+            TopLoc_Location location;
+            Handle(Geom_Curve) curve = BRep_Tool::Curve(
+                TopoDS::Edge(boundary), location, first, last);
+            if (curve.IsNull())
+              return fail("Fill boundary has no geometric curve", e, es);
+            if (!location.IsIdentity())
+              curve = Handle(Geom_Curve)::DownCast(
+                  curve->Transformed(location.Transformation()));
+            const int segments =
+                1 + static_cast<int>(std::round(influence * 7));
+            for (int segment = 0; segment < segments; ++segment) {
+              const double a = first + (last - first) * segment / segments;
+              const double b = first + (last - first) * (segment + 1) / segments;
+              BRepBuilderAPI_MakeEdge part(curve, a, b);
+              if (!part.IsDone())
+                return fail("Fill influence subdivision failed", e, es);
+              maker.Add(
+                  part.Edge(),
+                  TopoDS::Face(
+                      get(ids[boundaryCount + boundaryIndex].c_str())),
+                  continuity);
+            }
+          } else {
+            maker.Add(TopoDS::Edge(boundary), continuity);
+          }
           ++boundaryIndex;
         } else if (boundary.ShapeType() == TopAbs_WIRE) {
           for (TopExp_Explorer ex(boundary, TopAbs_EDGE); ex.More();
                ex.Next()) {
             maker.Add(TopoDS::Edge(ex.Current()), continuity);
+            loopEdges[static_cast<size_t>(std::max(0, loopIndex))].push_back(
+                TopoDS::Edge(ex.Current()));
           }
           ++boundaryIndex;
         } else {
@@ -755,6 +850,25 @@ int flcad_occ_surface_operation(const char *op, const char *source,
       if (!maker.IsDone())
         return fail("BRepOffsetAPI_MakeFilling failed", e, es);
       result = maker.Shape();
+      if (loopEdges.size() > 1) {
+        std::vector<TopoDS_Wire> loops;
+        for (const auto &edges : loopEdges) {
+          BRepBuilderAPI_MakeWire wire;
+          for (const auto &edge : edges)
+            wire.Add(edge);
+          if (!wire.IsDone())
+            return fail("Fill loop is open or incompatible", e, es);
+          loops.push_back(wire.Wire());
+        }
+        const TopoDS_Face filledFace = first_face(result);
+        BRepBuilderAPI_MakeFace trimmed(BRep_Tool::Surface(filledFace),
+                                        loops.front(), true);
+        for (size_t loop = 1; loop < loops.size(); ++loop)
+          trimmed.Add(loops[loop]);
+        if (!trimmed.IsDone())
+          return fail("Fill internal loop trimming failed", e, es);
+        result = trimmed.Face();
+      }
     } else if (operation == "NURBS") {
       if (!source || !*source)
         return fail("NURBS conversion requires a source shape", e, es);
@@ -828,6 +942,10 @@ int flcad_occ_surface_operation(const char *op, const char *source,
               n > 3 ? static_cast<int>(v[3]) : 100, true, true);
       BRepTools_Modifier modifier(get(source), restriction);
       result = modifier.ModifiedShape(get(source));
+    } else if (operation == "REVERSE NORMAL") {
+      if (!source || !*source)
+        return fail("REVERSE NORMAL requires a source shape", e, es);
+      result = get(source).Reversed();
     } else if (operation == "OFFSET") {
       if (!source || !*source || n < 1)
         return fail("OFFSET requires source and distance", e, es);
@@ -1049,50 +1167,159 @@ int flcad_occ_surface_operation(const char *op, const char *source,
       for (TopExp_Explorer ex(get(source), TopAbs_EDGE); ex.More(); ex.Next())
         builder.Add(compound, ex.Current());
       result = compound;
-    } else if (operation == "BLEND") {
-      if (!source || !*source)
-        return fail("BLEND requires a source Shell or Solid", e, es);
-      TopoDS_Shape blendShape = get(source);
-      TopoDS_Edge blendEdge;
+    } else if (operation == "FILLET") {
+      std::vector<TopoDS_Shape> supports;
+      std::vector<TopoDS_Edge> requestedEdges;
       for (const auto &id : ids) {
         const TopoDS_Shape candidate = get(id.c_str());
-        if (candidate.ShapeType() == TopAbs_EDGE) {
-          blendEdge = TopoDS::Edge(candidate);
-          break;
-        }
+        if (candidate.ShapeType() == TopAbs_EDGE)
+          requestedEdges.push_back(TopoDS::Edge(candidate));
+        else
+          supports.push_back(candidate);
       }
-      if (blendEdge.IsNull() && !ids.empty()) {
-        BRepBuilderAPI_Sewing sewing(n > 2 ? v[2] : 1e-4);
-        sewing.Add(blendShape);
-        for (const auto &id : ids)
-          sewing.Add(get(id.c_str()));
+      if (supports.empty())
+        return fail("Surface Fillet requires support geometry", e, es);
+      TopoDS_Shape owner;
+      if (supports.size() == 1 &&
+          (supports.front().ShapeType() == TopAbs_SOLID ||
+           supports.front().ShapeType() == TopAbs_SHELL)) {
+        owner = supports.front();
+      } else {
+        BRepBuilderAPI_Sewing sewing(
+            n > 7 && v[6] != 0 ? std::max(1e-4, v[7]) : 1e-4);
+        for (const auto &support : supports)
+          sewing.Add(support);
         sewing.Perform();
-        blendShape = sewing.SewedShape();
-        TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
-        TopExp::MapShapesAndAncestors(blendShape, TopAbs_EDGE, TopAbs_FACE,
-                                     edgeFaces);
-        for (int index = 1; index <= edgeFaces.Extent(); ++index) {
-          if (edgeFaces.FindFromIndex(index).Extent() >= 2) {
-            blendEdge = TopoDS::Edge(edgeFaces.FindKey(index));
-            break;
+        owner = sewing.SewedShape();
+      }
+      std::vector<TopoDS_Edge> ownerEdges;
+      for (TopExp_Explorer ex(owner, TopAbs_EDGE); ex.More(); ex.Next())
+        ownerEdges.push_back(TopoDS::Edge(ex.Current()));
+      std::vector<TopoDS_Edge> edges;
+      for (const auto &requested : requestedEdges) {
+        double best = 1e100;
+        TopoDS_Edge match;
+        for (const auto &candidate : ownerEdges) {
+          BRepExtrema_DistShapeShape distance(requested, candidate);
+          distance.Perform();
+          if (distance.IsDone() && distance.Value() < best) {
+            best = distance.Value();
+            match = candidate;
           }
         }
+        if (!match.IsNull() && best <= (n > 7 && v[6] != 0 ? v[7] : 1e-4))
+          edges.push_back(match);
       }
-      if (blendEdge.IsNull())
-        return fail("BLEND requires an Edge shared by two support Faces", e,
-                    es);
-      BRepFilletAPI_MakeFillet maker(blendShape);
-      maker.SetContinuity(n > 1 && static_cast<int>(v[1]) >= 2
-                              ? GeomAbs_C2
-                              : n > 1 && static_cast<int>(v[1]) == 0
-                                    ? GeomAbs_C0
-                                    : GeomAbs_C1,
-                          n > 3 ? v[3] : 1e-3);
-      maker.Add(n > 0 ? v[0] : 1.0, blendEdge);
+      const int selectionMode = n > 8 ? static_cast<int>(v[8]) : 0;
+      if (edges.empty() && selectionMode == 3) {
+        edges = ownerEdges;
+      } else if (edges.empty()) {
+        TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+        TopExp::MapShapesAndAncestors(owner, TopAbs_EDGE, TopAbs_FACE,
+                                     edgeFaces);
+        for (int index = 1; index <= edgeFaces.Extent(); ++index) {
+          if (edgeFaces.FindFromIndex(index).Extent() >= 2)
+            edges.push_back(TopoDS::Edge(edgeFaces.FindKey(index)));
+        }
+      }
+      if (edges.empty())
+        return fail("Surface Fillet found no compatible Edge", e, es);
+      const int sizeMode = n > 0 ? static_cast<int>(v[0]) : 0;
+      const double radius = n > 1 ? v[1] : 5.0;
+      const double width = n > 2 ? v[2] : radius;
+      const bool trim = n <= 3 || v[3] != 0;
+      BRepFilletAPI_MakeFillet maker(owner);
+      maker.SetContinuity(n > 5 && static_cast<int>(v[5]) == 0
+                              ? GeomAbs_C0
+                              : GeomAbs_C1,
+                          1e-3);
+      if (sizeMode == 2)
+        maker.SetFilletShape(ChFi3d_QuasiAngular);
+      const int pointCount = n > 9 ? static_cast<int>(v[9]) : 0;
+      for (const auto &edge : edges) {
+        if (sizeMode == 1 && pointCount >= 2 &&
+            n >= static_cast<size_t>(10 + pointCount * 2)) {
+          NCollection_Array1<gp_Pnt2d> values(1, pointCount);
+          for (int pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+            values.SetValue(
+                pointIndex + 1,
+                gp_Pnt2d(v[10 + pointIndex * 2],
+                         v[11 + pointIndex * 2]));
+          maker.Add(values, edge);
+        } else {
+          maker.Add(sizeMode == 2 ? width : radius, edge);
+        }
+      }
       maker.Build();
       if (!maker.IsDone())
-        return fail("BRepFilletAPI_MakeFillet failed for the selected Edge", e,
-                    es);
+        return fail("Professional Surface Fillet failed", e, es);
+      if (trim) {
+        result = maker.Shape();
+      } else {
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        for (const auto &edge : edges) {
+          const TopTools_ListOfShape &generated = maker.Generated(edge);
+          for (TopTools_ListOfShape::Iterator it(generated); it.More();
+               it.Next())
+            if (it.Value().ShapeType() == TopAbs_FACE)
+              builder.Add(compound, it.Value());
+        }
+        result = compound;
+      }
+    } else if (operation == "BLEND") {
+      std::vector<TopoDS_Face> supportFaces;
+      if (source && *source)
+        supportFaces.push_back(first_face(get(source)));
+      std::vector<TopoDS_Edge> blendEdges;
+      for (const auto &id : ids) {
+        const TopoDS_Shape candidate = get(id.c_str());
+        if (candidate.ShapeType() == TopAbs_FACE)
+          supportFaces.push_back(TopoDS::Face(candidate));
+        if (candidate.ShapeType() == TopAbs_EDGE)
+          blendEdges.push_back(TopoDS::Edge(candidate));
+      }
+      if (supportFaces.size() != 2 || blendEdges.size() != 2)
+        return fail("BLEND requires two support Faces and one Edge from each Face",
+                    e, es);
+      BRepOffsetAPI_MakeFilling maker(
+          3, 15, 2, false,
+          n > 2 ? v[2] : 1e-4, n > 2 ? v[2] : 1e-4,
+          n > 3 ? v[3] : 1e-3, .1, 1e-2);
+      for (size_t side = 0; side < 2; ++side) {
+        const int requested = n > 4 + side * 2
+                                  ? static_cast<int>(v[4 + side * 2])
+                                  : 0;
+        const double influence = n > 5 + side * 2
+                                     ? std::max(.05, std::min(1.0, v[5 + side * 2]))
+                                     : 1.0;
+        if (requested == 1) {
+          Standard_Real first = 0.0, last = 0.0;
+          TopLoc_Location location;
+          Handle(Geom_Curve) curve =
+              BRep_Tool::Curve(blendEdges[side], location, first, last);
+          if (curve.IsNull())
+            return fail("Blend boundary has no geometric curve", e, es);
+          if (!location.IsIdentity())
+            curve = Handle(Geom_Curve)::DownCast(
+                curve->Transformed(location.Transformation()));
+          const int segments = 1 + static_cast<int>(std::round(influence * 7));
+          for (int segment = 0; segment < segments; ++segment) {
+            const double a = first + (last - first) * segment / segments;
+            const double b = first + (last - first) * (segment + 1) / segments;
+            BRepBuilderAPI_MakeEdge part(curve, a, b);
+            if (!part.IsDone())
+              return fail("Blend influence subdivision failed", e, es);
+            maker.Add(part.Edge(), supportFaces[side], GeomAbs_C1);
+          }
+        } else {
+          maker.Add(blendEdges[side], GeomAbs_C0);
+        }
+      }
+      maker.Build();
+      if (!maker.IsDone())
+        return fail("Blend filling failed for the selected boundaries", e, es);
       result = maker.Shape();
     } else if (operation == "MATCH") {
       if (!source || !*source || ids.empty())

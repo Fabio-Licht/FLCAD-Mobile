@@ -14,6 +14,25 @@ class SketchSurfacePreviewBuilder {
     required Iterable<SketchEntity> entities,
     required SketchCoordinateSystem coordinates,
   }) {
+    final profile = buildProfile(entities: entities, coordinates: coordinates);
+    return CadSceneEntity(
+      id: 'surface-preview',
+      kind: CadSceneEntityKind.preview,
+      transparent: true,
+      geometry: {
+        'surfaceKind': 'sketchPreview',
+        'displayColor': 'surfacePreviewBlue',
+        'previewOnly': true,
+        'nodes': profile.nodes,
+        'triangles': profile.triangles,
+      },
+    );
+  }
+
+  SketchSurfaceProfile buildProfile({
+    required Iterable<SketchEntity> entities,
+    required SketchCoordinateSystem coordinates,
+  }) {
     final loops = _loops(entities.where((e) => e.visible && !e.construction));
     if (loops.isEmpty) throw StateError('No closed profile is available.');
     final nodes = <double>[];
@@ -31,17 +50,15 @@ class SketchSurfacePreviewBuilder {
       }
     }
     if (triangles.isEmpty) throw StateError('The profile cannot be previewed.');
-    return CadSceneEntity(
-      id: 'surface-preview',
-      kind: CadSceneEntityKind.preview,
-      transparent: true,
-      geometry: {
-        'surfaceKind': 'sketchPreview',
-        'displayColor': 'surfacePreviewBlue',
-        'previewOnly': true,
-        'nodes': nodes,
-        'triangles': triangles,
-      },
+    return SketchSurfaceProfile(
+      nodes: List.unmodifiable(nodes),
+      triangles: List.unmodifiable(triangles),
+      loops: List<List<SketchVector>>.unmodifiable([
+        for (final loop in loops)
+          List<SketchVector>.unmodifiable(
+            _clean(loop).map(coordinates.localToGlobal),
+          ),
+      ]),
     );
   }
 
@@ -172,4 +189,16 @@ class SketchSurfacePreviewBuilder {
 
   bool _near(SketchVector a, SketchVector b) =>
       math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2)) <= tolerance;
+}
+
+class SketchSurfaceProfile {
+  const SketchSurfaceProfile({
+    required this.nodes,
+    required this.triangles,
+    required this.loops,
+  });
+
+  final List<double> nodes;
+  final List<int> triangles;
+  final List<List<SketchVector>> loops;
 }

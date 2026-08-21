@@ -592,6 +592,7 @@ class OpenCascadeKernelAdapter
       _ => 1,
     };
     return switch (operation) {
+      'REVERSE NORMAL' => const [],
       'LOFT' => [number('tolerance', 1e-6)],
       'FILL' || 'PATCH' => [
         number('degree', 3),
@@ -609,7 +610,9 @@ class OpenCascadeKernelAdapter
         continuity(),
         number('tolerance', 1e-4),
         number('angularTolerance', 1e-3),
+        ..._blendSideValues(parameters),
       ],
+      'FILLET' => _surfaceFilletValues(parameters),
       'MATCH' => [
         continuity(),
         number('pointsOnCurve', 10),
@@ -685,10 +688,16 @@ class OpenCascadeKernelAdapter
   static List<double> _boundaryValues(Map<String, dynamic> parameters) {
     final continuity = parameters['boundaryContinuities'] as List? ?? const [];
     final influence = parameters['boundaryInfluences'] as List? ?? const [];
+    final loops = parameters['loopIds'] as List? ?? const [];
     final count = continuity.length > influence.length
         ? continuity.length
         : influence.length;
+    final loopIndexes = <Object?, int>{};
+    for (final loop in loops) {
+      loopIndexes.putIfAbsent(loop, () => loopIndexes.length);
+    }
     return [
+      count.toDouble(),
       for (var index = 0; index < count; index++) ...[
         switch (index < continuity.length ? continuity[index] : 'g0') {
           'g2' || 'G2' || 2 => 2.0,
@@ -698,6 +707,55 @@ class OpenCascadeKernelAdapter
         index < influence.length
             ? ((influence[index] as num).toDouble()).clamp(0, 1)
             : 1.0,
+        (loopIndexes[index < loops.length ? loops[index] : 'outer'] ?? 0)
+            .toDouble(),
+      ],
+    ];
+  }
+
+  static List<double> _blendSideValues(Map<String, dynamic> parameters) {
+    final continuity = parameters['sideContinuities'] as List? ?? const [];
+    final influence = parameters['sideInfluences'] as List? ?? const [];
+    return [
+      for (var index = 0; index < 2; index++) ...[
+        switch (index < continuity.length ? continuity[index] : 'g0') {
+          'g1' || 'G1' || 1 => 1,
+          _ => 0,
+        },
+        index < influence.length
+            ? ((influence[index] as num).toDouble()).clamp(.05, 1)
+            : 1,
+      ],
+    ];
+  }
+
+  static List<double> _surfaceFilletValues(Map<String, dynamic> parameters) {
+    final points = parameters['radiusPoints'] as List? ?? const [];
+    return [
+      switch (parameters['sizeMode']) {
+        'variableRadius' => 1,
+        'constantWidth' => 2,
+        _ => 0,
+      },
+      (parameters['radius'] as num?)?.toDouble() ?? 5,
+      (parameters['width'] as num?)?.toDouble() ?? 5,
+      parameters['trim'] == false ? 0 : 1,
+      parameters['extend'] == true ? 1 : 0,
+      parameters['continuity'] == 'g0' ? 0 : 1,
+      parameters['compensate'] == true ? 1 : 0,
+      (parameters['compensationGap'] as num?)?.toDouble() ?? 0,
+      switch (parameters['selectionMode']) {
+        'multipleEdge' => 1,
+        'loop' => 2,
+        'face' => 3,
+        'faceToFace' => 4,
+        'tangentChain' => 5,
+        _ => 0,
+      },
+      points.length.toDouble(),
+      for (final raw in points.whereType<Map>()) ...[
+        (raw['parameter'] as num).toDouble(),
+        (raw['value'] as num).toDouble(),
       ],
     ];
   }
@@ -705,6 +763,7 @@ class OpenCascadeKernelAdapter
   static String? _professionalOperation(String value) {
     final normalized = value.toUpperCase().replaceAll('_', ' ');
     for (final operation in const [
+      'REVERSE NORMAL',
       'BOUNDARY EXTEND',
       'BOUNDARY TRIM',
       'OFFSET WALLS',
@@ -720,6 +779,7 @@ class OpenCascadeKernelAdapter
       'FILL',
       'PATCH',
       'BLEND',
+      'FILLET',
       'NURBS',
       'EXTEND',
       'REDUCE',

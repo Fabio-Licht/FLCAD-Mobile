@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import '../../../core/cad_document/cad_document.dart';
 import '../../../core/geometric_kernel/geometry/primitives.dart';
 import '../../../core/geometric_kernel/geometry/vectors.dart';
-import '../../../core/sketch_engine/api/sketch_engine_api.dart';
 import '../../runtime/cad_runtime.dart';
 import 'mesh_bvh.dart';
 import 'mesh_section_kernel.dart';
@@ -29,8 +28,8 @@ class SectionManager {
     final geometry =
         runtime.activeMeshGeometry ??
         (throw StateError('Import an STL before creating a Section.'));
-    final mesh =
-        runtime.activeImport?.mesh ??
+    final meshEntity =
+        runtime.activeImport ??
         (throw StateError('The active STL has no official mesh handle.'));
     final bvh = runtime.readOrCreate<MeshBvh>(
       'sections.meshBvh',
@@ -43,13 +42,19 @@ class SectionManager {
         relative: relativeTolerance,
       ),
     );
-    final sequence = sections.length + 1;
-    final id = 'section:${DateTime.now().microsecondsSinceEpoch}';
+    var sequence = 1;
+    final used = sections.map((entity) => entity.id).toSet();
+    while (used.contains(
+      'ReferenceCurve${sequence.toString().padLeft(3, '0')}',
+    )) {
+      sequence++;
+    }
+    final id = 'ReferenceCurve${sequence.toString().padLeft(3, '0')}';
     final entity = _entity(
       id: id,
-      name: name ?? 'Section ${sequence.toString().padLeft(3, '0')}',
+      name: name ?? id,
       planeId: planeId,
-      meshId: mesh.persistentId,
+      meshId: meshEntity.id,
       origin: origin,
       normal: normal.normalized,
       result: result,
@@ -58,7 +63,7 @@ class SectionManager {
     );
     await runtime.mutate(command: 'section.create', upsert: [entity]);
     runtime.select({id});
-    return entity;
+    return runtime.document!.entities[id]!;
   }
 
   Future<CadDocumentEntity> updateOffset(String id, double offset) async {
@@ -108,44 +113,72 @@ class SectionManager {
       relativeTolerance: relative,
       revision: ((source.data['revision'] as num?)?.toInt() ?? 1) + 1,
     );
-    final staleSketches = <CadDocumentEntity>[];
-    final sketchApi = runtime.read<SketchEngineApi>('sketch.api');
-    for (final entity
-        in runtime.document?.entities.values ?? const <CadDocumentEntity>[]) {
-      if (entity.kind != CadDocumentEntityKind.sketch ||
-          entity.data['sourceSectionId'] != source.id ||
-          entity.data['sketch'] is! Map) {
-        continue;
-      }
-      final sketchJson = Map<String, dynamic>.from(
-        entity.data['sketch'] as Map,
-      );
-      final metadata = Map<String, dynamic>.from(sketchJson['metadata'] as Map);
-      metadata['associationState'] = 'outdated';
-      metadata['outdatedSince'] = DateTime.now().toUtc().toIso8601String();
-      sketchJson['metadata'] = metadata;
-      staleSketches.add(
+    await runtime.mutate(command: command, upsert: [replacement]);
+    return runtime.document!.entities[source.id]!;
+  }
+
+  Future<CadDocumentEntity> setOffset(String id, double offset) async {
+    final source =
+        runtime.document?.entities[id] ??
+        (throw StateError('Unknown Reference Curve: $id'));
+    final definition = Map<String, dynamic>.from(source.data['section'] as Map);
+    final base = Vector3.fromJson(
+      (definition['baseOrigin'] as List?) ?? definition['origin'] as List,
+    );
+    final normal = Vector3.fromJson(definition['normal'] as List).normalized;
+    return createReplacement(
+      source,
+      origin: base + normal * offset,
+      normal: normal,
+      command: 'reference-curve.dynamic-update',
+    );
+  }
+
+  Future<CadDocumentEntity> recalculate(String id) async {
+    final source =
+        runtime.document?.entities[id] ??
+        (throw StateError('Unknown Reference Curve: $id'));
+    final definition = Map<String, dynamic>.from(source.data['section'] as Map);
+    return createReplacement(
+      source,
+      origin: Vector3.fromJson(definition['origin'] as List),
+      normal: Vector3.fromJson(definition['normal'] as List),
+      command: 'reference-curve.recalculate',
+    );
+  }
+
+  Future<void> setDisplayMode(String id, String mode) async {
+    if (!const {'curveOnly', 'curveAndMesh', 'highlighted'}.contains(mode)) {
+      throw ArgumentError.value(mode, 'mode');
+    }
+    final source =
+        runtime.document?.entities[id] ??
+        (throw StateError('Unknown Reference Curve: $id'));
+    final geometry = Map<String, dynamic>.from(
+      source.data['sceneGeometry'] as Map,
+    );
+    geometry['displayColor'] = mode == 'highlighted'
+        ? 'referenceCurveHighlight'
+        : 'referenceCurve';
+    geometry['strokeWidth'] = mode == 'highlighted' ? 3.0 : 1.35;
+    await runtime.mutate(
+      command: 'reference-curve.display',
+      upsert: [
         CadDocumentEntity(
-          id: entity.id,
-          kind: entity.kind,
+          id: source.id,
+          kind: source.kind,
           data: {
-            ...entity.data,
-            'associationState': 'outdated',
-            'sketch': sketchJson,
+            ...source.data,
+            'displayMode': mode,
+            'sceneGeometry': geometry,
           },
         ),
-      );
-      final sketch = sketchApi?.sketches
-          .where((item) => item.id == entity.id)
-          .firstOrNull;
-      sketch?.metadata.addAll(metadata);
-    }
-    await runtime.mutate(
-      command: command,
-      upsert: [replacement, ...staleSketches],
+      ],
     );
-    await sketchApi?.persist();
-    return replacement;
+    final meshId = (source.data['section'] as Map)['meshId'] as String?;
+    if (meshId != null && runtime.document?.entities[meshId] != null) {
+      await runtime.setEntityVisibility(meshId, mode != 'curveOnly');
+    }
   }
 
   Future<List<CadDocumentEntity>> createMultiple({
@@ -216,18 +249,41 @@ class SectionManager {
       kind: CadDocumentEntityKind.section,
       data: {
         'name': name,
+        'referenceCurve': true,
+        'authoringRoot': true,
+        'authoringWorkspace': 'Sections',
+        'group': 'Reference Curves',
+        'references': [planeId, meshId],
+        'dependencies': [planeId, meshId],
+        'displayMode': 'curveAndMesh',
+        'dynamicUpdate': true,
         'revision': revision,
         'sceneKind': 'curve',
         'sceneVisible': true,
         'sceneGeometry': {
           'segments': segments,
-          'color': 'sectionBlue',
-          'strokeWidth': 2.0,
+          'displayColor': 'referenceCurve',
+          'strokeWidth': 1.35,
         },
         'section': {
           'planeId': planeId,
           'meshId': meshId,
           'origin': origin.toJson(),
+          'baseOrigin': revision == 1
+              ? origin.toJson()
+              : ((runtime.document?.entities[id]?.data['section']
+                        as Map?)?['baseOrigin'] ??
+                    origin.toJson()),
+          'offset': revision == 1
+              ? 0.0
+              : (() {
+                  final baseRaw =
+                      (runtime.document?.entities[id]?.data['section']
+                              as Map?)?['baseOrigin']
+                          as List?;
+                  if (baseRaw == null) return 0.0;
+                  return (origin - Vector3.fromJson(baseRaw)).dot(normal);
+                })(),
           'normal': normal.toJson(),
           'segments': segments,
           'length': length,

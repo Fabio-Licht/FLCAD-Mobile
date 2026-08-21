@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import '../../core/autonomous_reconstruction/api/autonomous_reconstruction_api.dart';
 import '../../core/cad_builder/integration/cad_builder_factory.dart';
 import '../../core/cad_features/integration/feature_factory.dart';
@@ -15,6 +17,11 @@ import '../../core/engineering_knowledge/api/engineering_knowledge_api.dart';
 import '../../core/engineering_reconstruction/api/engineering_reconstruction_api.dart';
 import '../../core/engineering_reconstruction/planner/engineering_reconstruction_planner.dart';
 import '../../core/geometric_kernel/api/geometric_kernel_api.dart';
+import '../../core/extrude_feature/integration/extrude_factory.dart';
+import '../../core/extrude_feature/runtime/extrude_runtime.dart';
+import '../../core/extrude_feature/repository/extrude_repository.dart';
+import '../../core/extrude_feature/analytics/extrude_analytics.dart';
+import '../../core/extrude_feature/history/extrude_history.dart';
 import '../../core/geometric_recognition/api/recognition_api.dart';
 import '../../core/geometric_recognition/engine/geometric_recognition_engine.dart';
 import '../../core/hybrid_surface_engine/integration/hybrid_surface_factory.dart';
@@ -81,6 +88,11 @@ class EngineeringBootstrap {
       ..register<KernelManager>(kernels)
       ..register<CadBuilderFactory>(CadBuilderFactory(kernels))
       ..register<FeatureFactory>(FeatureFactory(kernels))
+      ..register<ExtrudeFactory>(const ExtrudeFactory())
+      ..register<ExtrudeRuntime>(ExtrudeRuntime())
+      ..register<ExtrudeRepository>(ExtrudeRepository(Directory.systemTemp))
+      ..register<ExtrudeAnalytics>(ExtrudeAnalytics())
+      ..register<ExtrudeHistory>(ExtrudeHistory())
       ..register<SurfaceIntelligenceFactory>(const SurfaceIntelligenceFactory())
       ..register<SurfaceGenerationFactory>(SurfaceGenerationFactory(kernels))
       ..register<HybridSurfaceFactory>(const HybridSurfaceFactory());

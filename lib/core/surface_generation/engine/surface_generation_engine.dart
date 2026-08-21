@@ -97,11 +97,19 @@ class SurfaceGenerationEngine {
         transaction = await transactions.begin(projectId);
     try {
       generationWatch.start();
+      final existing = request.featureId == null
+          ? null
+          : registry.find(request.featureId!);
+      final operation =
+          request.candidate.kind == SurfaceKind.plane &&
+              request.parameters['profilePoints'] is List
+          ? 'CREATE PLANAR FACE'
+          : 'GENERATE ${request.candidate.kind.name.toUpperCase()}';
       final handle = await kernel.create(
-        'GENERATE ${request.candidate.kind.name.toUpperCase()}',
+        operation,
         request.parameters,
         persistentId:
-            '$projectId-surface-${DateTime.now().microsecondsSinceEpoch}',
+            '${request.featureId ?? '$projectId-surface'}-shape-r${(existing?.revision ?? 0) + 1}',
         expectedType: CADShapeType.face,
         transaction: transaction,
       );
@@ -173,7 +181,9 @@ class SurfaceGenerationEngine {
       }
       await transactions.commit(transaction.id);
       final surface = GeneratedSurface(
-        surfaceId: 'surface-${DateTime.now().microsecondsSinceEpoch}',
+        surfaceId:
+            request.featureId ??
+            'surface-${DateTime.now().microsecondsSinceEpoch}',
         projectId: projectId,
         kind: request.candidate.kind,
         origin: request.origin,
@@ -181,7 +191,7 @@ class SurfaceGenerationEngine {
         evidenceIds: request.candidate.evidence.map((e) => e.id).toList(),
         featureId: request.featureId,
         handle: handle,
-        revision: 1,
+        revision: (existing?.revision ?? 0) + 1,
         timestamp: DateTime.now(),
         parameters: request.parameters,
         continuity: request.candidate.predictedContinuity,
@@ -348,5 +358,11 @@ class SurfaceGenerationEngine {
       const [],
       surfaceId: id,
     );
+  }
+
+  Future<void> restore(GeneratedSurface surface) async {
+    registry.register(surface);
+    graph.add(surface);
+    await repository.save(surface, graph);
   }
 }

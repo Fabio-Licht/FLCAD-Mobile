@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../engineering_bridge/operational_reverse_engineering_controller.dart';
-import '../../../core/adaptive_surface/models/surface_geometry.dart';
 
 class RecognitionWorkspacePanel extends StatelessWidget {
   const RecognitionWorkspacePanel({
@@ -112,6 +111,84 @@ class RecognitionWorkspacePanel extends StatelessWidget {
             const Text(
               'Select the mesh in the viewport to grow a homogeneous region.',
             ),
+          if (controller.activeRecognitionResult case final result?) ...[
+            const SizedBox(height: 8),
+            Card(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Recognition',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Text('Type: ${result.type.name}'),
+                    Text(
+                      'Confidence: ${(result.confidence * 100).toStringAsFixed(1)}%',
+                    ),
+                    Text('Quality: ${result.quality}'),
+                    for (final parameter in result.parameters.entries)
+                      Text('${parameter.key}: ${parameter.value}'),
+                    const SizedBox(height: 4),
+                    Text('Suggestion: ${result.suggestion}'),
+                    if (controller.activeSurfaceAssistantSuggestion
+                        case final assistant?) ...[
+                      const SizedBox(height: 6),
+                      Text('Strategy: ${assistant.strategy.name}'),
+                      if (assistant.alternatives.isNotEmpty)
+                        Text(
+                          'Alternatives: ${assistant.alternatives.map((item) => item.name).join(', ')}',
+                        ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: assistant.canCreate && !controller.busy
+                                  ? () async {
+                                      try {
+                                        await controller
+                                            .confirmSurfaceAssistantSuggestion();
+                                      } catch (_) {}
+                                    }
+                                  : null,
+                              icon: const Icon(Icons.check, size: 16),
+                              label: const Text('Create Surface'),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          OutlinedButton(
+                            onPressed:
+                                controller.ignoreSurfaceAssistantSuggestion,
+                            child: const Text('Ignore'),
+                          ),
+                        ],
+                      ),
+                      if (!assistant.canCreate)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 5),
+                          child: Text(
+                            result.type.name == 'freeform'
+                                ? 'Advisory only in G-136.'
+                                : 'Confidence below approved limit.',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ),
+                    ],
+                    const Text(
+                      'Knowledge only · no CAD geometry created',
+                      style: TextStyle(fontSize: 9.5),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (controller.activeContext?.region case final region?) ...[
             const SizedBox(height: 8),
             Card(
@@ -244,24 +321,6 @@ class RecognitionWorkspacePanel extends StatelessWidget {
                   ],
                 ),
               ),
-            Wrap(
-              spacing: 6,
-              children: [
-                for (final kind in const [
-                  SurfaceKind.cylinder,
-                  SurfaceKind.cone,
-                  SurfaceKind.sphere,
-                  SurfaceKind.torus,
-                ])
-                  if (controller.canCreateRecognizedSurface(kind))
-                    FilledButton(
-                      onPressed: controller.busy
-                          ? null
-                          : () => controller.createRecognizedSurface(kind),
-                      child: Text('Create ${kind.name} Surface'),
-                    ),
-              ],
-            ),
             if (controller.hypotheses.any(
               (item) =>
                   item.recognition.winner.type.name == 'plane' &&

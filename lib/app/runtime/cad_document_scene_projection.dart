@@ -124,6 +124,7 @@ class CadDocumentSceneProjection {
       CadDocumentEntityKind.sketch => CadSceneEntityKind.sketch,
       CadDocumentEntityKind.constraint => CadSceneEntityKind.gizmo,
       CadDocumentEntityKind.surface => CadSceneEntityKind.surface,
+      CadDocumentEntityKind.recognition => CadSceneEntityKind.gizmo,
     };
   }
 }

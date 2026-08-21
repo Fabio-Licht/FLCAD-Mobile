@@ -28,6 +28,8 @@ enum ProfessionalSurfaceTool {
   deleteFace,
   fair,
   morph,
+  fillet,
+  sew,
 }
 
 enum SurfaceFeatureStatus { editing, preview, committed, cancelled }

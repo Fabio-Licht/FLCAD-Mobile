@@ -17,6 +17,7 @@ enum CadDocumentEntityKind {
   sketch,
   constraint,
   surface,
+  recognition,
 }
 
 class CadDocumentEntity {

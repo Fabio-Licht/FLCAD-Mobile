@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 
 import '../../core/cad_document/cad_document.dart';
+import '../../core/cad_document/entity_placement.dart';
 import '../../core/cad_document/managed_step_contract.dart';
 import '../../core/cad_document/dependency_walk.dart';
 import '../../core/cad_document/cad_document_repository.dart';
@@ -33,6 +34,7 @@ import '../operational_entities/operational_entity.dart';
 import '../operational_entities/operational_entity_resolver.dart';
 import 'world_coordinate_system.dart';
 import 'notification_gate.dart';
+import 'managed_placement_projection.dart';
 
 part 'cad_runtime_transactions.dart';
 part 'cad_runtime_snapshots.dart';
@@ -401,6 +403,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
       entities[entity.id] = CadDocumentEntity(
         id: entity.id,
         kind: entity.kind,
+        placement: entity.placement,
         data: data,
         shape: entity.shape,
         mesh: entity.mesh,
@@ -1394,6 +1397,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
           CadDocumentEntity(
             id: member.id,
             kind: member.kind,
+            placement: member.placement,
             shape: member.shape,
             mesh: member.mesh,
             data: data,
@@ -1427,6 +1431,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             CadDocumentEntity(
               id: entity.id,
               kind: entity.kind,
+              placement: entity.placement,
               shape: entity.shape,
               mesh: entity.mesh,
               data: {...entity.data, 'sceneVisible': visible},
@@ -1434,6 +1439,89 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
           ],
         );
       });
+
+  /// World-axis translation (mm), then X/Y/Z rotations (degrees) about the
+  /// original local bounds center. One call is one transaction/history entry.
+  Future<void> transformManagedEntity(
+    String id, {
+    double translateX = 0,
+    double translateY = 0,
+    double translateZ = 0,
+    double rotateX = 0,
+    double rotateY = 0,
+    double rotateZ = 0,
+  }) => _enqueue((tx) async {
+    final document = _requireDocument();
+    final entity = document.entities[id];
+    if (entity == null ||
+        entity.data['deleted'] == true ||
+        !_managedGeometry.containsKey(id)) {
+      throw StateError('Select an active managed STEP, BREP or STL entity');
+    }
+    final collection = document.entities[entity.data['collectionId']];
+    if (collection?.data['locked'] == true) {
+      throw StateError('Managed entity collection is locked');
+    }
+    final values = [
+      translateX,
+      translateY,
+      translateZ,
+      rotateX,
+      rotateY,
+      rotateZ,
+    ];
+    if (values.any((v) => !v.isFinite)) {
+      throw const FormatException('Placement values must be finite');
+    }
+    if (values.every((v) => v == 0)) return;
+    final bounds = _managedGeometry[id]!.displayMesh.descriptor.bounds;
+    var placement =
+        entity.placement ??
+        EntityPlacement.identity([
+          for (var axis = 0; axis < 3; axis++)
+            (bounds[axis] + bounds[axis + 3]) / 2,
+        ]);
+    if (translateX != 0 || translateY != 0 || translateZ != 0) {
+      placement = placement.translate(translateX, translateY, translateZ);
+    }
+    if (rotateX != 0) placement = placement.rotate(1, 0, 0, rotateX);
+    if (rotateY != 0) placement = placement.rotate(0, 1, 0, rotateY);
+    if (rotateZ != 0) placement = placement.rotate(0, 0, 1, rotateZ);
+    await _mutateDocument(
+      tx,
+      command: 'placement.rigid',
+      requested: [
+        CadDocumentEntity(
+          id: entity.id,
+          kind: entity.kind,
+          data: entity.data,
+          placement: placement,
+        ),
+      ],
+    );
+  });
+
+  Future<void> resetManagedPlacement(String id) => _enqueue((tx) async {
+    final entity = _requireDocument().entities[id];
+    if (entity == null ||
+        !_managedGeometry.containsKey(id) ||
+        entity.data['deleted'] == true) {
+      throw StateError('Select an active managed entity');
+    }
+    if (_requireDocument()
+            .entities[entity.data['collectionId']]
+            ?.data['locked'] ==
+        true) {
+      throw StateError('Managed entity collection is locked');
+    }
+    await _mutateDocument(
+      tx,
+      command: 'placement.reset',
+      requested: [
+        CadDocumentEntity(id: entity.id, kind: entity.kind, data: entity.data),
+      ],
+    );
+  });
 
   Future<void> applyAlignmentTransform(Matrix4 matrix) async {
     final ids = _requireDocument().entities.values
@@ -1465,6 +1553,16 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     }
     final current = _requireDocument();
     final transformed = <CadDocumentEntity>[];
+    if (entityIds.any((id) {
+      final data = current.entities[id]?.data;
+      return data?['managedBrepAssets'] != null ||
+          data?['managedStlAssets'] != null ||
+          data?['managedStepAssets'] != null;
+    })) {
+      throw UnsupportedError(
+        'Managed geometry requires rigid placement commands',
+      );
+    }
     String? exportEntityId;
     String? workingCollectionId;
     if (createCopy) {
@@ -1542,6 +1640,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         CadDocumentEntity(
           id: outputId,
           kind: entity.kind,
+          placement: entity.placement,
           shape: shape,
           mesh: _alignedMeshHandle(entity.mesh, data),
           data: data,
@@ -1860,6 +1959,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         CadDocumentEntity(
           id: entity.id,
           kind: entity.kind,
+          placement: entity.placement,
           shape: entity.shape,
           mesh: entity.mesh,
           data: {
@@ -1963,6 +2063,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               (item) => CadDocumentEntity(
                 id: item.id,
                 kind: item.kind,
+                placement: item.placement,
                 data: {...item.data, 'active': false},
               ),
             ),
@@ -1976,6 +2077,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               (item) => CadDocumentEntity(
                 id: item.id,
                 kind: item.kind,
+                placement: item.placement,
                 shape: item.shape,
                 mesh: item.mesh,
                 data: {...item.data, 'sceneVisible': visible},
@@ -2006,6 +2108,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
       members[memberId] = CadDocumentEntity(
         id: member.id,
         kind: member.kind,
+        placement: member.placement,
         shape: member.shape,
         mesh: member.mesh,
         data: data,
@@ -2065,6 +2168,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         CadDocumentEntity(
           id: entityId,
           kind: entity.kind,
+          placement: entity.placement,
           shape: shape,
           mesh: entity.mesh,
           data: {
@@ -2126,6 +2230,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
           CadDocumentEntity(
             id: entity.id,
             kind: entity.kind,
+            placement: entity.placement,
             shape: entity.shape,
             mesh: entity.mesh,
             data: {
@@ -2175,6 +2280,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             CadDocumentEntity(
               id: entity.id,
               kind: entity.kind,
+              placement: entity.placement,
               shape: entity.shape,
               mesh: entity.mesh,
               data: data,

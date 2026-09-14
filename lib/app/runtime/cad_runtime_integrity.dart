@@ -51,6 +51,7 @@ extension _CadIntegrity on CadRuntime {
       entities[entity.id] = CadDocumentEntity(
         id: entity.id,
         kind: entity.kind,
+        placement: entity.placement,
         shape: entity.shape,
         mesh: entity.mesh,
         data: {...entity.data, 'collectionId': null},

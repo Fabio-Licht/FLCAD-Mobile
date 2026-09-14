@@ -55,6 +55,7 @@ class _CadSnapshots {
       CadDocumentEntity(
         id: source.id,
         kind: source.kind,
+        placement: source.placement,
         data: _json(source.data) as Map<String, dynamic>,
         shape: shape == null
             ? null

@@ -58,6 +58,7 @@ abstract final class FeatureLifecycleProjector {
       finalEntities[entity.id] = CadDocumentEntity(
         id: entity.id,
         kind: entity.kind,
+        placement: entity.placement,
         data: data,
         shape: entity.shape,
         mesh: entity.mesh,
@@ -141,6 +142,7 @@ abstract final class FeatureLifecycleProjector {
     return CadDocumentEntity(
       id: entity.id,
       kind: entity.kind,
+      placement: entity.placement,
       data: data,
       shape: entity.shape,
       mesh: entity.mesh,

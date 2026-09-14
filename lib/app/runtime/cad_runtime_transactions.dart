@@ -1334,7 +1334,7 @@ extension _CadTransactions on CadRuntime {
     return CadSceneEntity(
       id: entity.id,
       kind: CadSceneEntityKind.mesh,
-      geometry: sceneGeometry,
+      geometry: projectManagedPlacement(sceneGeometry, entity.placement),
       visible:
           entity.data['deleted'] != true &&
           (entity.data['sceneVisible'] as bool? ?? true) &&
@@ -1377,7 +1377,7 @@ extension _CadTransactions on CadRuntime {
       id: entity.id,
       kind: CadSceneEntityKind.mesh,
       geometry: {
-        ...sceneGeometry,
+        ...projectManagedPlacement(sceneGeometry, entity.placement),
         if (rootLinearRgb != null)
           'rootLinearRgb': (rootLinearRgb as List)
               .map((v) => (v as num).toDouble())
@@ -1441,7 +1441,7 @@ extension _CadTransactions on CadRuntime {
       id: entity.id,
       kind: CadSceneEntityKind.mesh,
       geometry: {
-        ...sceneGeometry,
+        ...projectManagedPlacement(sceneGeometry, entity.placement),
         if (stepAppearance?.hasColor == true)
           'rootLinearRgb': stepAppearance!.linearRgb,
         if (stepAppearance?.usedCompatibility == true)

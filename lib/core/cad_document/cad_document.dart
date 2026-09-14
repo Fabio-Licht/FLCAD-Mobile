@@ -1,6 +1,7 @@
 import '../cad_kernel/io/kernel_io_models.dart';
 import '../cad_kernel/models/kernel_models.dart';
 import 'managed_step_contract.dart';
+import 'entity_placement.dart';
 
 enum CadDocumentEntityKind {
   collection,
@@ -28,12 +29,14 @@ class CadDocumentEntity {
     required this.data,
     this.shape,
     this.mesh,
+    this.placement,
   });
   final String id;
   final CadDocumentEntityKind kind;
   final Map<String, dynamic> data;
   final ShapeHandle? shape;
   final KernelMeshHandle? mesh;
+  final EntityPlacement? placement;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -41,6 +44,7 @@ class CadDocumentEntity {
     'data': data,
     'shape': shape?.toJson(),
     'mesh': mesh == null ? null : _meshJson(mesh!),
+    if (placement != null) 'placement': placement!.toJson(),
   };
 
   factory CadDocumentEntity.fromJson(Map<String, dynamic> json) =>
@@ -51,6 +55,17 @@ class CadDocumentEntity {
     final managed = data['managedBrepAssets'];
     final managedStl = data['managedStlAssets'];
     final managedStep = data['managedStepAssets'];
+    final rawPlacement = json['placement'];
+    if (json.containsKey('placement') &&
+        (rawPlacement is! Map ||
+            json['kind'] != 'import' ||
+            [managed, managedStl, managedStep].whereType<Map>().length != 1 ||
+            json['shape'] != null ||
+            json['mesh'] != null ||
+            data['transformMatrix'] != null ||
+            data['alignmentMatrix'] != null)) {
+      throw const FormatException('Placement requires managed original assets');
+    }
     if ([managed, managedStl, managedStep].where((v) => v != null).length > 1) {
       throw const FormatException('Ambiguous managed geometry asset reference');
     }
@@ -94,6 +109,11 @@ class CadDocumentEntity {
       id: json['id'] as String,
       kind: CadDocumentEntityKind.values.byName(json['kind'] as String),
       data: data,
+      placement: rawPlacement == null
+          ? null
+          : EntityPlacement.fromJson(
+              Map<String, dynamic>.from(rawPlacement as Map),
+            ),
       shape: json['shape'] == null
           ? null
           : ShapeHandle.fromJson(
@@ -281,7 +301,7 @@ class CadDocument {
     this.officialExportShapeId,
   });
   static const schema = 'flcad.cad-document';
-  static const version = 1;
+  static const version = 2;
   final String projectId;
   final Map<String, CadDocumentEntity> entities;
   final List<CadDocumentRevision> revisions;
@@ -349,8 +369,16 @@ class CadDocument {
   };
 
   factory CadDocument.fromJson(Map<String, dynamic> json) {
-    if (json['schema'] != schema) {
+    if (json['schema'] != schema ||
+        json['version'] is! int ||
+        !const [1, 2].contains(json['version'])) {
       throw const FormatException('Unsupported CAD document schema.');
+    }
+    if (json['version'] == 1 &&
+        (json['entities'] as List? ?? const []).any(
+          (e) => e is Map && e.containsKey('placement'),
+        )) {
+      throw const FormatException('Placement requires CAD document version 2');
     }
     final entities = (json['entities'] as List? ?? const [])
         .map(

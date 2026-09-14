@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'managed_placement_editor.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -3337,6 +3338,32 @@ class _OfficialEngineeringWorkspaceState
   }
 
   Widget _transformTools() {
+    final runtime = widget.cad.runtime;
+    final selected = runtime.selection;
+    final managed = selected
+        .map((id) => runtime.document?.entities[id])
+        .where(
+          (e) =>
+              e != null &&
+              [
+                e.data['managedStepAssets'],
+                e.data['managedBrepAssets'],
+                e.data['managedStlAssets'],
+              ].any((a) => a is Map),
+        )
+        .toList();
+    if (managed.isNotEmpty) {
+      if (selected.length != 1 || managed.length != 1) {
+        return const Text(
+          'Selecione uma única entidade managed para editar o placement.',
+        );
+      }
+      return ManagedPlacementEditor(
+        key: ValueKey(managed.single!.id),
+        runtime: runtime,
+        entityId: managed.single!.id,
+      );
+    }
     Widget numberField(String label, TextEditingController controller) =>
         TextField(
           controller: controller,
@@ -4746,7 +4773,7 @@ class _OfficialEngineeringWorkspaceState
                                           }
                                         }
                                       : null,
-                                  onPick: widget.cad.document == null
+                                  onPick: widget.cad.runtime.document == null
                                       ? null
                                       : (pick) async {
                                           geometrySelection.select(
@@ -5050,6 +5077,7 @@ class _OfficialEngineeringWorkspaceState
                                             .document
                                             ?.entities[selected.first];
                                         final matrix =
+                                            entity?.placement?.matrix.values ??
                                             entity?.data['transformMatrix'];
                                         final collectionId =
                                             entity?.data['collectionId']
@@ -5080,7 +5108,7 @@ class _OfficialEngineeringWorkspaceState
                                               'Collection: ${collection?.data['name'] ?? '-'}',
                                             ),
                                             Text(
-                                              'Position/rotation/scale: ${matrix is List ? 'transformed' : 'identity'}',
+                                              'Position/rotation: ${matrix is List ? 'transformed' : 'identity'}',
                                             ),
                                             Text(
                                               'Active system: ${operational.manualTransformMode?.name ?? 'World'}',
@@ -5088,6 +5116,10 @@ class _OfficialEngineeringWorkspaceState
                                             if (entity?.shape != null)
                                               const Text(
                                                 'Native BRep transform: OCCT',
+                                              ),
+                                            if (entity?.placement != null)
+                                              const Text(
+                                                'Placement rígido não destrutivo',
                                               ),
                                           ],
                                         );

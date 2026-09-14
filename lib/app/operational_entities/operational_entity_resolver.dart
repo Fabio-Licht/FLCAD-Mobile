@@ -5,6 +5,7 @@ import '../../core/surface_recognition/models/surface_recognition_models.dart';
 import '../../core/surface_recognition/segmentation/region_growing.dart';
 import '../cad_viewport/native/native_viewport_bridge.dart';
 import '../cad_viewport/scene/cad_scene_graph.dart';
+import '../cad_viewport/rendering/stl_display_lod.dart';
 import 'operational_entity.dart';
 
 class OperationalResolution {
@@ -28,7 +29,8 @@ class OperationalEntityResolver {
 
   void prepare(CadSceneGraph scene) {
     for (final entity in scene.entities) {
-      if (entity.kind == CadSceneEntityKind.mesh) {
+      if (entity.kind == CadSceneEntityKind.mesh &&
+          !StlDisplayLod.simplified(entity.geometry)) {
         _resolutionFor(entity);
       }
     }
@@ -53,6 +55,21 @@ class OperationalEntityResolver {
   ) async {
     final source = scene.find(raw.entityId);
     if (source == null || !source.visible) return null;
+    if (StlDisplayLod.simplified(source.geometry)) {
+      final entity = OperationalEntity(
+        id: 'operational:${source.id}:lod',
+        type: OperationalEntityType.meshRegion,
+        ownerId: source.id,
+        ownerDomain: 'entity',
+        documentId: source.id,
+        revision: 1,
+        label: 'STL — Visualização simplificada',
+        capabilities: const {OperationalCapability.selectable},
+        properties: const {'presentationOnly': true, 'measurementSafe': false},
+      );
+      registry.replaceOwner(source.id, [entity]);
+      return OperationalResolution(entity: entity, triangleIndices: const []);
+    }
     if (source.kind == CadSceneEntityKind.mesh) {
       final resolution = await _resolutionFor(source);
       final triangle = raw.subId - 1;

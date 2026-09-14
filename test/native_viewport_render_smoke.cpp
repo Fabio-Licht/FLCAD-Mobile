@@ -11,6 +11,7 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <flutter/standard_method_codec.h>
+#include <flutter/standard_message_codec.h>
 #include <flutter/texture_registrar.h>
 #include <fstream>
 #include <iostream>
@@ -61,7 +62,7 @@ std::vector<uint32_t> Pixels(NativeViewportHost &host) {
   return result;
 }
 
-int main() {
+int main(int argc, char **argv) {
   try {
     TestMessenger messenger;
     NativeViewportHost host(&messenger, nullptr);
@@ -195,6 +196,60 @@ int main() {
       Require(((ambient >> 16) & 255) >= 30 && (ambient & 255) >= 70,
               "oriented back surface lost bounded ambient light");
       Require(ambient != center, "normal orientation was silently inverted");
+    }
+    if (argc > 1) {
+      // A bounded presentation snapshot produced by the real CAF runtime test;
+      // this is display data, never a source file or durable mesh asset.
+      std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
+      const auto size = input.tellg();
+      Require(input.good() && size > 0 && size <= 32 * 1024 * 1024,
+              "Invalid LOD snapshot size");
+      std::vector<uint8_t> bytes(static_cast<size_t>(size));
+      input.seekg(0);
+      input.read(reinterpret_cast<char *>(bytes.data()), size);
+      const auto decoded =
+          flutter::StandardMessageCodec::GetInstance().DecodeMessage(
+              bytes.data(), bytes.size());
+      Require(decoded != nullptr, "LOD snapshot decode failed");
+      const auto *map = std::get_if<flutter::EncodableMap>(decoded.get());
+      Require(map != nullptr, "Invalid LOD snapshot");
+      host.render_style_ = 0;
+      host.ApplySnapshot(*map, true);
+      host.Fit();
+      host.Render();
+      Require(host.entities_.size() == 1, "LOD entity duplicated");
+      const auto &resident = host.entities_.begin()->second;
+      Require(resident.vertices.size() <= 125000 &&
+                  resident.indices.size() <= 250000 * 3,
+              "GPU LOD budget exceeded");
+      const auto image = Pixels(host);
+      Require(std::count_if(image.begin(), image.end(),
+                            [&](uint32_t p) { return p != image[0]; }) > 100,
+              "LOD solid is not visible");
+      if (argc > 2) {
+        // Safe visual evidence outside the repository, no source identity.
+        std::ofstream bitmap(argv[2], std::ios::binary);
+        uint8_t header[54]{};
+        header[0] = 'B';
+        header[1] = 'M';
+        auto put = [&](int offset, uint32_t value) {
+          for (int i = 0; i < 4; i++)
+            header[offset + i] = uint8_t(value >> (i * 8));
+        };
+        put(2, 54 + uint32_t(image.size() * 4));
+        put(10, 54);
+        put(14, 40);
+        put(18, 256);
+        put(22, uint32_t(-256));
+        header[26] = 1;
+        header[28] = 32;
+        bitmap.write(reinterpret_cast<char *>(header), sizeof(header));
+        bitmap.write(reinterpret_cast<const char *>(image.data()),
+                     image.size() * 4);
+      }
+      std::cout << "D3D11 dense STL codec/upload/render: vertices="
+                << resident.vertices.size()
+                << " triangles=" << resident.indices.size() / 3 << " passed\n";
     }
     std::cout << "D3D11: 12 rigid orientations, shaded/edges/wireframe, "
                  "ambient passed\n";

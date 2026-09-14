@@ -18,6 +18,7 @@ import 'rendering/cad_tonal_separation.dart';
 import 'rendering/cad_material_lighting.dart';
 import 'rendering/cad_root_color.dart';
 import 'scene/cad_scene_graph.dart';
+import 'rendering/stl_display_lod.dart';
 import 'selection/viewport_picking_controller.dart';
 
 enum CadRenderStyle { shaded, wireframe, hiddenLine, transparent, ghost }
@@ -474,6 +475,45 @@ class _ProfessionalCadViewportWidgetState
                             orbitActive: _isOrbiting,
                           ),
                         ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 10,
+                      bottom: 42,
+                      child: ListenableBuilder(
+                        listenable: widget.scene,
+                        builder: (context, _) {
+                          final simplified = widget.scene.entities.where(
+                            (e) =>
+                                e.visible &&
+                                StlDisplayLod.simplified(e.geometry),
+                          );
+                          if (simplified.isEmpty) {
+                            return const SizedBox.shrink();
+                          }
+                          return IgnorePointer(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: colors.surfaceContainerHigh,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Text(
+                                  simplified
+                                      .map((e) {
+                                        final lod =
+                                            e.geometry['presentationLod']
+                                                as Map;
+                                        return 'Visualização simplificada · ${lod['originalTriangles']} → ${lod['displayTriangles']} triângulos · medição/região indisponíveis';
+                                      })
+                                      .join('\n'),
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
                     if (widget.showRenderControls)
@@ -982,6 +1022,7 @@ class _MeshRenderCache {
 
   factory _MeshRenderCache.from(CadSceneEntity entity) {
     final presentation = cadPresentationGeometry(entity.geometry);
+    StlDisplayLod.preflight(presentation);
     final nodes = (presentation['nodes'] as List).cast<num>();
     final triangles = (presentation['triangles'] as List).cast<num>();
     final chunks =

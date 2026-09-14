@@ -305,8 +305,11 @@ typedef _InspectNative =
 typedef _InspectDart =
     int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Utf8>, int);
 
-Map<String, dynamic> _displayGeometryWorker(int address, String token) {
-  const capacity = 64 * 1024 * 1024;
+Map<String, dynamic> _displayGeometryWorker(
+  int address,
+  String token,
+  int capacity,
+) {
   final fn = Pointer<NativeFunction<_InspectNative>>.fromAddress(
     address,
   ).asFunction<_InspectDart>();
@@ -1160,13 +1163,19 @@ class OpenCascadeFFI
     }
   }
 
-  Future<Map<String, dynamic>> inspectDisplayGeometry(String token) {
+  Future<Map<String, dynamic>> inspectDisplayGeometry(
+    String token, {
+    int capacity = 64 * 1024 * 1024,
+  }) {
+    if (capacity <= 0 || capacity > 64 * 1024 * 1024) {
+      throw ArgumentError.value(capacity, 'capacity', 'Invalid display budget');
+    }
     final address = library
         .lookup<NativeFunction<_InspectNative>>('flcad_occ_display_geometry')
         .address;
     // The caller retains its custody lease through completion. Only copied
     // presentation coordinates return; no source payload or owner is moved.
-    return Isolate.run(() => _displayGeometryWorker(address, token));
+    return Isolate.run(() => _displayGeometryWorker(address, token, capacity));
   }
 
   @override

@@ -2079,6 +2079,11 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   Future<void> recognizePick({required CadViewportPick pick}) async {
+    if (runtime.scene.find(pick.entityId)?.geometry['presentationLod'] is Map) {
+      throw StateError(
+        'Visualização simplificada: medição e região exigem a malha completa.',
+      );
+    }
     final document =
         runtime.activeImport ??
         (throw StateError('CadRuntime has no active imported geometry.'));

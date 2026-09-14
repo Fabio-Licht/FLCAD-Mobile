@@ -337,6 +337,19 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
         existing->second.visible = std::get<bool>(*Find(*map, "visible"));
       continue;
     }
+    if (Find(*map, "presentationLod")) {
+      // STL LOD is checked in Dart before codec serialization, and again here
+      // before CPU/GPU geometry allocation. Other approved CAD routes unchanged.
+      if (nodes->size() > 125000 * 3 || indices->size() > 250000 * 3 ||
+          nodes->size() % 3 || indices->size() % 3)
+        throw std::runtime_error("STL presentation budget exceeded");
+      for (const auto &raw_index : *indices) {
+        const double index = Number(raw_index);
+        if (!std::isfinite(index) || index < 0 ||
+            index != std::floor(index) || index >= nodes->size() / 3)
+          throw std::runtime_error("Invalid STL presentation index");
+      }
+    }
     if (nodes->size() < 3)
       continue;
     SceneEntity entity;

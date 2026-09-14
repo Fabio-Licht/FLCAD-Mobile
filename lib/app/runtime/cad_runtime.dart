@@ -29,6 +29,7 @@ import '../cad_viewport/scene/cad_scene_graph.dart';
 import '../commands/command_manager.dart';
 import 'cad_document_scene_projection.dart';
 import '../cad_viewport/rendering/kernel_display_mesh_pipeline.dart';
+import '../cad_viewport/rendering/stl_display_lod.dart';
 import '../engineering_bridge/selection/geometry_selection_manager.dart';
 import '../operational_entities/operational_entity.dart';
 import '../operational_entities/operational_entity_resolver.dart';
@@ -1000,10 +1001,12 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
   Future<CadDocumentEntity> importManagedStl(
     String locator, {
     String? name,
+    CadAssetCancellation? cancellation,
     @visibleForTesting String? nativeBridgePath,
   }) async {
     final rejection = _admissionError;
     if (rejection != null) return Future<CadDocumentEntity>.error(rejection);
+    if (cancellation?.isCancelled == true) throw const CadAssetCancelled();
     final openedSource = CadAssetNativeFs.openExternal(locator);
     final openedDisplayName = openedSource.displayName;
     final openedIdentity = Map<String, dynamic>.unmodifiable({
@@ -1015,6 +1018,14 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     StackTrace? primaryStack;
     try {
       await _enqueue((tx) async {
+        if (cancellation?.isCancelled == true) throw const CadAssetCancelled();
+        if (cancellation != null) {
+          unawaited(
+            cancellation._done.future.then((_) {
+              if (!tx.committed) tx.requestRevocation();
+            }),
+          );
+        }
         tx.validate();
         final kernel = kernels.active;
         if (kernel is! OpenCascadeKernelAdapter) {

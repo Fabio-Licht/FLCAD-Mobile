@@ -504,6 +504,46 @@ final class ManagedNativeDisplayMesh {
         'Managed mesh projection requires OpenCascade FFI',
       );
     }
+    if (presentationShape == null &&
+        (descriptor.triangles > 250000 || descriptor.vertices > 125000)) {
+      // Existing display ABI, still inside the same mesh custody lease. The
+      // original mesh arrays never cross FFI; only a bounded native LOD does.
+      final display = await bridge.inspectDisplayGeometry(
+        lease._record.identity._token,
+        capacity: 24 * 1024 * 1024,
+      );
+      final lod = display['presentationLod'];
+      final nodes = display['nodes'];
+      final faces = display['triangles'];
+      final normals = display['normals'];
+      final bounds = display['bounds'];
+      if (lod is! Map ||
+          lod['originalTriangles'] != descriptor.triangles ||
+          lod['originalVertices'] != descriptor.vertices ||
+          nodes is! List ||
+          nodes.length > 125000 * 3 ||
+          faces is! List ||
+          faces.length > 250000 * 3 ||
+          normals is! List ||
+          normals.length != nodes.length ||
+          bounds is! List ||
+          bounds.length != 6 ||
+          List.generate(
+            6,
+            (i) => bounds[i] == descriptor.bounds[i],
+          ).contains(false) ||
+          nodes.any((v) => v is! num || !v.isFinite) ||
+          normals.any((v) => v is! num || !v.isFinite) ||
+          faces.any((v) => v is! int || v < 0 || v >= nodes.length ~/ 3)) {
+        throw StateError('Invalid native STL presentation LOD');
+      }
+      return {
+        ...display,
+        'stlPresentation': true,
+        'normalsOrigin': 'nativeLodWinding',
+        'hasNativeVertexNormals': true,
+      };
+    }
     final geometry = await bridge.inspectMesh(
       lease._record.identity._token,
       vertexCount: descriptor.vertices,
@@ -546,6 +586,7 @@ final class ManagedNativeDisplayMesh {
       'bounds': descriptor.bounds,
       'normalsOrigin': 'calculatedByAdapter',
       'hasNativeVertexNormals': false,
+      if (presentationShape == null) 'stlPresentation': true,
     };
     if (presentationShape != null) {
       return presentationShape.withLease((shapeLease) async {

@@ -280,6 +280,75 @@ int main() {
     CHECK(std::string(small) == "stable");
   }
   shapes.clear();
+  {
+    StlContainerMemory memory;
+    bool refused = false;
+    try {
+      void *unexpected = memory.allocate(StlDisplayBudget::container_bytes + 1);
+      memory.deallocate(unexpected, StlDisplayBudget::container_bytes + 1);
+    } catch (const std::runtime_error &e) {
+      refused =
+          std::string(e.what()) == "STL display working memory budget exceeded";
+    }
+    CHECK(refused); // Refusal happens before allocating the oversized request.
+    void *small = memory.allocate(1024);
+    memory.deallocate(small, 1024);
+  }
+  // Dense STL: global spatial reduction, exact extrema, stable output, no owner
+  // publication/mutation, and no all-face expansion before the presentation
+  // cap.
+  {
+    constexpr int side = 512;
+    Handle(Poly_Triangulation) dense =
+        new Poly_Triangulation((side + 1) * (side + 1), side * side * 2, false);
+    for (int y = 0; y <= side; ++y)
+      for (int x = 0; x <= side; ++x)
+        dense->SetNode(y * (side + 1) + x + 1, gp_Pnt(x, y, 0));
+    int face = 1;
+    for (int y = 0; y < side; ++y)
+      for (int x = 0; x < side; ++x) {
+        int a = y * (side + 1) + x + 1, b = a + 1, c = a + side + 1, d = c + 1;
+        dense->SetTriangle(face++, Poly_Triangle(a, b, d));
+        dense->SetTriangle(face++, Poly_Triangle(a, d, c));
+      }
+    meshes["dense-stl"] = dense;
+    const auto owners = meshes.size();
+    const auto lod = stl_display_lod(dense);
+    CHECK(lod.points.size() <= StlDisplayBudget::vertices);
+    CHECK(lod.faces.size() <= StlDisplayBudget::triangles);
+    CHECK(lod.faces.size() > 1000);
+    CHECK(lod.bounds == (std::array<double, 6>{0, 0, 0, 512, 512, 0}));
+    std::array<double, 6> actual{INFINITY,  INFINITY,  INFINITY,
+                                 -INFINITY, -INFINITY, -INFINITY};
+    for (const auto &p : lod.points)
+      for (int a = 0; a < 3; ++a) {
+        actual[a] = std::min(actual[a], p.Coord(a + 1));
+        actual[a + 3] = std::max(actual[a + 3], p.Coord(a + 1));
+      }
+    CHECK(actual == lod.bounds);
+    for (const auto &f : lod.faces) {
+      CHECK(f[0] >= 0 && size_t(f[2]) < lod.points.size());
+      CHECK(gp_Vec(lod.points[f[0]], lod.points[f[1]])
+                .Crossed(gp_Vec(lod.points[f[0]], lod.points[f[2]]))
+                .Z() > 0);
+    }
+    CHECK(flcad_occ_display_geometry("dense-stl", presentation.data(),
+                                     presentation.size(), error,
+                                     sizeof(error)) == 1);
+    const std::string first(presentation.data());
+    CHECK(flcad_occ_display_geometry("dense-stl", presentation.data(),
+                                     presentation.size(), error,
+                                     sizeof(error)) == 1);
+    CHECK(first == std::string(presentation.data()));
+    CHECK(first.size() <= StlDisplayBudget::json_bytes);
+    CHECK(meshes.size() == owners && dense->NbTriangles() == side * side * 2);
+    CHECK(dense->Node(1).X() == 0 && dense->Node(dense->NbNodes()).Y() == 512);
+    char small[8] = "stable";
+    CHECK(flcad_occ_display_geometry("dense-stl", small, sizeof(small), error,
+                                     sizeof(error)) == 0);
+    CHECK(std::string(small) == "stable");
+    meshes.erase("dense-stl");
+  }
   CHECK(meshes.empty());
   std::cout
       << "PASS stream: chunks, failures, contracts, overflow, exceptions, 20 "

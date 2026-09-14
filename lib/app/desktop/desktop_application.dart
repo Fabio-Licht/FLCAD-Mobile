@@ -5659,9 +5659,9 @@ class _OfficialEngineeringWorkspaceState
                   child: Row(
                     children: [
                       Expanded(child: Text(widget.cad.message!)),
-                      if (widget.cad.canCancelManagedStepImport)
+                      if (widget.cad.canCancelManagedImport)
                         TextButton(
-                          onPressed: widget.cad.cancelManagedStepImport,
+                          onPressed: widget.cad.cancelManagedImport,
                           child: const Text('Cancelar'),
                         ),
                     ],

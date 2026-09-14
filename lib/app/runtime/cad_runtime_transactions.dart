@@ -715,10 +715,19 @@ extension _CadTransactions on CadRuntime {
     geometry.validateTransfer();
     final nodes = managedScene.geometry['nodes'];
     final triangles = managedScene.geometry['triangles'];
+    final lod = meshOnly ? managedScene.geometry['presentationLod'] : null;
+    if (lod != null) StlDisplayLod.preflight(managedScene.geometry);
     if (nodes is! List ||
         triangles is! List ||
-        nodes.length != geometry.displayMesh.descriptor.vertices * 3 ||
-        triangles.length != geometry.displayMesh.descriptor.triangles * 3) {
+        (lod == null
+            ? nodes.length != geometry.displayMesh.descriptor.vertices * 3 ||
+                  triangles.length !=
+                      geometry.displayMesh.descriptor.triangles * 3
+            : lod is! Map ||
+                  lod['originalVertices'] !=
+                      geometry.displayMesh.descriptor.vertices ||
+                  lod['originalTriangles'] !=
+                      geometry.displayMesh.descriptor.triangles)) {
       throw StateError('Prepared managed scene has invalid geometry');
     }
     final preparedScene = <CadSceneEntity>[

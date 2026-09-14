@@ -629,6 +629,42 @@ void main() {
     },
   );
 
+  test(
+    'explicit cancellation revokes STL before promotion and drains owners',
+    () async {
+      final before = jsonEncode(runtime.document!.toJson());
+      final scene = runtime.scene.entities.map((e) => e.id).toSet();
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final cancellation = CadAssetCancellation();
+      storage.onPhase = (phase) async {
+        if (phase == 'managedStl:beforePromotion') {
+          entered.complete();
+          await release.future;
+        }
+      };
+      final importing = runtime.importManagedStl(
+        p.join(sourceDirectory.path, 'display.stl'),
+        cancellation: cancellation,
+        nativeBridgePath: bridge,
+      );
+      final rejected = expectLater(
+        importing,
+        throwsA(isA<StaleCadTransaction>()),
+      );
+      await entered.future;
+      cancellation.cancel();
+      release.complete();
+      await rejected;
+      expect(jsonEncode(runtime.document!.toJson()), before);
+      expect(runtime.scene.entities.map((e) => e.id).toSet(), scene);
+      expect(runtime.managedImportPublication, isNull);
+      expect(durableAssets(), isEmpty);
+      expect(adapter.custodyDiagnostics!.allocations, 0);
+      expect(adapter.custodyDiagnostics!.leases, 0);
+    },
+  );
+
   test('shutdown waits for suspended STL import cleanup', () async {
     final entered = Completer<void>();
     final release = Completer<void>();

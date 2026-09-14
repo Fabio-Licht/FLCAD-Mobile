@@ -172,7 +172,11 @@ class DesktopCommandCoordinator {
         module: 'Import/Export',
         validator: CommandValidation.projectRequired,
         execute: (_, _) async {
-          await cad.pickAndImport(format);
+          if (format == CadImportFormat.stl) {
+            await cad.pickAndImportManagedStl();
+          } else {
+            await cad.pickAndImport(format);
+          }
           return cad.message;
         },
         undo: (_, _) async {

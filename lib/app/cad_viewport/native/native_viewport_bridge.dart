@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../scene/cad_scene_graph.dart';
 import '../rendering/cad_root_color.dart';
 import '../rendering/cad_canvas_normal_pipeline.dart';
+import '../rendering/stl_display_lod.dart';
 import '../camera/cad_camera_controller.dart';
 
 enum ViewportBackend { flutterCanvas, nativeGpu }
@@ -179,6 +180,16 @@ class CadSceneDisplayAdapter {
     };
     if (includeGeometry) {
       final presentation = cadPresentationGeometry(entity.geometry);
+      StlDisplayLod.preflight(presentation);
+      if (StlDisplayLod.simplified(presentation)) {
+        // Native LOD already carries indexed vertices and winding normals.
+        // Keep sharing them: no corner expansion or full List copies here.
+        result['nodes'] = presentation['nodes'];
+        result['normals'] = presentation['normals'];
+        result['triangles'] = presentation['triangles'];
+        result['presentationLod'] = presentation['presentationLod'];
+        return result;
+      }
       final chunks = CadCanvasNormalPipeline.build(
         (presentation['nodes'] as List).cast<num>(),
         (presentation['triangles'] as List).cast<num>(),

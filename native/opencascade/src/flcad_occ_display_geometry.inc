@@ -6,6 +6,7 @@
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <iomanip>
 #include <iostream>
+#include "flcad_occ_mesh_lod.inc"
 
 extern "C" int flcad_occ_display_geometry(const char *token, char *out,
                                           size_t size, char *error,
@@ -17,6 +18,14 @@ extern "C" int flcad_occ_display_geometry(const char *token, char *out,
     return fail(category, error, error_size);
   };
   try {
+    Handle(Poly_Triangulation) mesh;
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex);
+      const auto found = meshes.find(token ? token : "");
+      if (found != meshes.end()) mesh = found->second;
+    }
+    if (!mesh.IsNull())
+      return stl_lod_geometry(mesh, out, size, error, error_size);
     const auto original = get(token);
     Bnd_Box box;
     BRepBndLib::AddOptimal(original, box, false, false);

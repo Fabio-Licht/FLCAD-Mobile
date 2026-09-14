@@ -1,4 +1,5 @@
-param([ValidateSet('Debug', 'Release')][string]$Configuration = 'Release')
+param([ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
+      [string]$LodSnapshot, [string]$CaptureOutput)
 
 $ErrorActionPreference = 'Stop'
 $viewportRepo = Split-Path -Parent $PSScriptRoot
@@ -33,7 +34,10 @@ try {
     & cmd.exe /c $viewportCmdFile
     if ($LASTEXITCODE -ne 0) { throw 'Renderer smoke compilation failed.' }
     $env:PATH = (Join-Path $viewportBuild "runner\$Configuration") + ';' + $env:PATH
-    & $viewportExe
+    if ($LodSnapshot) {
+        if ($CaptureOutput) { & $viewportExe $LodSnapshot $CaptureOutput }
+        else { & $viewportExe $LodSnapshot }
+    } else { & $viewportExe }
     if ($LASTEXITCODE -ne 0) { throw 'Renderer smoke failed.' }
 } finally {
     $env:PATH = $viewportOriginalPath

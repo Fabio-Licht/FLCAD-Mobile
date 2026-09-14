@@ -33,6 +33,8 @@ class DesktopCadController extends ChangeNotifier {
     ManagedStepFilePicker? managedStepFilePicker,
     ManagedStepProjectOpener? managedStepProjectOpener,
     ManagedStepImporter? managedStepImporter,
+    ManagedStepFilePicker? managedStlFilePicker,
+    ManagedStepImporter? managedStlImporter,
   }) : projectRepository = projectRepository ?? ProjectRepository(),
        importExportRepository =
            importExportRepository ?? const ImportExportRepository(),
@@ -41,6 +43,8 @@ class DesktopCadController extends ChangeNotifier {
     _managedStepProjectOpener =
         managedStepProjectOpener ?? _openManagedStepProject;
     _managedStepImporter = managedStepImporter ?? _importManagedStep;
+    _managedStlFilePicker = managedStlFilePicker ?? _pickManagedStlFile;
+    _managedStlImporter = managedStlImporter ?? _importManagedStl;
   }
   final KernelManager kernels;
   final ProjectManager projects;
@@ -49,6 +53,10 @@ class DesktopCadController extends ChangeNotifier {
   final ManagedStepFilePicker _managedStepFilePicker;
   late final ManagedStepProjectOpener _managedStepProjectOpener;
   late final ManagedStepImporter _managedStepImporter;
+  late final ManagedStepFilePicker _managedStlFilePicker;
+  late final ManagedStepImporter _managedStlImporter;
+  CadAssetCancellation? _managedStlCancellation;
+  bool _stlControllerDisposed = false;
   late final CadRuntime runtime;
   ImportedCadDocument? get document => runtime.activeImport;
   KernelMeshGeometry? get meshGeometry => runtime.activeMeshGeometry;
@@ -65,6 +73,17 @@ class DesktopCadController extends ChangeNotifier {
   bool get canImportManagedStep =>
       supportsManagedStep && projects.current != null && !isBusy;
   bool get canCancelManagedStepImport => _managedStepCancellation != null;
+  bool get canCancelManagedImport =>
+      canCancelManagedStepImport || _managedStlCancellation != null;
+
+  void cancelManagedImport() {
+    if (_managedStlCancellation != null) {
+      _managedStlCancellation!.cancel();
+      setStatus('Cancelando importação STL...');
+    } else {
+      cancelManagedStepImport();
+    }
+  }
 
   void setStatus(String value) {
     message = value;
@@ -178,6 +197,10 @@ class DesktopCadController extends ChangeNotifier {
   }
 
   Future<void> pickAndImport(CadImportFormat format) async {
+    if (format == CadImportFormat.stl) {
+      await pickAndImportManagedStl();
+      return;
+    }
     final project = projects.current;
     if (project == null) {
       message = 'Create or open a project before importing CAD files.';
@@ -228,6 +251,60 @@ class DesktopCadController extends ChangeNotifier {
     } finally {
       busy = false;
       notifyListeners();
+    }
+  }
+
+  static Future<String?> _pickManagedStlFile(List<String> extensions) async =>
+      (await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: extensions,
+        dialogTitle: 'Importar STL',
+      ))?.path;
+
+  Future<CadDocumentEntity> _importManagedStl(
+    String locator,
+    CadAssetCancellation cancellation,
+  ) => runtime.importManagedStl(locator, cancellation: cancellation);
+
+  /// Only CAF consumes the selected locator; no legacy import or mesh inspection.
+  Future<void> pickAndImportManagedStl() async {
+    if (isBusy) return;
+    final project = projects.current;
+    if (project == null) {
+      setStatus('Abra ou crie um projeto antes de importar STL.');
+      return;
+    }
+    final cancellation = CadAssetCancellation();
+    _managedStlCancellation = cancellation;
+    busy = true;
+    progress = .05;
+    setStatus('Selecione um arquivo STL para importar.');
+    try {
+      final locator = await _managedStlFilePicker(const ['stl']);
+      if (locator == null) {
+        message = null;
+        return;
+      }
+      if (cancellation.isCancelled) throw const CadAssetCancelled();
+      if (projects.current?.id != project.id) {
+        throw const CadAssetCancelled();
+      }
+      setStatus('Importando STL...');
+      await _openManagedStepProject(project.id, cancellation);
+      final entity = await _managedStlImporter(locator, cancellation);
+      runtime.select({entity.id});
+      progress = 1;
+      message = 'STL importado e registrado no projeto.';
+    } catch (error) {
+      message = runtime.recoveryRequired
+          ? 'A importação STL foi confirmada e requer recuperação antes de continuar.'
+          : cancellation.isCancelled || error is CadAssetCancelled
+          ? 'Importação STL cancelada.'
+          : 'Não foi possível importar o arquivo STL. Verifique o arquivo e tente novamente.';
+    } finally {
+      _managedStlCancellation = null;
+      busy = false;
+      if (!_stlControllerDisposed) notifyListeners();
     }
   }
 
@@ -345,6 +422,7 @@ class DesktopCadController extends ChangeNotifier {
   }
 
   Future<void> closeProject() async {
+    _managedStlCancellation?.cancel();
     await runtime.close();
     message = 'Project closed.';
     notifyListeners();
@@ -372,6 +450,8 @@ class DesktopCadController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stlControllerDisposed = true;
+    _managedStlCancellation?.cancel();
     runtime.dispose();
     super.dispose();
   }

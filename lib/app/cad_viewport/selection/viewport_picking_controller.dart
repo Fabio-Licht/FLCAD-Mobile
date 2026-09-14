@@ -8,6 +8,7 @@ import '../../engineering_bridge/selection/mesh_bvh.dart';
 import '../../engineering_bridge/selection/professional_picking_pipeline.dart';
 import '../camera/cad_camera_controller.dart';
 import '../scene/cad_scene_graph.dart';
+import '../rendering/stl_display_lod.dart';
 
 class CadViewportPick {
   const CadViewportPick({required this.entityId, required this.hit});
@@ -84,7 +85,16 @@ class ViewportPickingController {
       );
       if (hit != null &&
           (nearest == null || hit.distance < nearest.hit.distance)) {
-        nearest = CadViewportPick(entityId: entity.id, hit: hit);
+        nearest = CadViewportPick(
+          entityId: entity.id,
+          hit: StlDisplayLod.simplified(entity.geometry)
+              ? MeshHit(
+                  triangleIndex: -1,
+                  point: hit.point,
+                  distance: hit.distance,
+                )
+              : hit,
+        );
       }
     }
     // Screen-space references intentionally take precedence over the mesh.

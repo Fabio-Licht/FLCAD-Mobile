@@ -69,6 +69,8 @@ class StepLex {
   }
 
 public:
+  uint64_t begin = 0;
+  uint64_t end() const { return characters; }
   StepLex(std::istream &s, SourceInput &i, const occ_read_limits_v1 &l)
       : stream(s), input(i), limits(l) {}
   std::string next() {
@@ -96,6 +98,7 @@ public:
     if (++tokens > limits.max_tokens)
       input.stop(OCC_READ_LIMIT, "STEP token count limit");
     std::string word;
+    begin = characters - 1;
     if (c > 126)
       input.stop(OCC_READ_FORMAT, "Non-ASCII STEP syntax");
     append(word, c);
@@ -166,6 +169,122 @@ public:
       expect(";");
   }
 };
+
+// Compatibility v1 is an AST rule for exactly one known zero-dimensional
+// steradian unit, not a text substitution or a general error-recovery reader.
+std::string step_compatibility(std::istream &source, SourceInput &input,
+                               const occ_read_limits_v1 &limits,
+                               int expected_label) {
+  if (input.length() > 64 * 1024 * 1024)
+    input.stop(OCC_READ_LIMIT, "STEP compatibility memory limit");
+  source.clear();
+  source.seekg(0);
+  std::string bytes(static_cast<size_t>(input.length()), '\0');
+  read_exact(source, input, bytes.data(), bytes.size());
+  // CAF rehashes the admitted original against its sealed SHA-256. The retry
+  // buffer never becomes the source identity and never touches the original.
+  input.check(1);
+  std::istringstream scan(bytes);
+  StepLex lex(scan, input, limits);
+  for (;;) {
+    const auto word = lex.next();
+    if (word == "DATA")
+      break;
+    if (word.empty())
+      input.stop(OCC_READ_FORMAT, "STEP compatibility signature mismatch");
+  }
+  lex.expect(";");
+  uint32_t dimension_label = 0;
+  std::map<uint32_t, bool> dimensions;
+  size_t patch_begin = 0, patch_end = 0;
+  int candidates = 0;
+  for (;;) {
+    const auto id = lex.next();
+    if (id == "ENDSEC")
+      break;
+    if (id.empty())
+      input.stop(OCC_READ_FORMAT, "STEP compatibility signature mismatch");
+    uint32_t label = 0;
+    std::from_chars(id.data() + 1, id.data() + id.size(), label);
+    lex.expect("=");
+    const auto type = lex.next();
+    const auto start = lex.begin;
+    if (type != "(") {
+      if (type == "DIMENSIONAL_EXPONENTS") {
+        lex.expect("(");
+        bool zero = true;
+        for (int i = 0; i < 7; ++i) {
+          const auto number = lex.next();
+          double value = 1;
+          auto parsed = std::from_chars(number.data(),
+                                        number.data() + number.size(), value);
+          zero &= parsed.ec == std::errc() &&
+                  parsed.ptr == number.data() + number.size() && value == 0;
+          if (i != 6)
+            lex.expect(",");
+        }
+        lex.expect(")");
+        lex.expect(";");
+        dimensions.emplace(label, zero);
+      } else
+        lex.parameters();
+      continue;
+    }
+    std::vector<std::pair<std::string, std::vector<std::string>>> parts;
+    bool bounded = true;
+    size_t token_count = 0;
+    for (;;) {
+      auto name = lex.next();
+      if (name == ")")
+        break;
+      lex.expect("(");
+      std::vector<std::string> parameters;
+      int depth = 1;
+      while (depth) {
+        auto token = lex.next();
+        if (token.empty())
+          input.stop(OCC_READ_TRUNCATED, "Unterminated STEP record");
+        if (token == "(")
+          ++depth;
+        if (token == ")")
+          --depth;
+        if (depth && ++token_count <= 64)
+          parameters.push_back(token);
+        if (token_count > 64)
+          bounded = false;
+      }
+      if (parts.size() < 4)
+        parts.emplace_back(name, parameters);
+      else
+        bounded = false;
+    }
+    const auto finish = lex.end();
+    lex.expect(";");
+    if (static_cast<int>(label) != expected_label)
+      continue;
+    if (!bounded || parts.size() != 3 || parts[0].first != "NAMED_UNIT" ||
+        parts[0].second.size() != 1 || parts[0].second[0].empty() ||
+        parts[0].second[0][0] != '#' || parts[1].first != "SOLID_ANGLE_UNIT" ||
+        !parts[1].second.empty() || parts[2].first != "SI_UNIT" ||
+        parts[2].second != std::vector<std::string>{"$", ",", ".STERADIAN."})
+      input.stop(OCC_READ_FORMAT, "STEP compatibility signature mismatch");
+    const auto &reference = parts[0].second[0];
+    std::from_chars(reference.data() + 1, reference.data() + reference.size(),
+                    dimension_label);
+    ++candidates;
+    patch_begin = start;
+    patch_end = finish;
+  }
+  if (candidates != 1 || !dimensions.count(dimension_label) ||
+      !dimensions.at(dimension_label))
+    input.stop(OCC_READ_FORMAT, "STEP compatibility ambiguous dimensions");
+  // Splice a parsed entity span. All other bytes, strings and comments retain
+  // their original encoding, including text resembling this unit signature.
+  std::string normalized = bytes.substr(0, patch_begin);
+  normalized += "(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())";
+  normalized.append(bytes, patch_end, std::string::npos);
+  return normalized;
+}
 uint64_t step_frame(std::istream &s, SourceInput &input,
                     const occ_read_limits_v1 &limits) {
   StepLex lex(s, input, limits);
@@ -230,9 +349,31 @@ uint64_t step_frame(std::istream &s, SourceInput &input,
 }
 void step_checks(Interface_CheckIterator checks, SourceInput &input,
                  const char *message) {
-  for (checks.Start(); checks.More(); checks.Next())
-    if (checks.Value()->NbFails())
+  for (checks.Start(); checks.More(); checks.Next()) {
+    if (checks.Value()->NbFails()) {
+#ifndef NDEBUG
+      // DynamicType names are OCCT-owned schema symbols, never STEP values.
+      const auto entity = checks.Value()->Entity();
+      const char *type =
+          entity.IsNull() ? "model" : entity->DynamicType()->Name();
+      std::string failure = checks.Value()->CFail(1);
+      std::transform(
+          failure.begin(), failure.end(), failure.begin(),
+          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      const char *category =
+          failure.find("prefix") != std::string::npos      ? "unit.prefix"
+          : failure.find("dimension") != std::string::npos ? "unit.dimensions"
+          : failure.find("name") != std::string::npos      ? "unit.name"
+          : failure.find("count") != std::string::npos     ? "parameter.count"
+          : failure.find("parameter") != std::string::npos ? "parameter.invalid"
+                                                           : "model.invalid";
+      std::cerr << "[managed-step.native] check_failure schema_type=" << type
+                << " category=" << category
+                << " count=" << checks.Value()->NbFails() << '\n';
+#endif
       input.stop(OCC_READ_FORMAT, message);
+    }
+  }
 }
 std::string step_utf8(const TCollection_ExtendedString &value,
                       SourceInput &input) {
@@ -286,16 +427,71 @@ TopoDS_Shape read_step(std::istream &s, SourceInput &input,
     throw SourceFailure{};
   input.check(0);
   auto &basic = reader.ChangeReader();
-  const auto model = basic.StepModel();
+  auto model = basic.StepModel();
   if (model.IsNull() || model->NbEntities() > limits.max_topology)
     input.stop(OCC_READ_LIMIT, "STEP model entity limit");
   if (static_cast<uint64_t>(model->NbEntities()) != framed_entities)
     input.stop(OCC_READ_FORMAT, "STEP incomplete model load");
   if (model->SourceCodePage() != Resource_FormatType_UTF8)
     input.stop(OCC_READ_FORMAT, "STEP requires UTF-8 names configuration");
-  step_checks(basic.WS()->ModelCheckList(true), input,
-              "STEP model validation failed");
-  STEPConstruct_ExternRefs refs(basic.WS());
+  auto checks = basic.WS()->ModelCheckList(true);
+  int compatible_label = 0, failures = 0;
+  bool recognized = true;
+  for (checks.Start(); checks.More(); checks.Next()) {
+    const auto check = checks.Value();
+    if (!check->NbFails())
+      continue;
+    ++failures;
+    const auto entity = check->Entity();
+    if (entity.IsNull() ||
+        entity->DynamicType() !=
+            STANDARD_TYPE(StepBasic_SiUnitAndSolidAngleUnit) ||
+        check->NbFails() != 1 ||
+        std::string(check->CFail(1)) !=
+            "Count of Parameters is not 2 for si_unit")
+      recognized = false;
+    else
+      compatible_label = model->IdentLabel(entity);
+  }
+  uint32_t normalizations = 0;
+  if (failures == 1 && recognized && compatible_label > 0) {
+    auto normalized = step_compatibility(s, input, limits, compatible_label);
+    input.check(0);
+    // Fresh reader and work session: no partially loaded entity is reused.
+    STEPCAFControl_Reader retry;
+    retry.SetColorMode(true);
+    retry.SetNameMode(true);
+    retry.SetLayerMode(false);
+    retry.SetPropsMode(false);
+    retry.SetMetaMode(false);
+    retry.SetProductMetaMode(false);
+    retry.SetSHUOMode(false);
+    retry.SetGDTMode(false);
+    retry.SetMatMode(false);
+    retry.SetViewMode(false);
+    std::istringstream stream(normalized);
+    if (step_frame(stream, input, limits) != framed_entities)
+      input.stop(OCC_READ_FORMAT, "STEP compatibility signature mismatch");
+#ifdef FLCAD_OCC_TESTING
+    ++step_readstream_calls;
+#endif
+    if (retry.ReadStream("caf-step-compatibility-v1", stream) !=
+        IFSelect_RetDone)
+      input.stop(OCC_READ_FORMAT, "STEP compatibility ReadStream failed");
+    input.check(1);
+    step_checks(retry.ChangeReader().WS()->ModelCheckList(true), input,
+                "STEP model validation failed");
+    reader = retry;
+    normalizations = 3;
+    model = reader.ChangeReader().StepModel();
+    if (model.IsNull() ||
+        static_cast<uint64_t>(model->NbEntities()) != framed_entities ||
+        model->SourceCodePage() != Resource_FormatType_UTF8)
+      input.stop(OCC_READ_FORMAT, "STEP incomplete model load");
+  } else
+    step_checks(checks, input, "STEP model validation failed");
+  auto &validated = reader.ChangeReader();
+  STEPConstruct_ExternRefs refs(validated.WS());
   refs.LoadExternRefs();
   if (refs.NbExternRefs())
     input.stop(OCC_READ_FORMAT, "STEP external references unsupported");
@@ -337,10 +533,10 @@ TopoDS_Shape read_step(std::istream &s, SourceInput &input,
       declared = scale;
     }
   }
-  if (products != 1 || definitions != 1 || basic.NbRootsForTransfer() != 1)
+  if (products != 1 || definitions != 1 || validated.NbRootsForTransfer() != 1)
     input.stop(OCC_READ_FORMAT, "STEP requires one product and one root");
   NCollection_Sequence<TCollection_AsciiString> length, angle, solid_angle;
-  basic.FileUnits(length, angle, solid_angle);
+  validated.FileUnits(length, angle, solid_angle);
   if (length.Length() != 1 || !declared)
     input.stop(OCC_READ_FORMAT, "STEP requires one declared length unit");
   prepared.unit = length.Value(1).ToCString();
@@ -363,7 +559,7 @@ TopoDS_Shape read_step(std::istream &s, SourceInput &input,
     input.stop(OCC_READ_SOURCE, "Unexpected STEP progress thread");
   if (!transferred)
     input.stop(OCC_READ_GEOMETRY, "STEP transfer incomplete");
-  step_checks(basic.WS()->TransferReader()->LastCheckList(), input,
+  step_checks(validated.WS()->TransferReader()->LastCheckList(), input,
               "STEP transfer validation failed");
   auto shapes_tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   NCollection_Sequence<TDF_Label> roots;
@@ -382,7 +578,8 @@ TopoDS_Shape read_step(std::istream &s, SourceInput &input,
   if (root.FindAttribute(TDataStd_Name::GetID(), name))
     prepared.name = step_utf8(name->Get(), input);
   prepared.metadata.size = sizeof(prepared.metadata);
-  prepared.metadata.version = 1;
+  prepared.metadata.version = normalizations ? 2 : 1;
+  prepared.metadata.reserved = normalizations;
   prepared.metadata.name_bytes = static_cast<uint32_t>(prepared.name.size());
   prepared.metadata.unit_bytes = static_cast<uint32_t>(prepared.unit.size());
   prepared.metadata.declared_meters_per_unit = declared;

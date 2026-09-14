@@ -1,4 +1,5 @@
 import 'cad_asset_fs_native.dart';
+import 'cad_step_diagnostics.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -717,7 +718,13 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     // previously admitted transaction. A later directory-entry replacement
     // cannot redirect the already-open CAF object.
     if (cancellation?.isCancelled == true) throw const CadAssetCancelled();
-    final openedSource = CadAssetNativeFs.openExternal(locator);
+    late final NativeOpenedSource openedSource;
+    try {
+      openedSource = CadAssetNativeFs.openExternal(locator);
+    } catch (error) {
+      logManagedStepFailure(error);
+      rethrow;
+    }
     final openedIdentity = Map<String, dynamic>.unmodifiable({
       ...openedSource.identity,
     });
@@ -882,6 +889,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               geometry: {
                 ...sceneGeometry,
                 if (appearance.hasColor) 'rootLinearRgb': appearance.linearRgb,
+                if (appearance.usedCompatibility) 'stepCompatibility': true,
               },
             );
             final prepared = _prepareManagedCommit(
@@ -923,6 +931,12 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         }
       });
     } catch (error, stack) {
+      if (error is CadAssetOperationFailure) {
+        logManagedStepFailure(error.cause);
+        logManagedStepFailure(error.cleanup);
+      } else {
+        logManagedStepFailure(error);
+      }
       if (documentCommitted) {
         _recoveryRequired = true;
         primaryFailure = CadManagedStepPostCommitFailure(error);

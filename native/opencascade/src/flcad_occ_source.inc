@@ -10,6 +10,7 @@
 #include <StepBasic_Product.hxx>
 #include <StepBasic_ProductDefinition.hxx>
 #include <StepBasic_ProductDefinitionRelationship.hxx>
+#include <StepBasic_SiUnitAndSolidAngleUnit.hxx>
 #include <StepData_StepModel.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>

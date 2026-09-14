@@ -115,6 +115,13 @@ class DesktopCadController extends ChangeNotifier {
       message = name is String && name.isNotEmpty
           ? 'Peça STEP "$name"$suffix importada.'
           : 'Peça STEP$suffix importada.';
+      if (runtime.scene.find(entity.id)?.geometry['stepCompatibility'] ==
+          true) {
+        message =
+            '$message Aviso: importado em modo de compatibilidade STEP; '
+            'ordem da unidade de ângulo sólido e atributo derivado normalizados. '
+            'O arquivo original foi preservado.';
+      }
     } catch (error) {
       message = cancellation.isCancelled
           ? 'Importação STEP cancelada.'

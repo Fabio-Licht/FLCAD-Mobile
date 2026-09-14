@@ -179,7 +179,7 @@ void main() {
     await root.delete(recursive: true);
   });
 
-  for (final mode in [0, 1, 2]) {
+  for (final mode in [0, 1, 2, 7, 10]) {
     test(
       'real STEP mode $mode persists root appearance and canonical geometry',
       () async {
@@ -213,6 +213,20 @@ void main() {
         expect(manifest.declaredMetersPerUnit, mode == 2 ? 1 : 0.001);
         expect(manifest.resolvedMetersPerUnit, 0.001);
         expect(manifest.hasColor, mode != 1);
+        expect(manifest.usedCompatibility, mode == 10);
+        if (mode == 10) {
+          expect(
+            manifest.compatibilitySourceSha256,
+            (await sha256
+                    .bind(File(p.join(source.path, 'part-10.step')).openRead())
+                    .first)
+                .toString(),
+          );
+          expect(
+            manifest.toJson()['compatibility'],
+            containsPair('version', 1),
+          );
+        }
         final scene = runtime.scene.find(entity.id)!;
         final bounds = (scene.geometry['bounds'] as List).cast<double>();
         expect(bounds[3] - bounds[0], closeTo(10, 1e-5));
@@ -287,7 +301,7 @@ void main() {
           Directory(p.join(source.path, 'must-not-open.step')).existsSync(),
           isFalse,
         );
-        expect(source.listSync().whereType<File>().length, 7);
+        expect(source.listSync().whereType<File>().length, 16);
         await runtime.open('step-project', project);
         final reopened = runtime.document!.entities[entity.id]!;
         expect(reopened.data['managedStepAssets'], refs.toJson());
@@ -307,9 +321,104 @@ void main() {
           durable,
         );
         expect(pathImports(), 0);
+        if (mode == 10) {
+          expect(
+            runtime.scene.find(entity.id)!.geometry['stepCompatibility'],
+            isTrue,
+          );
+          await runtime.undoDocument();
+          expect(runtime.scene.find(entity.id), isNull);
+          await runtime.redoDocument();
+          expect(
+            runtime.scene.find(entity.id)!.geometry['stepCompatibility'],
+            isTrue,
+          );
+          expect(
+            await inventory(Directory(p.join(project.path, 'CAD', 'Assets'))),
+            durable,
+          );
+          expect(adapter.custodyDiagnostics!.allocations, 2);
+          expect(pathImports(), 0);
+        }
       },
     );
   }
+
+  for (final mode in [8, 9]) {
+    test(
+      'STEP mode $mode preserves rejection limits and model checks',
+      () async {
+        final before = jsonEncode(runtime.document!.toJson());
+        await expectLater(
+          import(mode),
+          throwsA(
+            isA<NativeSourceFailure>()
+                .having(
+                  (e) => e.nativeStatus,
+                  'native status',
+                  mode == 8 ? 6 : 5,
+                )
+                .having(
+                  (e) => e.message,
+                  'fixed rejection',
+                  mode == 8
+                      ? 'STEP line limit'
+                      : 'STEP compatibility signature mismatch',
+                ),
+          ),
+        );
+        expect(jsonEncode(runtime.document!.toJson()), before);
+        expect(promoted(), isEmpty);
+        noOwners();
+      },
+    );
+  }
+
+  for (final mode in [11, 12, 13, 14, 15]) {
+    test(
+      'STEP compatibility rejects ambiguous or unknown mode $mode',
+      () async {
+        final before = jsonEncode(runtime.document!.toJson());
+        final original = await inventory(source);
+        await expectLater(
+          import(mode),
+          throwsA(
+            isA<NativeSourceFailure>().having(
+              (e) => e.nativeStatus,
+              'format rejection',
+              5,
+            ),
+          ),
+        );
+        expect(jsonEncode(runtime.document!.toJson()), before);
+        expect(promoted(), isEmpty);
+        expect(await inventory(source), original);
+        noOwners();
+      },
+    );
+  }
+  test(
+    'retained compatible STEP keeps its UI state when another import is undone',
+    () async {
+      final compatible = await import(10);
+      final color = runtime.scene
+          .find(compatible.id)!
+          .geometry['rootLinearRgb'];
+      final strict = await import(0);
+      await runtime.undoDocument();
+      expect(runtime.scene.find(strict.id), isNull);
+      expect(
+        runtime.scene.find(compatible.id)!.geometry['stepCompatibility'],
+        isTrue,
+      );
+      expect(
+        runtime.scene.find(compatible.id)!.geometry['rootLinearRgb'],
+        color,
+      );
+      expect(adapter.custodyDiagnostics!.allocations, 2);
+      expect(pathImports(), 0);
+    },
+  );
 
   for (final mode in [3, 4, 5]) {
     test(

@@ -169,8 +169,8 @@ Future<(int, Map<String, dynamic>)> _stepWorker(int address, int operation) =>
                 out.ref.size == sizeOf<_StepBridgeResult>() &&
                 out.ref.version == 1 &&
                 m.size == sizeOf<_StepMetadata>() &&
-                m.version == 1 &&
-                m.reserved == 0 &&
+                ((m.version == 1 && m.reserved == 0) ||
+                    (m.version == 2 && m.reserved == 3)) &&
                 m.nameBytes <= 4096 &&
                 m.unitBytes <= 256 &&
                 (m.hasColor == 0 || m.hasColor == 1) &&
@@ -183,6 +183,7 @@ Future<(int, Map<String, dynamic>)> _stepWorker(int address, int operation) =>
               unit.asTypedList(m.unitBytes <= 256 ? m.unitBytes : 0),
             ),
             'hasColor': m.hasColor,
+            'usedCompatibility': m.version == 2 && m.reserved == 3,
             'rgba': List<double>.generate(4, (i) => m.rgba[i]),
             'declaredScale': m.declaredScale,
             'resolvedScale': m.resolvedScale,
@@ -1044,6 +1045,9 @@ extension NativeSourceBridge on OpenCascadeKernelAdapter {
                 declaredMetersPerUnit: m['declaredScale'] as double,
                 resolvedMetersPerUnit: m['resolvedScale'] as double,
                 linearRgb: m['hasColor'] == 0 ? null : rgba.sublist(0, 3),
+                compatibilitySourceSha256: m['usedCompatibility'] == true
+                    ? (snapshot['sha256'] as String).toLowerCase()
+                    : null,
               );
             } catch (_) {
               await resource.dispose();

@@ -19,6 +19,10 @@ typedef struct occ_step_metadata_v1 {
   /* Linear RGB, alpha exactly 1 when has_color=1; all zero when absent. */
   double rgba[4];
 } occ_step_metadata_v1;
+/* Layout unchanged. metadata.version=1 requires reserved=0 (strict).
+ * metadata.version=2 requires reserved=3: compatibility rule set v1 applied
+ * steradian component ordering (bit 0) and derived dimensions (bit 1).
+ * Unknown versions/bits must be rejected, never inferred from source names. */
 typedef struct occ_step_read_result_v1 {
   uint32_t size, version;
   occ_read_result_v1 native_result;

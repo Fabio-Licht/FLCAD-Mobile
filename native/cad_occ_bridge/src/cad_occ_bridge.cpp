@@ -318,6 +318,11 @@ static int32_t run_operation(uint64_t id, cob_result_v1 *out, uint32_t size,
     occ_read_limits_v1 limits{sizeof(limits), 1,       268435456, 1073741824,
                               1000000,        2000000, 1000000,   32000000,
                               16384,          128};
+    // Part21 records may contain large lists of short parameters on one line.
+    // StepLex streams them without a line allocation; retain a finite STEP-only
+    // bound while preserving the STL profile and all token/topology budgets.
+    if (op->kind == 3)
+      limits.max_line_bytes = 1024 * 1024;
     try {
       op->result.phase = COB_PREPARE;
       const auto prepared = op->prepare(op->lease, poll, op.get());

@@ -9,6 +9,7 @@ final class StepAppearanceManifest {
     required this.declaredMetersPerUnit,
     required this.resolvedMetersPerUnit,
     required List<double>? linearRgb,
+    this.compatibilitySourceSha256,
   }) : linearRgb = linearRgb == null
            ? null
            : List.unmodifiable(linearRgb.map((v) => v == 0 ? 0.0 : v)) {
@@ -18,11 +19,17 @@ final class StepAppearanceManifest {
   final String name, declaredUnit;
   final double declaredMetersPerUnit, resolvedMetersPerUnit;
   final List<double>? linearRgb;
+  final String? compatibilitySourceSha256;
+  bool get usedCompatibility => compatibilitySourceSha256 != null;
+  static const normalizationRules = [
+    'si-unit-solid-angle-order',
+    'si-unit-solid-angle-derived',
+  ];
   bool get hasColor => linearRgb != null;
 
   Map<String, dynamic> toJson() => {
     'schema': 'flcad.step-appearance',
-    'version': 1,
+    'version': usedCompatibility ? 2 : 1,
     'name': name,
     'declaredUnit': declaredUnit,
     'declaredMetersPerUnit': declaredMetersPerUnit,
@@ -32,6 +39,14 @@ final class StepAppearanceManifest {
     'colorSpace': 'linear-srgb',
     'rootRgb': linearRgb,
     'alpha': hasColor ? 1.0 : null,
+    if (usedCompatibility)
+      'compatibility': {
+        'version': 1,
+        'sourceSha256': compatibilitySourceSha256,
+        'normalizations': [
+          for (final rule in normalizationRules) {'rule': rule, 'version': 1},
+        ],
+      },
   };
 
   /// Fixed field order and canonical numeric values, independent of input order.
@@ -49,6 +64,9 @@ final class StepAppearanceManifest {
           : (json['rootRgb'] as List)
                 .map((v) => (v as num).toDouble())
                 .toList(),
+      compatibilitySourceSha256: json['version'] == 2
+          ? (json['compatibility'] as Map)['sourceSha256'] as String
+          : null,
     );
   }
 
@@ -75,11 +93,44 @@ final class StepAppearanceManifest {
         );
     final scale = json['declaredMetersPerUnit'];
     final rgb = json['rootRgb'];
-    if (json.length != keys.length ||
-        json.keys.any((k) => !keys.contains(k)) ||
+    final compatibility = json['compatibility'];
+    final isCompatible = json['version'] == 2;
+    bool validCompatibility() {
+      if (compatibility is! Map ||
+          compatibility.length != 3 ||
+          compatibility['version'] is! int ||
+          compatibility['version'] != 1 ||
+          compatibility['sourceSha256'] is! String ||
+          !RegExp(
+            r'^[0-9a-f]{64}$',
+          ).hasMatch(compatibility['sourceSha256'] as String)) {
+        return false;
+      }
+      final rules = compatibility['normalizations'];
+      if (rules is! List || rules.length != normalizationRules.length) {
+        return false;
+      }
+      for (var i = 0; i < rules.length; i++) {
+        final rule = rules[i];
+        if (rule is! Map ||
+            rule.length != 2 ||
+            rule['rule'] != normalizationRules[i] ||
+            rule['version'] is! int ||
+            rule['version'] != 1) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (json.length != keys.length + (isCompatible ? 1 : 0) ||
+        json.keys.any(
+          (k) => !keys.contains(k) && !(isCompatible && k == 'compatibility'),
+        ) ||
         json['schema'] != 'flcad.step-appearance' ||
         json['version'] is! int ||
-        json['version'] != 1 ||
+        (json['version'] != 1 && !isCompatible) ||
+        (isCompatible && !validCompatibility()) ||
         !text(json['name'], 4096, empty: true) ||
         !text(json['declaredUnit'], 256) ||
         scale is! num ||

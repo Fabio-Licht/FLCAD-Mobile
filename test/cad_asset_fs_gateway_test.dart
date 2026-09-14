@@ -52,6 +52,32 @@ void main() {
     return op.promote();
   });
 
+  test(
+    'Windows project roots with mixed separators admit the same CAF object',
+    () {
+      final canonical = CadAssetNativeFs(project.path);
+      final mixed = CadAssetNativeFs(project.path.replaceAll(r'\', '/'));
+      try {
+        expect(mixed.info(mixed.root), canonical.info(canonical.root));
+      } finally {
+        mixed.dispose();
+        canonical.dispose();
+      }
+    },
+  );
+  test(
+    'mixed-separator project roots preserve staging capability bookkeeping',
+    () async {
+      await runtime.close();
+      await runtime.open(
+        'project',
+        Directory(project.path.replaceAll(r'\', '/')),
+      );
+      final prepared = await promote();
+      expect(prepared.assets, hasLength(1));
+    },
+  );
+
   for (final mode in ['missing', 'abi']) {
     test(
       '$mode helper fails before filesystem mutation in fresh process',

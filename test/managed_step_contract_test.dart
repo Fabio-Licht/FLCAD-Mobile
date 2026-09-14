@@ -5,6 +5,50 @@ import 'package:flcad_mobile/core/cad_document/managed_step_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'compatibility manifest roundtrips only the versioned known rule set',
+    () {
+      final manifest = StepAppearanceManifest(
+        name: 'Part',
+        declaredUnit: 'millimetre',
+        declaredMetersPerUnit: .001,
+        resolvedMetersPerUnit: .001,
+        linearRgb: [.125, .5, .75],
+        compatibilitySourceSha256: 'a' * 64,
+      );
+      expect(
+        StepAppearanceManifest.fromJson(manifest.toJson()).encode(),
+        manifest.encode(),
+      );
+      final metadata = manifest.toJson()['compatibility'] as Map;
+      for (final bad in [
+        {...metadata, 'version': 2},
+        {...metadata, 'sourceSha256': 'bad'},
+        {
+          ...metadata,
+          'normalizations': [
+            {'rule': 'unknown', 'version': 1},
+          ],
+        },
+        {...metadata, 'pathname': 'private'},
+      ]) {
+        expect(
+          () => StepAppearanceManifest.fromJson({
+            ...manifest.toJson(),
+            'compatibility': bad,
+          }),
+          throwsA(isA<FormatException>()),
+        );
+      }
+      expect(
+        () => StepAppearanceManifest.fromJson({
+          ...manifest.toJson(),
+          'version': 1,
+        }),
+        throwsA(isA<FormatException>()),
+      );
+    },
+  );
   GeometryAssetId id(String digit) => GeometryAssetId.fromJson({
     'schema': 'flcad.geometry-asset',
     'version': 1,

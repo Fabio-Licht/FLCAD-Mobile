@@ -63,10 +63,13 @@ typedef _ChildD = _Result Function(int, Pointer<Uint16>, int);
 /// Capabilities are scoped to this object, closed explicitly and never serialized.
 final class CadAssetNativeFs {
   CadAssetNativeFs(String root) : _api = _Api.instance {
-    final name = root.toNativeUtf16();
+    // Project storage builds paths with mixed separators on Windows. Convert
+    // separators at CAF admission only; retain CAF's component/policy checks.
+    final windowsRoot = root.replaceAll('/', r'\');
+    final name = windowsRoot.toNativeUtf16();
     try {
       this.root = _accept(
-        _api.root(name.cast(), root.length),
+        _api.root(name.cast(), windowsRoot.length),
         'open root',
         acquired: true,
       ).object;

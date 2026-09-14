@@ -129,6 +129,24 @@ int main() {
            meshes.size() == mesh_baseline && m.baseline_valid &&
            !m.after_failure && shapes.find(prior) != shapes.end();
   };
+  StepMemory compatible{step_compatibility_fixture()};
+  const auto compat_original = compatible.bytes;
+  const auto strict_parses = step_readstream_calls;
+  CHECK(run(compatible) == 0);
+  CHECK(step_readstream_calls == strict_parses + 2);
+  CHECK(r.metadata.version == 2 && r.metadata.reserved == 3);
+  CHECK(compatible.bytes == compat_original);
+  CHECK(flcad_occ_destroy_shape(r.native_result.token, error, sizeof(error)) ==
+        1);
+  StepMemory revoked_compatibility{step_compatibility_fixture()};
+  revoked_compatibility.mode = 7;
+  const auto revoked_parses = step_readstream_calls;
+  CHECK(reject(revoked_compatibility, OCC_READ_CANCELLED));
+  CHECK(step_readstream_calls == revoked_parses + 1);
+  for (int fault : {1, 2, 3, 4, 5}) {
+    StepMemory ambiguous{step_compatibility_fixture(fault)};
+    CHECK(reject(ambiguous, OCC_READ_FORMAT));
+  }
   for (int mode : {1, 2, 3}) {
     StepMemory m{step_fixture(true, mode)};
     const auto transfers = step_transfer_calls;

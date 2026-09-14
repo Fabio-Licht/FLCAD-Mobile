@@ -1355,14 +1355,15 @@ extension _CadTransactions on CadRuntime {
     return CadSceneEntity(
       id: entity.id,
       kind: CadSceneEntityKind.mesh,
-      geometry: rootLinearRgb == null
-          ? sceneGeometry
-          : {
-              ...sceneGeometry,
-              'rootLinearRgb': (rootLinearRgb as List)
-                  .map((v) => (v as num).toDouble())
-                  .toList(),
-            },
+      geometry: {
+        ...sceneGeometry,
+        if (rootLinearRgb != null)
+          'rootLinearRgb': (rootLinearRgb as List)
+              .map((v) => (v as num).toDouble())
+              .toList(),
+        if (previous.geometry['stepCompatibility'] == true)
+          'stepCompatibility': true,
+      },
       visible:
           entity.data['deleted'] != true &&
           (entity.data['sceneVisible'] as bool? ?? true) &&
@@ -1417,9 +1418,13 @@ extension _CadTransactions on CadRuntime {
     return CadSceneEntity(
       id: entity.id,
       kind: CadSceneEntityKind.mesh,
-      geometry: stepAppearance?.hasColor == true
-          ? {...sceneGeometry, 'rootLinearRgb': stepAppearance!.linearRgb}
-          : sceneGeometry,
+      geometry: {
+        ...sceneGeometry,
+        if (stepAppearance?.hasColor == true)
+          'rootLinearRgb': stepAppearance!.linearRgb,
+        if (stepAppearance?.usedCompatibility == true)
+          'stepCompatibility': true,
+      },
       visible:
           entity.data['deleted'] != true &&
           (entity.data['sceneVisible'] as bool? ?? true) &&

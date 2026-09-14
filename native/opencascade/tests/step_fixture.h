@@ -62,3 +62,30 @@ inline std::string step_fixture(bool color = true, int mode = 0,
     throw std::runtime_error("fixture stream write failed");
   return stream.str();
 }
+
+// Test-only construction: faithfully isolate the real AP214 unit defect.
+inline std::string step_compatibility_fixture(int fault = 0) {
+  auto bytes = step_fixture();
+  const auto si = bytes.find("SI_UNIT($,.STERADIAN.)");
+  const auto start = bytes.rfind("NAMED_UNIT(*)", si);
+  const auto solid = bytes.find("SOLID_ANGLE_UNIT()", si);
+  if (si == std::string::npos || start == std::string::npos ||
+      solid == std::string::npos)
+    throw std::runtime_error("compatibility fixture unit missing");
+  bytes.replace(start, solid + std::strlen("SOLID_ANGLE_UNIT()") - start,
+                "NAMED_UNIT(#900000) /* unit compatibility */ "
+                "SOLID_ANGLE_UNIT() SI_UNIT($,.STERADIAN.)");
+  const auto end = bytes.rfind("ENDSEC;");
+  if (fault != 2)
+    bytes.insert(
+        end, fault == 1
+                 ? "#900000=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n"
+                 : "#900000=DIMENSIONAL_EXPONENTS(0.,0.,0.,0.,0.,0.,0.);\n");
+  if (fault == 3)
+    bytes.insert(bytes.find("SOLID_ANGLE_UNIT()"), "SOLID_ANGLE_UNIT() ");
+  if (fault == 4)
+    bytes.replace(bytes.find(".STERADIAN."), 11, ".UNKNOWN_UNIT.");
+  if (fault == 5)
+    bytes.replace(bytes.find("CARTESIAN_POINT"), 15, "BOGUS_ENTITY");
+  return bytes;
+}

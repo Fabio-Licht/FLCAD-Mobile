@@ -44,22 +44,51 @@ int wmain(int argc, wchar_t **argv) {
           reinterpret_cast<const uint16_t *>(directory.c_str()),
           static_cast<uint32_t>(directory.native().size()));
       CHECK(!root.status);
-      for (int mode = 0; mode < 7; ++mode) {
+      for (int mode = 0; mode < 16; ++mode) {
         auto bytes = mode == 5 ? std::string("invalid STEP")
                                : step_fixture(mode != 1,
                                               mode == 3   ? 1
                                               : mode == 4 ? 3
                                                           : 0,
                                               mode == 2, false, mode == 6);
+        if (mode >= 10)
+          bytes = step_compatibility_fixture(mode - 10);
+        if (mode == 7 || mode == 8) {
+          // A large Part21 physical line made of short tokens. Test-only input
+          // construction; the actual importer remains the original CAF stream.
+          std::replace(bytes.begin(), bytes.end(), '\n', ' ');
+          std::replace(bytes.begin(), bytes.end(), '\r', ' ');
+          const auto data = bytes.find("DATA;");
+          CHECK(data != std::string::npos);
+          bytes.insert(data + 5,
+                       std::string(mode == 7 ? 950000 : 1024 * 1024, ' '));
+        }
+        if (mode == 9) {
+          const std::string si = "SI_UNIT($,.STERADIAN.)";
+          const std::string solid = "SOLID_ANGLE_UNIT()";
+          const auto start = bytes.find(si);
+          CHECK(start != std::string::npos);
+          const auto end = bytes.find(solid, start + si.size());
+          CHECK(end != std::string::npos);
+          const auto separator =
+              bytes.substr(start + si.size(), end - start - si.size());
+          bytes.replace(start, end + solid.size() - start,
+                        solid + separator + si);
+        }
         const auto leaf = L"part-" + std::to_wstring(mode) + L".step";
         auto file = FN(caf, caf_create_file)(
             root.object, reinterpret_cast<const uint16_t *>(leaf.data()),
             static_cast<uint32_t>(leaf.size()));
         CHECK(!file.status);
-        auto written = FN(caf, caf_write)(
-            file.object, reinterpret_cast<const uint8_t *>(bytes.data()),
-            static_cast<uint32_t>(bytes.size()));
-        CHECK(!written.status && written.bytes == bytes.size());
+        for (size_t offset = 0; offset < bytes.size();) {
+          const auto count = static_cast<uint32_t>(
+              std::min<size_t>(65536, bytes.size() - offset));
+          auto written = FN(caf, caf_write)(
+              file.object,
+              reinterpret_cast<const uint8_t *>(bytes.data() + offset), count);
+          CHECK(!written.status && written.bytes == count);
+          offset += count;
+        }
         CHECK(!FN(caf, caf_seal)(file.object, bytes.size()).status);
         CHECK(!FN(caf, caf_close)(file.object).status);
       }

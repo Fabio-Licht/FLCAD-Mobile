@@ -238,13 +238,13 @@ void main() {
     );
     engine.pointerMove(x: 460, y: 250, buttons: NavigationEngine.middleButton);
 
-    expect(engine.state, NavigationState.zooming);
+    expect(engine.state, NavigationState.panning);
     expect(commands, contains('OrbitCommand'));
-    expect(commands, contains('ZoomCommand'));
+    expect(commands, isNot(contains('ZoomCommand')));
   });
 
   test(
-    'Orbit entry primes at the post-Pan position without a micro-rotation',
+    'Orbit starts at pointer down and applies the first deliberate displacement',
     () {
       final camera = CadCameraController(
         eye: const Vector3(0, 0, 5),
@@ -284,8 +284,8 @@ void main() {
         buttons: NavigationEngine.middleButton | NavigationEngine.primaryButton,
       );
 
-      expect(camera.viewProjectionMatrix.values, afterPan);
-      expect(commands.where((value) => value == 'OrbitCommand'), isEmpty);
+      expect(camera.viewProjectionMatrix.values, isNot(afterPan));
+      expect(commands.where((value) => value == 'OrbitCommand'), hasLength(1));
 
       engine.pointerMove(
         x: 402,

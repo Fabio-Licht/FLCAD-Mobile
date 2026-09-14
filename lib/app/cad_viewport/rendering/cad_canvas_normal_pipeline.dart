@@ -3,6 +3,9 @@ import 'dart:typed_data';
 
 import '../../../core/geometric_kernel/geometry/vectors.dart';
 
+Map<String, dynamic> cadPresentationGeometry(Map<String, dynamic> geometry) =>
+    (geometry['brepPresentation'] as Map<String, dynamic>?) ?? geometry;
+
 class CadCanvasNormalChunk {
   const CadCanvasNormalChunk({
     required this.xyz,
@@ -28,7 +31,38 @@ abstract final class CadCanvasNormalPipeline {
     List<num> triangles, {
     double creaseAngleRadians = 50 * math.pi / 180,
     int trianglesPerChunk = 20000,
+    List<num>? nativeNormals,
   }) {
+    if (nativeNormals != null) {
+      if (nativeNormals.length != nodes.length ||
+          nativeNormals.any((v) => !v.isFinite)) {
+        throw const FormatException('Invalid presentation normals');
+      }
+      final result = <CadCanvasNormalChunk>[];
+      for (
+        var first = 0;
+        first < triangles.length;
+        first += trianglesPerChunk * 3
+      ) {
+        final end = math.min(first + trianglesPerChunk * 3, triangles.length);
+        final xyz = Float64List((end - first) * 3);
+        final normals = Float32List(xyz.length);
+        final indices = Uint16List(end - first);
+        for (var i = first; i < end; i++) {
+          final vertex = triangles[i].toInt();
+          indices[i - first] = i - first;
+          for (var axis = 0; axis < 3; axis++) {
+            xyz[(i - first) * 3 + axis] = nodes[vertex * 3 + axis].toDouble();
+            normals[(i - first) * 3 + axis] = nativeNormals[vertex * 3 + axis]
+                .toDouble();
+          }
+        }
+        result.add(
+          CadCanvasNormalChunk(xyz: xyz, indices: indices, normals: normals),
+        );
+      }
+      return result;
+    }
     final vertexCount = nodes.length ~/ 3;
     final faceCount = triangles.length ~/ 3;
     final faceNormals = List<Vector3>.filled(faceCount, Vector3.zero);

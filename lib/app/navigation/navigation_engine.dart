@@ -64,6 +64,7 @@ class NavigationEngine implements NavigationStyleHost {
       _moved = false;
     }
     _dispatch(NavigationPointerPhase.down, x, y, buttons, control, shift, alt);
+    if (state == NavigationState.orbiting) _orbitInputPrimed = true;
   }
 
   void pointerMove({
@@ -231,6 +232,7 @@ class NavigationEngine implements NavigationStyleHost {
   }
 
   void wheel({required double x, required double y, required double deltaY}) {
+    if (!deltaY.isFinite || deltaY == 0) return;
     if (_zoomAnchor == null) {
       _zoomAnchor = resolvePoint(x, y);
       transitionTo(NavigationState.zooming);
@@ -271,7 +273,7 @@ class NavigationEngine implements NavigationStyleHost {
     final dy = y - (_previousY ?? y);
     _previousX = x;
     _previousY = y;
-    if (dx * dx + dy * dy < .01) return false;
+    if (dx == 0 && dy == 0) return false;
     _moved = true;
     return true;
   }

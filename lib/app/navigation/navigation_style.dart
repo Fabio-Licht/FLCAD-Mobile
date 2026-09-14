@@ -60,7 +60,9 @@ class CadOpenCascadeNavigationStyle implements NavigationStyle {
   }
 
   void _press(NavigationPointerEvent event, NavigationStyleHost host) {
-    if (_requestsOrbit(event)) {
+    if (_requestsZoom(event)) {
+      host.transitionTo(NavigationState.zooming);
+    } else if (_requestsOrbit(event)) {
       host.transitionTo(NavigationState.orbiting);
     } else if (_requestsPan(event)) {
       host.beginPan(event.x, event.y);
@@ -73,12 +75,15 @@ class CadOpenCascadeNavigationStyle implements NavigationStyle {
   }
 
   void _move(NavigationPointerEvent event, NavigationStyleHost host) {
-    if (_requestsOrbit(event)) {
+    if (_requestsZoom(event)) {
+      host.transitionTo(NavigationState.zooming);
+      host.zoomByDrag(event.y);
+    } else if (_requestsOrbit(event)) {
       host.transitionTo(NavigationState.orbiting);
       host.orbitBy(event.x, event.y);
     } else if (host.state == NavigationState.orbiting && _middleOnly(event)) {
-      host.transitionTo(NavigationState.zooming);
-      host.zoomByDrag(event.y);
+      host.beginPan(event.x, event.y);
+      host.transitionTo(NavigationState.panning);
     } else if (_requestsPan(event)) {
       if (host.state != NavigationState.panning) {
         host.beginPan(event.x, event.y);

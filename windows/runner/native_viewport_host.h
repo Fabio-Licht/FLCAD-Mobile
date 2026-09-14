@@ -8,8 +8,8 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 
-#include <chrono>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -20,17 +20,22 @@
 #include "cad_camera_system.h"
 
 class NativeViewportHost {
- public:
-  NativeViewportHost(flutter::BinaryMessenger* messenger,
-                     flutter::TextureRegistrar* registrar);
+public:
+  NativeViewportHost(flutter::BinaryMessenger *messenger,
+                     flutter::TextureRegistrar *registrar);
   ~NativeViewportHost();
 
-  NativeViewportHost(const NativeViewportHost&) = delete;
-  NativeViewportHost& operator=(const NativeViewportHost&) = delete;
+  NativeViewportHost(const NativeViewportHost &) = delete;
+  NativeViewportHost &operator=(const NativeViewportHost &) = delete;
 
- private:
-  struct Vertex { float x, y, z, nx, ny, nz; };
-  struct PickVertex { float x, y, z; uint32_t id; };
+private:
+  struct Vertex {
+    float x, y, z, nx, ny, nz;
+  };
+  struct PickVertex {
+    float x, y, z;
+    uint32_t id;
+  };
   struct PickResult {
     uint32_t kind = 0;
     uint32_t id = 0;
@@ -44,6 +49,8 @@ class NativeViewportHost {
     std::vector<uint32_t> indices;
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> index_buffer;
+    std::vector<Vertex> display_edges;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> display_edge_buffer;
     std::vector<PickVertex> edge_vertices;
     std::vector<PickVertex> point_vertices;
     Microsoft::WRL::ComPtr<ID3D11Buffer> edge_buffer;
@@ -51,7 +58,12 @@ class NativeViewportHost {
     bool visible = true;
     float root_srgb[3]{.30f, .50f, .68f};
   };
-  struct Constants { float matrix[16]; float color[4]; uint32_t pick[4]{}; };
+  struct Constants {
+    float matrix[16];
+    float color[4];
+    uint32_t pick[4]{};
+    float normal_view[16];
+  };
 
   void HandleMethod(const flutter::MethodCall<flutter::EncodableValue>& call,
                     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
@@ -91,9 +103,13 @@ class NativeViewportHost {
   Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth_view_;
   Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_shader_;
   Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_shader_;
+  Microsoft::WRL::ComPtr<ID3D11PixelShader> line_shader_;
   Microsoft::WRL::ComPtr<ID3D11InputLayout> input_layout_;
   Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
   Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
+  Microsoft::WRL::ComPtr<ID3D11RasterizerState> edge_rasterizer_;
+  Microsoft::WRL::ComPtr<ID3D11RasterizerState> cad_edge_rasterizer_;
+  Microsoft::WRL::ComPtr<ID3D11BlendState> cad_edge_blend_;
   Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth_state_;
   Microsoft::WRL::ComPtr<ID3D11DepthStencilState> pick_overlay_depth_state_;
   Microsoft::WRL::ComPtr<ID3D11Texture2D> pick_texture_;
@@ -118,6 +134,7 @@ class NativeViewportHost {
   PickResult hover_;
   FlutterDesktopGpuSurfaceDescriptor surface_descriptor_{};
   uint32_t width_ = 1, height_ = 1;
+  uint32_t render_style_ = 0;
   flcad::render::CadCameraSystem camera_;
   double fps_ = 0, upload_ms_ = 0, render_ms_ = 0, picking_ms_ = 0;
   uint64_t frames_ = 0, triangles_ = 0;

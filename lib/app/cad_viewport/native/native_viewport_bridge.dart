@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../scene/cad_scene_graph.dart';
 import '../rendering/cad_root_color.dart';
+import '../rendering/cad_canvas_normal_pipeline.dart';
 import '../camera/cad_camera_controller.dart';
 
 enum ViewportBackend { flutterCanvas, nativeGpu }
@@ -177,8 +178,20 @@ class CadSceneDisplayAdapter {
       'selected': entity.selected,
     };
     if (includeGeometry) {
-      result['nodes'] = nodes;
-      result['triangles'] = triangles;
+      final presentation = cadPresentationGeometry(entity.geometry);
+      final chunks = CadCanvasNormalPipeline.build(
+        (presentation['nodes'] as List).cast<num>(),
+        (presentation['triangles'] as List).cast<num>(),
+        nativeNormals: (presentation['normals'] as List?)?.cast<num>(),
+      );
+      result['nodes'] = [for (final chunk in chunks) ...chunk.xyz];
+      result['normals'] = [for (final chunk in chunks) ...chunk.normals];
+      result['triangles'] = List<int>.generate(
+        (presentation['triangles'] as List).length,
+        (i) => i,
+      );
+      final edges = entity.geometry['topologicalEdges'];
+      if (edges is List) result['topologicalEdges'] = edges;
       final rgb = cadRootSrgb(entity.geometry);
       if (rgb != null) result['rootSrgb'] = rgb;
     }
@@ -187,6 +200,7 @@ class CadSceneDisplayAdapter {
 }
 
 class NativeViewportBridge extends ChangeNotifier {
+  int renderStyle = 0;
   static const MethodChannel _channel = MethodChannel('flcad/native_viewport');
   final CadSceneDisplayAdapter adapter = CadSceneDisplayAdapter();
   int? textureId;
@@ -280,6 +294,7 @@ class NativeViewportBridge extends ChangeNotifier {
   }
 
   Future<void> setCamera(CadCameraController camera) => _invoke('setCamera', {
+    'renderStyle': renderStyle,
     'eye': [
       camera.presentationEye.x,
       camera.presentationEye.y,

@@ -35,6 +35,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     this.operationalEntities,
     this.operationalResolver,
     this.operationalSelection,
+    this.onViewportReady,
+    this.enableInspectionHover = false,
   });
 
   /// The viewport owns and disposes the bridge returned by this factory.
@@ -56,6 +58,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
   final OperationalEntityRegistry? operationalEntities;
   final OperationalEntityResolver? operationalResolver;
   final OperationalSelectionManager? operationalSelection;
+  final VoidCallback? onViewportReady;
+  final bool enableInspectionHover;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -88,13 +92,25 @@ class _IntegratedCadViewportWidgetState
     _tapGeneration++;
     setState(() {
       _renderStyle = style;
-      // The native pipeline currently provides the optimized opaque shaded
-      // pass. The canvas pipeline owns the other global CAD display modes.
-      // Switching here makes the toolbar authoritative instead of leaving a
-      // native texture covering the requested presentation.
-      backend = style == CadRenderStyle.shaded && Platform.isWindows
+      final cadEdges = widget.scene.entities
+          .where((e) => e.geometry['nodes'] is List)
+          .every((e) => e.geometry['topologicalEdges'] is List);
+      native.renderStyle = style == CadRenderStyle.hiddenLine
+          ? 1
+          : style == CadRenderStyle.wireframe
+          ? 2
+          : 0;
+      backend =
+          Platform.isWindows &&
+              (style == CadRenderStyle.shaded ||
+                  (cadEdges &&
+                      (style == CadRenderStyle.hiddenLine ||
+                          style == CadRenderStyle.wireframe)))
           ? ViewportBackend.nativeGpu
           : ViewportBackend.flutterCanvas;
+      if (backend == ViewportBackend.nativeGpu && native.available) {
+        native.setCamera(widget.camera);
+      }
     });
   }
 
@@ -140,6 +156,7 @@ class _IntegratedCadViewportWidgetState
   }
 
   Future<void> _updateNativeHover(Offset position) async {
+    if (!widget.enableInspectionHover) return;
     _lastHoverPosition = position;
     _pendingHover = position;
     if (_hoverRequestActive || !native.available || _nativeNavigating) return;
@@ -151,7 +168,12 @@ class _IntegratedCadViewportWidgetState
       final resolved = result == null
           ? null
           : await operationalResolver.resolve(result, widget.scene);
-      if (_pendingHover != null || _nativeNavigating) continue;
+      if (!mounted ||
+          !widget.enableInspectionHover ||
+          _pendingHover != null ||
+          _nativeNavigating) {
+        continue;
+      }
       if (resolved == null) {
         await native.clearHover();
       } else {
@@ -201,6 +223,12 @@ class _IntegratedCadViewportWidgetState
   @override
   void didUpdateWidget(covariant IntegratedCadViewportWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.enableInspectionHover && !widget.enableInspectionHover) {
+      _pendingHover = null;
+      _nativeHover = null;
+      _operationalHover = null;
+      native.clearHover();
+    }
     if (oldWidget.scene != widget.scene) {
       _tapGeneration++;
       operationalResolver.prepare(widget.scene);
@@ -287,6 +315,7 @@ class _IntegratedCadViewportWidgetState
       setState(() => backend = ViewportBackend.flutterCanvas);
     }
     _initializing = false;
+    if (ready) await _viewportReady();
   }
 
   @override
@@ -303,6 +332,20 @@ class _IntegratedCadViewportWidgetState
       operationalEntities.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _viewportReady() async {
+    if (!mounted ||
+        widget.camera.viewportWidth <= 1 ||
+        widget.camera.viewportHeight <= 1) {
+      return;
+    }
+    if (backend == ViewportBackend.nativeGpu) {
+      if (!native.available || _initializing) return;
+      // Publish the scene delta before delivering Fit to the real camera/host.
+      await native.sendDelta(widget.scene);
+    }
+    if (mounted) widget.onViewportReady?.call();
   }
 
   @override
@@ -353,6 +396,7 @@ class _IntegratedCadViewportWidgetState
             ),
             Positioned.fill(
               child: ProfessionalCadViewportWidget(
+                onViewportReady: _viewportReady,
                 scene: widget.scene,
                 camera: widget.camera,
                 onPick: widget.onPick,

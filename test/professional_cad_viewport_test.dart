@@ -751,7 +751,7 @@ void main() {
     },
   );
 
-  testWidgets('CATIA chord transitions continuously from orbit to zoom', (
+  testWidgets('releasing the orbit chord returns to pan without zoom', (
     tester,
   ) async {
     final scene = CadSceneGraph()
@@ -814,7 +814,10 @@ void main() {
       ),
     );
 
-    expect((camera.eye - camera.target).length, lessThan(distanceAfterOrbit));
+    expect(
+      (camera.eye - camera.target).length,
+      closeTo(distanceAfterOrbit, 1e-10),
+    );
   });
 
   testWidgets('selection transfers navigation to the selected region', (

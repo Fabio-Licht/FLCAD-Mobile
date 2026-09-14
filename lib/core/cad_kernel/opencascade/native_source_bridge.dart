@@ -492,11 +492,12 @@ final class ManagedNativeDisplayMesh {
   }
 
   /// Copies render data while the custody lease is live. The scene receives no
-  /// token or handle; normals are reconstructed deterministically by the
-  /// existing canvas normal pipeline from nodes and triangle indices.
+  /// token or handle. The durable mesh remains exact; an optional BREP adds
+  /// transient tessellation, surface normals and topology for presentation.
   Future<Map<String, dynamic>> prepareSceneGeometry(
-    OpenCascadeKernelAdapter kernel,
-  ) => withLease((lease) async {
+    OpenCascadeKernelAdapter kernel, {
+    ManagedNativeShape? presentationShape,
+  }) => withLease((lease) async {
     final bridge = kernel._nativeBridge;
     if (bridge is! OpenCascadeFFI) {
       throw UnsupportedError(
@@ -539,13 +540,26 @@ final class ManagedNativeDisplayMesh {
         throw StateError('Native mesh bounds do not match its descriptor');
       }
     }
-    return {
+    final sceneGeometry = {
       'nodes': List<double>.unmodifiable(geometry.nodes),
       'triangles': List<int>.unmodifiable(geometry.triangles),
       'bounds': descriptor.bounds,
       'normalsOrigin': 'calculatedByAdapter',
       'hasNativeVertexNormals': false,
     };
+    if (presentationShape != null) {
+      return presentationShape.withLease((shapeLease) async {
+        final display = await bridge.inspectDisplayGeometry(
+          shapeLease._record.identity._token,
+        );
+        return {
+          ...sceneGeometry,
+          'brepPresentation': {...display, 'normalsOrigin': 'brepSurface'},
+          'topologicalEdges': display['topologicalEdges'],
+        };
+      });
+    }
+    return sceneGeometry;
   });
 }
 

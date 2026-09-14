@@ -32,6 +32,11 @@ FLCAD_OCC_EXPORT int flcad_occ_transform_shape(const char* source_token,const do
 FLCAD_OCC_EXPORT int flcad_occ_import_stl(const char* path,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,int* vertices,int* triangles,int* degenerate_triangles,double* bounds,int* has_normals,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_destroy_mesh(const char* token,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_mesh_geometry(const char* token,double* nodes,size_t node_values,int* triangles,size_t triangle_values,char* error,size_t error_size);
+// Read-only transient BREP presentation; requires the caller's live shape
+// lease.
+FLCAD_OCC_EXPORT int flcad_occ_display_geometry(const char *token, char *result,
+                                                size_t result_size, char *error,
+                                                size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_topology(const char* token,char* topology,size_t topology_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_intersect_surfaces(const char* first,const char* second,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_quality(const char* token,const double* draft_direction,int samples,char* result,size_t result_size,char* error,size_t error_size);

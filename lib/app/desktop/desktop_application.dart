@@ -28,6 +28,7 @@ import '../../features/projects/models/project.dart';
 import '../bootstrap/app_bootstrap.dart';
 import '../bootstrap/engineering_bootstrap.dart';
 import '../cad_viewport/camera/cad_camera_controller.dart';
+import '../cad_viewport/camera/cad_managed_import_fit.dart';
 import '../cad_viewport/native/integrated_native_viewport_widget.dart';
 import '../cad_viewport/scene/cad_scene_graph.dart';
 import '../cad_viewport/selection/viewport_picking_controller.dart';
@@ -1012,6 +1013,9 @@ class _OfficialEngineeringWorkspaceState
       widget.cad.runtime.geometrySelection;
   late final OperationalReverseEngineeringController operational;
   String? fittedDocumentId;
+  final _managedImportFitGate = CadManagedImportFitGate();
+  int _handledManagedImportPublication = 0;
+  VoidCallback? _pendingManagedImportFit;
   final transformX = TextEditingController(text: '10');
   final transformY = TextEditingController(text: '0');
   final transformZ = TextEditingController(text: '0');
@@ -2055,6 +2059,7 @@ class _OfficialEngineeringWorkspaceState
       runtime: widget.cad.runtime,
     );
     widget.cad.addListener(_synchronizeScene);
+    widget.cad.runtime.addListener(_synchronizeScene);
     _synchronizeScene();
   }
 
@@ -2070,6 +2075,7 @@ class _OfficialEngineeringWorkspaceState
     surfaceOffset.dispose();
     sectionOffset.dispose();
     widget.cad.removeListener(_synchronizeScene);
+    widget.cad.runtime.removeListener(_synchronizeScene);
     operational.dispose();
     navigation.dispose();
     camera.dispose();
@@ -2082,6 +2088,7 @@ class _OfficialEngineeringWorkspaceState
     if (runtimeDocument == null) {
       operational.detachProject();
       fittedDocumentId = null;
+      _pendingManagedImportFit = null;
       openToolWindows.clear();
       return;
     }
@@ -2095,8 +2102,6 @@ class _OfficialEngineeringWorkspaceState
             ),
           ),
     );
-    final document = widget.cad.document;
-    if (document == null) return;
     if (fittedDocumentId != runtimeDocument.projectId) {
       openToolWindows.clear();
       choosingSketchSupport = false;
@@ -2111,6 +2116,64 @@ class _OfficialEngineeringWorkspaceState
       }
       fittedDocumentId = runtimeDocument.projectId;
     }
+    final publication = widget.cad.runtime.managedImportPublication;
+    if (publication != null &&
+        publication.id > _handledManagedImportPublication &&
+        publication.session == widget.cad.runtime.sessionIdentity) {
+      _handledManagedImportPublication = publication.id;
+      _scheduleManagedImportFit(publication);
+    }
+  }
+
+  void _scheduleManagedImportFit(CadManagedImportPublication publication) {
+    final ticket = _managedImportFitGate.schedule();
+    final scheduledCamera = camera.snapshot();
+    void apply() {
+      if (camera.viewportWidth <= 1 || camera.viewportHeight <= 1) return;
+      _pendingManagedImportFit = null;
+      final current = widget.cad.runtime.managedImportPublication;
+      if (!mounted ||
+          current == null ||
+          !_managedImportFitGate.canApply(
+            ticket: ticket,
+            publicationId: publication.id,
+            currentPublicationId: current.id,
+            publicationSession: publication.session,
+            currentSession: widget.cad.runtime.sessionIdentity,
+            publicationRevision: publication.revision,
+            currentRevision: widget.cad.runtime.runtimeRevision,
+            scheduledCamera: scheduledCamera,
+            camera: camera,
+          )) {
+        return;
+      }
+      navigation.fit(
+        Vector3(
+          publication.bounds.minX,
+          publication.bounds.minY,
+          publication.bounds.minZ,
+        ),
+        Vector3(
+          publication.bounds.maxX,
+          publication.bounds.maxY,
+          publication.bounds.maxZ,
+        ),
+      );
+      assert(() {
+        debugPrint(
+          '[viewport-import-fit] valid viewport presented; Fit delivered',
+        );
+        return true;
+      }());
+    }
+
+    _pendingManagedImportFit = apply;
+    assert(() {
+      debugPrint(
+        '[viewport-import-fit] publication queued after controller restoration',
+      );
+      return true;
+    }());
   }
 
   ({Vector3 minimum, Vector3 maximum})? _visibleSceneBounds() {
@@ -4401,6 +4464,7 @@ class _OfficialEngineeringWorkspaceState
       child: AnimatedBuilder(
         animation: Listenable.merge([
           widget.cad,
+          widget.cad.runtime,
           modelingViewport,
           operational,
           geometrySelection,
@@ -4509,6 +4573,8 @@ class _OfficialEngineeringWorkspaceState
                             children: [
                               Positioned.fill(
                                 child: IntegratedCadViewportWidget(
+                                  onViewportReady: () =>
+                                      _pendingManagedImportFit?.call(),
                                   scene: scene,
                                   camera: camera,
                                   operationalEntities:

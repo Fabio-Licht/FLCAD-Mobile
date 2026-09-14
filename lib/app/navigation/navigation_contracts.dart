@@ -46,7 +46,7 @@ class NavigationProfileCalibration {
   static const geomagicCatia = NavigationProfileCalibration(
     orbitPixelsPerRadian: 220,
     panGain: 1,
-    wheelExponent: .001,
+    wheelExponent: .0004,
     dragZoomExponent: .0065,
     fitBoundsExpansion: 1.3,
     zoomSessionTimeout: Duration(milliseconds: 220),
@@ -55,7 +55,7 @@ class NavigationProfileCalibration {
   static const classic = NavigationProfileCalibration(
     orbitPixelsPerRadian: 180,
     panGain: 1,
-    wheelExponent: .001,
+    wheelExponent: .0004,
     dragZoomExponent: .008,
     fitBoundsExpansion: 1,
     zoomSessionTimeout: Duration(milliseconds: 220),
@@ -66,7 +66,7 @@ class NavigationProfileCalibration {
     // angular displacement, preserving direct linear control without easing.
     orbitPixelsPerRadian: 320,
     panGain: 1,
-    wheelExponent: .001,
+    wheelExponent: .0004,
     dragZoomExponent: .008,
     fitBoundsExpansion: 1,
     zoomSessionTimeout: Duration(milliseconds: 220),

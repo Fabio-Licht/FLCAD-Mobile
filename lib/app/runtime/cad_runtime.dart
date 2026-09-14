@@ -40,6 +40,21 @@ part 'cad_runtime_integrity.dart';
 part 'cad_asset_staging.dart';
 part 'cad_asset_storage.dart';
 
+/// Ephemeral viewport request emitted only after a managed import's durable
+/// commit and publication confirmation. It is deliberately not document data.
+@immutable
+final class CadManagedImportPublication {
+  const CadManagedImportPublication({
+    required this.id,
+    required this.session,
+    required this.revision,
+    required this.bounds,
+  });
+
+  final int id, session, revision;
+  final KernelBounds bounds;
+}
+
 class CadRuntime extends ChangeNotifier with NotificationGate {
   CadRuntime({
     required this.kernels,
@@ -89,6 +104,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
   Future<void> _transactionTail = Future<void>.value();
   _CadTransaction? _transaction;
   int _nextTransaction = 0, _runtimeRevision = 0, _lifecycleGeneration = 0;
+  int _nextManagedImportPublication = 0;
   int _sessionIdentity = 0;
   bool _sessionActive = false, _closingAdmission = false;
   bool _recoveryRequired = false, _notifierDisposed = false;
@@ -101,6 +117,9 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
   int get sessionIdentity => _sessionIdentity;
   bool get sessionActive => _sessionActive;
   bool get recoveryRequired => _recoveryRequired;
+  CadManagedImportPublication? get managedImportPublication =>
+      _managedImportPublication;
+  CadManagedImportPublication? _managedImportPublication;
 
   CadDocument? get document => _document;
   ImportedCadDocument? get activeImport => _activeImport;
@@ -597,6 +616,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             );
             final sceneGeometry = await managedDisplayMesh.prepareSceneGeometry(
               kernel,
+              presentationShape: managedShape,
             );
             await operation.prepare();
 
@@ -662,6 +682,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             tx.validate();
             await _commitPreparedManaged(tx, prepared);
             await operation._confirmDocumentPublished();
+            _recordManagedImportPublication(tx, prepared.bounds);
             committedEntity = prepared.candidate.entities[entityId]!;
             return committedEntity;
           });
@@ -841,6 +862,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             );
             final sceneGeometry = await managedDisplayMesh.prepareSceneGeometry(
               kernel,
+              presentationShape: managedShape,
             );
             final appearanceBytes = appearance.encode();
             await _assetStorage.checkpoint('managedStep:beforeAppearance');
@@ -914,6 +936,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             tx.validate();
             await _commitPreparedManaged(tx, prepared);
             await operation._confirmDocumentPublished();
+            _recordManagedImportPublication(tx, prepared.bounds);
             committedEntity = prepared.candidate.entities[entityId]!;
             return committedEntity;
           }, cancellation: cancellation);
@@ -1098,6 +1121,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
             tx.validate();
             await _commitPreparedManaged(tx, prepared);
             await operation._confirmDocumentPublished();
+            _recordManagedImportPublication(tx, prepared.bounds);
             committedEntity = prepared.candidate.entities[entityId]!;
             return committedEntity;
           });

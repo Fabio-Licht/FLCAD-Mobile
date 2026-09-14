@@ -143,6 +143,31 @@ void main() {
   }
 
   test(
+    'managed STL emits an ephemeral Fit request only after publication',
+    () async {
+      expect(runtime.managedImportPublication, isNull);
+      final entity = await importFile('ascii.stl');
+      final publication = runtime.managedImportPublication;
+      expect(publication, isNotNull);
+      expect(publication!.session, runtime.sessionIdentity);
+      expect(publication.revision, runtime.runtimeRevision);
+      expect(publication.bounds.minX, 0);
+      expect(publication.bounds.minY, 0);
+      expect(publication.bounds.minZ, 0);
+      expect(publication.bounds.maxX, 1);
+      expect(publication.bounds.maxY, 1);
+      expect(publication.bounds.maxZ, 0);
+
+      await runtime.undoDocument();
+      expect(runtime.managedImportPublication!.id, publication.id);
+      expect(runtime.runtimeRevision, isNot(publication.revision));
+      await runtime.redoDocument();
+      expect(runtime.managedImportPublication!.id, publication.id);
+      expect(runtime.scene.find(entity.id), isNotNull);
+    },
+  );
+
+  test(
     'STL round trip restores binary and ASCII mesh-only custody atomically',
     () async {
       final first = await importFile('display.stl');

@@ -202,6 +202,83 @@ int main() {
     CHECK(std::equal(bytes.begin() + 80, bytes.end(), box.bytes.begin() + 80));
     std::filesystem::remove(legacy);
   }
+  // Transient BREP presentation must preserve geometry/residency and must not
+  // infer CAD edges from tessellation. Check analytic sphere normals including
+  // a located, reversed face and a box with exactly twelve topological edges.
+  CHECK(flcad::display::Policy::ForDiagonal(100).deflection == 0.01);
+  CHECK(flcad::display::Policy::ForDiagonal(1000).deflection == 0.1);
+  CHECK(flcad::display::Policy::ForDiagonal(1e-9).deflection == 1e-5);
+  CHECK(flcad::display::Policy::ForDiagonal(1e12).deflection == 10);
+  bool invalid_diagonal = false;
+  try {
+    flcad::display::Policy::ForDiagonal(
+        std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument &) {
+    invalid_diagonal = true;
+  }
+  CHECK(invalid_diagonal);
+  auto array = [](const std::string &json, const std::string &key) {
+    const auto start = json.find("\"" + key + "\":[") + key.size() + 4;
+    const auto end = json.find(']', start);
+    std::string text = json.substr(start, end - start);
+    std::replace(text.begin(), text.end(), ',', ' ');
+    std::istringstream stream(text);
+    std::vector<double> values;
+    double value;
+    while (stream >> value)
+      values.push_back(value);
+    return values;
+  };
+  std::vector<char> presentation(64 * 1024 * 1024);
+  for (int fixture = 0; fixture < 3; ++fixture) {
+    auto shape = fixture == 0 ? BRepPrimAPI_MakeBox(10, 20, 30).Shape()
+                              : BRepPrimAPI_MakeSphere(10).Shape();
+    if (fixture == 2) {
+      gp_Trsf location;
+      location.SetTranslation(gp_Vec(3, -7, 2));
+      shape.Location(TopLoc_Location(location));
+      shape.Reverse();
+    }
+    shapes["presentation"] = shape;
+    std::ostringstream before_brep;
+    BRepTools::Write(shape, before_brep);
+    const auto owners = shapes.size(), mesh_owners = meshes.size();
+    CHECK(flcad_occ_display_geometry("presentation", presentation.data(),
+                                     presentation.size(), error,
+                                     sizeof(error)) == 1);
+    const std::string json(presentation.data());
+    const auto nodes = array(json, "nodes"), normals = array(json, "normals"),
+               indices = array(json, "triangles");
+    CHECK(!nodes.empty() && nodes.size() == normals.size() && nodes.size() == indices.size() * 3);
+    CHECK(indices.size() / 3 <= flcad::display::Policy::max_triangles);
+    if (fixture == 0) {
+      const auto begin = json.find("\"topologicalEdges\":[");
+      const auto end = json.find("],\"bounds\"", begin);
+      CHECK(std::count(json.begin() + begin, json.begin() + end, '[') == 13);
+    }
+    for (size_t i = 0; i < normals.size(); i += 3) {
+      const gp_Vec n(normals[i], normals[i + 1], normals[i + 2]);
+      CHECK(std::abs(n.Magnitude() - 1) < 1e-10);
+      if (fixture) {
+        gp_Vec expected(nodes[i] - (fixture == 2 ? 3 : 0),
+                        nodes[i + 1] - (fixture == 2 ? -7 : 0),
+                        nodes[i + 2] - (fixture == 2 ? 2 : 0));
+        expected.Normalize();
+        if (fixture == 2)
+          expected.Reverse();
+        CHECK(n.Dot(expected) > 0.999999);
+      }
+    }
+    std::ostringstream after_brep;
+    BRepTools::Write(shapes.at("presentation"), after_brep);
+    CHECK(before_brep.str() == after_brep.str());
+    CHECK(shapes.size() == owners && meshes.size() == mesh_owners);
+    CHECK(BRepCheck_Analyzer(shape).IsValid());
+    char small[8] = "stable";
+    CHECK(flcad_occ_display_geometry("presentation", small, sizeof(small),
+                                     error, sizeof(error)) == 0);
+    CHECK(std::string(small) == "stable");
+  }
   shapes.clear();
   CHECK(meshes.empty());
   std::cout

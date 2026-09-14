@@ -151,6 +151,26 @@ final class _PreparedManagedOpen {
 }
 
 extension _CadTransactions on CadRuntime {
+  void _recordManagedImportPublication(
+    _CadTransaction tx,
+    KernelBounds? bounds,
+  ) {
+    if (!tx.committed || bounds == null) return;
+    // _install has already advanced runtimeRevision as part of the confirmed
+    // publication, so tx.validate() intentionally no longer applies here.
+    // The active capability still prevents a stale or substituted operation
+    // from emitting this UI-only signal.
+    if (!tx.isActiveFor(this)) {
+      throw const StaleCadTransaction();
+    }
+    _managedImportPublication = CadManagedImportPublication(
+      id: ++_nextManagedImportPublication,
+      session: _sessionIdentity,
+      revision: _runtimeRevision,
+      bounds: bounds,
+    );
+  }
+
   _CadTransaction? get _callingTransaction {
     final inherited = Zone.current[_transactionZone];
     final current = _transaction;
@@ -1341,6 +1361,7 @@ extension _CadTransactions on CadRuntime {
     }
     final sceneGeometry = await geometry.displayMesh.prepareSceneGeometry(
       kernel,
+      presentationShape: geometry.shape,
     );
     final rootLinearRgb = previous.geometry['rootLinearRgb'];
     if (rootLinearRgb != null &&
@@ -1413,6 +1434,7 @@ extension _CadTransactions on CadRuntime {
     }
     final sceneGeometry = await geometry.displayMesh.prepareSceneGeometry(
       kernel,
+      presentationShape: geometry.shape,
     );
     final collection = candidate.entities[entity.data['collectionId']];
     return CadSceneEntity(

@@ -233,6 +233,11 @@ void main() {
         expect(bounds[4] - bounds[1], closeTo(20, 1e-5));
         expect(bounds[5] - bounds[2], closeTo(30, 1e-5));
         expect(scene.geometry['normalsOrigin'], 'calculatedByAdapter');
+        expect(
+          (scene.geometry['brepPresentation'] as Map)['normalsOrigin'],
+          'brepSurface',
+        );
+        expect(scene.geometry['topologicalEdges'], hasLength(12));
         final encodedScene = CadSceneDisplayAdapter()
             .initial(runtime.scene)
             .entities
@@ -257,6 +262,7 @@ void main() {
         final encoded =
             '$document${jsonEncode(journals())}${manifestFile.readAsStringSync()}';
         for (final forbidden in [
+          'brepPresentation',
           'sourcePath',
           'registeredPath',
           'pointer',

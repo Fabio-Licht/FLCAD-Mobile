@@ -21,7 +21,8 @@ void main() {
       final adapter = CadSceneDisplayAdapter();
       final initial = adapter.initial(scene);
       expect(initial.entities, hasLength(1));
-      expect(initial.entities.single['nodes'], same(geometry['nodes']));
+      expect(initial.entities.single['nodes'], geometry['nodes']);
+      expect(initial.entities.single['normals'], [0, 0, 1, 0, 0, 1, 0, 0, 1]);
 
       expect(adapter.delta(scene).entities, isEmpty);
       scene.select({'mesh:1'});

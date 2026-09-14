@@ -1863,6 +1863,8 @@ size_t flcad_occ_shape_count() {
 
 #include "flcad_occ_source.inc"
 
+#include "flcad_occ_display_geometry.inc"
+
 #ifdef FLCAD_OCC_PATH_AUDIT
 extern "C" __declspec(dllexport) uint64_t flcad_occ_test_mesh_count(void) {
   std::lock_guard<std::mutex> lock(registry_mutex);

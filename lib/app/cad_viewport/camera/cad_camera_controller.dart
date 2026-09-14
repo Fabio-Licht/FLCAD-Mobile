@@ -89,6 +89,7 @@ class CadCameraController extends ChangeNotifier {
   double get orthographicHeight => viewScale;
   set orthographicHeight(double value) => viewScale = value;
   CadCameraState? _preSketchState;
+  double _modelRadius = 1;
 
   bool get isInSketchMode => _preSketchState != null;
 
@@ -431,12 +432,16 @@ class CadCameraController extends ChangeNotifier {
   void zoom(double factor, {Vector3? anchor}) {
     if (!factor.isFinite || factor <= 0) return;
     if (projectionMode == CadProjectionMode.orthographic) {
+      final scale = (viewScale * factor)
+          .clamp(_modelRadius * .02, _modelRadius * 100)
+          .toDouble();
+      final ratio = scale / viewScale;
       if (anchor != null) {
-        final shift = (anchor - target) * (1 - factor);
+        final shift = (anchor - target) * (1 - ratio);
         eye = eye + shift;
         target = target + shift;
       }
-      viewScale = (viewScale * factor).clamp(.0001, 1e9).toDouble();
+      viewScale = scale;
     } else {
       final offset = eye - target;
       final direction = offset.length <= 1e-12
@@ -446,7 +451,10 @@ class CadCameraController extends ChangeNotifier {
       // Keeping a finite upper bound also prevents a wheel burst from making
       // the model effectively impossible to recover without Fit View.
       final distance = (offset.length * factor)
-          .clamp(math.max(nearPlane * 4, .0001), math.min(farPlane * .8, 1e9))
+          .clamp(
+            math.max(nearPlane * 4, _modelRadius * .02),
+            math.min(farPlane * .8, _modelRadius * 100),
+          )
           .toDouble();
       if (anchor == null) {
         eye = target + direction * distance;
@@ -455,7 +463,9 @@ class CadCameraController extends ChangeNotifier {
         eye = anchor + (eye - anchor) * ratio;
         target = anchor + (target - anchor) * ratio;
       }
-      viewScale = (viewScale * factor).clamp(.0001, 1e9).toDouble();
+      viewScale = (viewScale * distance / math.max(offset.length, 1e-12))
+          .clamp(_modelRadius * .02, _modelRadius * 100)
+          .toDouble();
     }
     notifyListeners();
   }
@@ -474,6 +484,19 @@ class CadCameraController extends ChangeNotifier {
   }
 
   void fit(Vector3 minimum, Vector3 maximum) {
+    if (![
+          minimum.x,
+          minimum.y,
+          minimum.z,
+          maximum.x,
+          maximum.y,
+          maximum.z,
+        ].every((v) => v.isFinite) ||
+        minimum.x > maximum.x ||
+        minimum.y > maximum.y ||
+        minimum.z > maximum.z) {
+      return;
+    }
     presentationTranslation = Vector3.zero;
     presentationOffsetNdcX = 0;
     presentationOffsetNdcY = 0;
@@ -481,14 +504,19 @@ class CadCameraController extends ChangeNotifier {
     target = (minimum + maximum) / 2;
     rotationCenter = target;
     focusPoint = target;
-    final radius = (maximum - minimum).length / 2;
+    final radius = math.max((maximum - minimum).length / 2, .0001);
+    _modelRadius = radius;
     final direction = previousDirection.length == 0
         ? const Vector3(1, -1, .7).normalized
         : previousDirection.normalized;
-    // Keep Fit, clipping and FOV identical to the Render Lab reference.
-    final distance = math.max(radius * 2.7, .01);
+    final aspect = viewportWidth / math.max(viewportHeight, 1);
+    final halfFov = math.min(
+      fieldOfViewRadians / 2,
+      math.atan(math.tan(fieldOfViewRadians / 2) * aspect),
+    );
+    final distance = math.max(radius / math.sin(halfFov) * 1.08, .01);
     eye = target + direction * distance;
-    viewScale = math.max(radius * 2.4, .01);
+    viewScale = math.max(radius * 2.16 / math.min(aspect, 1), .01);
     nearPlane = math.max(radius * .001, .001);
     farPlane = math.max(radius * 100, 1000);
     notifyListeners();
@@ -530,20 +558,15 @@ class CadCameraController extends ChangeNotifier {
       ),
     };
     final center = (minimum + maximum) / 2;
-    final radius = (maximum - minimum).length / 2;
-    final distance = math.max(radius * 2.7, .01);
     presentationTranslation = Vector3.zero;
     presentationOffsetNdcX = 0;
     presentationOffsetNdcY = 0;
     target = center;
     rotationCenter = center;
     focusPoint = center;
-    eye = center + direction * distance;
+    eye = center + direction;
     up = viewUp;
-    viewScale = math.max(radius * 2.4, .01);
-    nearPlane = math.max(radius * .001, .001);
-    farPlane = math.max(radius * 100, 1000);
-    notifyListeners();
+    fit(minimum, maximum);
   }
 
   void toggleProjection() {

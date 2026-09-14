@@ -14,23 +14,43 @@ using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
 namespace {
-const char* kShader = R"(
-cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; };
+const char *kShader = R"(
+cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; row_major float4x4 normalView; };
 struct In { float3 p:POSITION; float3 n:NORMAL; };
 struct Out { float4 p:SV_POSITION; float3 n:NORMAL; };
-Out VSMain(In i) { Out o; o.p=mul(float4(i.p,1),mvp); o.n=i.n; return o; }
+Out VSMain(In i) { Out o; o.p=mul(float4(i.p,1),mvp); o.n=mul(i.n,(float3x3)normalView); return o; }
 float4 PSMain(Out i,uint primitiveId:SV_PrimitiveID):SV_TARGET {
- float3 n=normalize(i.n); if(n.z<0)n=-n;
- float d=.18+.58*saturate(dot(n,normalize(float3(-.35,.55,.75))))+
-         .18*saturate(dot(n,normalize(float3(.65,.18,.55))));
+ float3 n=normalize(i.n);
+ // Rigid world-to-view rotation only: preserve oriented surface normals.
+ // Bounded camera-linked lights; a back-facing normal keeps ambient light.
+ float d=.42+.46*saturate(dot(n,normalize(float3(-.22,.48,.78))))+
+         .12*saturate(dot(n,normalize(float3(.66,-.28,.42))));
  float3 result=color.rgb*d;
  if(pick.y==1 && pick.z==primitiveId+1)
-   result=lerp(result,float3(0.18,0.88,1.0),0.58);
+   result=lerp(result,float3(0.18,0.88,1.0)*d,0.24);
  return float4(result,1);
-})";
+}
+struct LineOut { float4 color:SV_TARGET; float depth:SV_Depth; };
+LineOut PSLine(Out i) {
+ LineOut o;
+ if (pick.w == 2) {
+   float3 n=normalize(i.n);
+   float d=.42+.46*saturate(dot(n,normalize(float3(-.22,.48,.78))))+
+           .12*saturate(dot(n,normalize(float3(.66,-.28,.42))));
+   // CAD edges are black on the readable blue material. The alternate tone
+   // is deterministic and only used when the shaded face is itself dark.
+   o.color=float4(d < .58 ? float3(.72,.82,.90) : float3(.01,.015,.02),1);
+ } else o.color=color;
+ // Rasterizer depth bias does not affect LINELIST. Two D32 float steps,
+ // only for shaded CAD edges; preserve wireframe depth exactly.
+ uint depthBits=asuint(max(i.p.z,0));
+ o.depth=asfloat(depthBits>pick.w ? depthBits-pick.w : 0);
+ return o;
+}
+)";
 
-const char* kPickShader = R"(
-cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; };
+const char *kPickShader = R"(
+cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; row_major float4x4 normalView; };
 struct MeshIn { float3 p:POSITION; float3 n:NORMAL; };
 struct PickIn { float3 p:POSITION; uint id:PICKID; };
 struct Out { float4 p:SV_POSITION; nointerpolation uint id:PICKID; };
@@ -42,12 +62,13 @@ uint4 PSVertex(Out i):SV_TARGET{return uint4(3,pick.x,i.id,1);}
 float4 PSHover(Out i):SV_TARGET{return float4(0.12,0.92,1.0,1);}
 )";
 
-void Check(HRESULT value, const char* operation) {
-  if (FAILED(value)) throw std::runtime_error(operation);
+void Check(HRESULT value, const char *operation) {
+  if (FAILED(value))
+    throw std::runtime_error(operation);
 }
 
-const flutter::EncodableValue* Find(const flutter::EncodableMap& map,
-                                    const char* key) {
+const flutter::EncodableValue *Find(const flutter::EncodableMap &map,
+                                    const char *key) {
   const auto found = map.find(flutter::EncodableValue(key));
   return found == map.end() ? nullptr : &found->second;
 }
@@ -180,7 +201,7 @@ void NativeViewportHost::CreateDevice() {
 }
 
 void NativeViewportHost::CreatePipeline() {
-  ComPtr<ID3DBlob> vs, ps, errors;
+  ComPtr<ID3DBlob> vs, ps, line, errors;
   Check(D3DCompile(kShader, std::strlen(kShader), nullptr, nullptr, nullptr,
       "VSMain", "vs_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vs, &errors), "vertex shader");
   Check(D3DCompile(kShader, std::strlen(kShader), nullptr, nullptr, nullptr,
@@ -189,6 +210,14 @@ void NativeViewportHost::CreatePipeline() {
       &vertex_shader_), "create VS");
   Check(device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr,
       &pixel_shader_), "create PS");
+  Check(D3DCompile(kShader, std::strlen(kShader), nullptr, nullptr, nullptr,
+                   "PSLine", "ps_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &line,
+                   &errors),
+        "line shader");
+  Check(device_->CreatePixelShader(line->GetBufferPointer(),
+                                   line->GetBufferSize(), nullptr,
+                                   &line_shader_),
+        "create line PS");
   const D3D11_INPUT_ELEMENT_DESC elements[] = {
     {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},
     {"NORMAL",0,DXGI_FORMAT_R32G32B32_FLOAT,0,12,D3D11_INPUT_PER_VERTEX_DATA,0}};
@@ -200,6 +229,22 @@ void NativeViewportHost::CreatePipeline() {
   D3D11_RASTERIZER_DESC raster{}; raster.FillMode=D3D11_FILL_SOLID;
   raster.CullMode=D3D11_CULL_NONE; raster.DepthClipEnable=TRUE;
   Check(device_->CreateRasterizerState(&raster,&rasterizer_),"rasterizer");
+  raster.DepthBias = -32;
+  raster.SlopeScaledDepthBias = -0.5f;
+  Check(device_->CreateRasterizerState(&raster, &edge_rasterizer_),
+        "edge rasterizer");
+  raster.DepthBias = 0;
+  raster.SlopeScaledDepthBias = 0;
+  raster.AntialiasedLineEnable = TRUE;
+  Check(device_->CreateRasterizerState(&raster, &cad_edge_rasterizer_),
+        "CAD edge rasterizer");
+  D3D11_BLEND_DESC line_blend{};
+  auto& line_target=line_blend.RenderTarget[0];
+  line_target.BlendEnable=TRUE;line_target.SrcBlend=D3D11_BLEND_SRC_ALPHA;
+  line_target.DestBlend=D3D11_BLEND_INV_SRC_ALPHA;line_target.BlendOp=D3D11_BLEND_OP_ADD;
+  line_target.SrcBlendAlpha=D3D11_BLEND_ONE;line_target.DestBlendAlpha=D3D11_BLEND_INV_SRC_ALPHA;
+  line_target.BlendOpAlpha=D3D11_BLEND_OP_ADD;line_target.RenderTargetWriteMask=D3D11_COLOR_WRITE_ENABLE_ALL;
+  Check(device_->CreateBlendState(&line_blend,&cad_edge_blend_),"CAD line alpha blend");
   D3D11_DEPTH_STENCIL_DESC depth{}; depth.DepthEnable=TRUE;
   depth.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL; depth.DepthFunc=D3D11_COMPARISON_LESS;
   Check(device_->CreateDepthStencilState(&depth,&depth_state_),"depth state");
@@ -312,21 +357,55 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
     for(size_t i=0;i+2<nodes->size();i+=3) positions.push_back({
       static_cast<float>(Number((*nodes)[i])),static_cast<float>(Number((*nodes)[i+1])),
       static_cast<float>(Number((*nodes)[i+2]))});
+    const auto *normals =
+        std::get_if<flutter::EncodableList>(Find(*map, "normals"));
+    if (!normals || normals->size() != nodes->size())
+      throw std::runtime_error("Invalid presentation normals");
     entity.vertices.resize(positions.size());
     for(size_t i=0;i<positions.size();++i) entity.vertices[i]={positions[i].x,positions[i].y,positions[i].z,0,0,0};
     entity.indices.reserve(indices->size());
     for(const auto& index:*indices) entity.indices.push_back(static_cast<uint32_t>(Number(index)));
-    for(size_t i=0;i+2<entity.indices.size();i+=3){
-      const auto ia=entity.indices[i],ib=entity.indices[i+1],ic=entity.indices[i+2];
-      if(ia>=positions.size()||ib>=positions.size()||ic>=positions.size())continue;
-      XMVECTOR a=XMLoadFloat3(&positions[ia]),b=XMLoadFloat3(&positions[ib]),c=XMLoadFloat3(&positions[ic]);
-      XMFLOAT3 n;XMStoreFloat3(&n,XMVector3Normalize(XMVector3Cross(b-a,c-a)));
-      for(uint32_t v:{ia,ib,ic}){entity.vertices[v].nx+=n.x;entity.vertices[v].ny+=n.y;entity.vertices[v].nz+=n.z;}
+    for (size_t i = 0; i < entity.vertices.size(); ++i) {
+      XMFLOAT3 n{static_cast<float>(Number((*normals)[i * 3])),
+                 static_cast<float>(Number((*normals)[i * 3 + 1])),
+                 static_cast<float>(Number((*normals)[i * 3 + 2]))};
+      if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z))
+        throw std::runtime_error("Invalid presentation normal");
+      XMStoreFloat3(&n, XMVector3Normalize(XMLoadFloat3(&n)));
+      entity.vertices[i].nx = n.x;
+      entity.vertices[i].ny = n.y;
+      entity.vertices[i].nz = n.z;
     }
-    for(auto& v:entity.vertices){XMFLOAT3 n{v.nx,v.ny,v.nz};XMStoreFloat3(&n,XMVector3Normalize(XMLoadFloat3(&n)));v.nx=n.x;v.ny=n.y;v.nz=n.z;}
+    if (const auto *edge_value = Find(*map, "topologicalEdges")) {
+      const auto *edges = std::get_if<flutter::EncodableList>(edge_value);
+      if (!edges)
+        throw std::runtime_error("Invalid display edges");
+      for (const auto &entry : *edges) {
+        const auto *points = std::get_if<flutter::EncodableList>(&entry);
+        if (!points || points->size() < 6 || points->size() % 3)
+          throw std::runtime_error("Invalid display edge polyline");
+        for (size_t i = 3; i < points->size(); i += 3) {
+          for (size_t j : {i - 3, i}) {
+            Vertex v{static_cast<float>(Number((*points)[j])),
+                     static_cast<float>(Number((*points)[j + 1])),
+                     static_cast<float>(Number((*points)[j + 2])),
+                     0,
+                     0,
+                     1};
+            if (!std::isfinite(v.x) || !std::isfinite(v.y) ||
+                !std::isfinite(v.z))
+              throw std::runtime_error("Invalid display edge point");
+            entity.display_edges.push_back(v);
+          }
+        }
+      }
+    }
     Upload(entity); entities_[*id]=std::move(entity);
   }
-  Fit(); upload_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+  // Dart owns the canonical pose. Scene/selection deltas must never refit it.
+  upload_ms_ = std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - start)
+                   .count();
   Render();
 }
 
@@ -338,6 +417,13 @@ void NativeViewportHost::Upload(SceneEntity& entity) {
   D3D11_BUFFER_DESC ib{};ib.ByteWidth=static_cast<UINT>(entity.indices.size()*sizeof(uint32_t));
   ib.Usage=D3D11_USAGE_IMMUTABLE;ib.BindFlags=D3D11_BIND_INDEX_BUFFER;
   D3D11_SUBRESOURCE_DATA data{entity.indices.data()};Check(device_->CreateBuffer(&ib,&data,&entity.index_buffer),"mesh IB");
+  if (!entity.display_edges.empty()) {
+    vb.ByteWidth =
+        static_cast<UINT>(entity.display_edges.size() * sizeof(Vertex));
+    D3D11_SUBRESOURCE_DATA edges{entity.display_edges.data()};
+    Check(device_->CreateBuffer(&vb, &edges, &entity.display_edge_buffer),
+          "CAD edges VB");
+  }
 }
 
 void NativeViewportHost::Render() {
@@ -350,6 +436,8 @@ void NativeViewportHost::Render() {
   Constants constants{};
   XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(constants.matrix),
                   frame.world_view_projection);
+  XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(constants.normal_view),
+                 frame.view);
   constants.color[0]=.30f;constants.color[1]=.50f;constants.color[2]=.68f;constants.color[3]=1;
   UINT stride=sizeof(Vertex),offset=0;
   context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -357,6 +445,8 @@ void NativeViewportHost::Render() {
   context_->RSSetState(rasterizer_.Get());context_->OMSetDepthStencilState(depth_state_.Get(),0);triangles_=0;
   for (auto &[id, e] : entities_) {
     if (!e.visible || !e.vertex_buffer || !e.index_buffer)
+      continue;
+    if (render_style_ == 2)
       continue;
     std::copy(std::begin(e.root_srgb), std::end(e.root_srgb), constants.color);
     constants.pick[1] = id == hover_.entity_id ? hover_.kind : 0;
@@ -370,8 +460,63 @@ void NativeViewportHost::Render() {
     ++draw_indexed_calls_;
     triangles_ += e.indices.size() / 3;
   }
+  if (render_style_ != 0 && !(render_style_==1&&(operational_selection_index_buffer_||operational_hover_index_buffer_))) {
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+    context_->PSSetShader(line_shader_.Get(), nullptr, 0);
+    context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(), 0);
+    context_->RSSetState(render_style_ == 1 ? cad_edge_rasterizer_.Get()
+                                             : edge_rasterizer_.Get());
+    context_->OMSetBlendState(render_style_==1?cad_edge_blend_.Get():nullptr,nullptr,UINT_MAX);
+    constants.color[0] = .01f;
+    constants.color[1] = .015f;
+    constants.color[2] = .02f;
+    constants.color[3] = 1;
+    if (render_style_ == 2) {
+      constants.color[0] = .52f;
+      constants.color[1] = .85f;
+      constants.color[2] = .91f;
+    }
+    constants.pick[1] = constants.pick[2] = 0;
+    constants.pick[3] = render_style_ == 1 ? 2 : 0;
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+    const int offsets[][2] = {{0, 0}, {-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    const int offset_count = 1; // One screen-pixel CAD line; never dilate contours.
+    for (const auto &[id, e] : entities_) {
+      if (!e.visible || !e.display_edge_buffer)
+        continue;
+      context_->IASetVertexBuffers(0, 1, e.display_edge_buffer.GetAddressOf(),
+                                   &stride, &offset);
+      for (int pass = 0; pass < offset_count; ++pass) {
+        if (pass != 0) {
+          D3D11_VIEWPORT edge_viewport{
+              static_cast<float>(offsets[pass][0]),
+              static_cast<float>(offsets[pass][1]), static_cast<float>(width_),
+              static_cast<float>(height_), 0, 1};
+          context_->RSSetViewports(1, &edge_viewport);
+        }
+        context_->Draw(static_cast<UINT>(e.display_edges.size()), 0);
+      }
+    }
+    context_->RSSetViewports(1, &vp);
+    context_->RSSetState(rasterizer_.Get());
+    context_->OMSetBlendState(nullptr,nullptr,UINT_MAX);
+  }
   if(operational_selection_index_buffer_&&operational_selection_index_count_>0){auto found=entities_.find(operational_selection_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.92f;constants.color[1]=.38f;constants.color[2]=.04f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_selection_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_selection_index_count_,0,0);}}
   if(operational_hover_id_!=operational_selection_id_&&operational_hover_index_buffer_&&operational_hover_index_count_>0){auto found=entities_.find(operational_hover_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.08f;constants.color[1]=.78f;constants.color[2]=.92f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_hover_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_hover_index_count_,0,0);}}
+  // Selection fills are deliberately drawn over the material. Restore the
+  // ordinary CAD contours afterwards so gold selection never hides topology.
+  if(render_style_==1&&(operational_selection_index_buffer_||operational_hover_index_buffer_)){
+    context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+    context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(line_shader_.Get(),nullptr,0);
+    context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->RSSetState(cad_edge_rasterizer_.Get());
+    context_->OMSetBlendState(cad_edge_blend_.Get(),nullptr,UINT_MAX);
+    constants.color[0]=.01f;constants.color[1]=.015f;constants.color[2]=.02f;constants.color[3]=1;constants.pick[1]=constants.pick[2]=0;constants.pick[3]=2;
+    context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);
+    const int offsets[][2]={{0,0}};
+    for(const auto&[id,e]:entities_){if(!e.visible||!e.display_edge_buffer)continue;context_->IASetVertexBuffers(0,1,e.display_edge_buffer.GetAddressOf(),&stride,&offset);for(const auto&edge_offset:offsets){D3D11_VIEWPORT edge_viewport{static_cast<float>(edge_offset[0]),static_cast<float>(edge_offset[1]),static_cast<float>(width_),static_cast<float>(height_),0,1};context_->RSSetViewports(1,&edge_viewport);context_->Draw(static_cast<UINT>(e.display_edges.size()),0);}}
+    context_->RSSetViewports(1,&vp);context_->RSSetState(rasterizer_.Get());
+    context_->OMSetBlendState(nullptr,nullptr,UINT_MAX);
+  }
   if(hover_.valid()&&hover_.kind>=2){auto found=entities_.find(hover_.entity_id);if(found!=entities_.end()){auto&e=found->second;context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(pick_input_layout_.Get());context_->IASetIndexBuffer(nullptr,DXGI_FORMAT_UNKNOWN,0);context_->VSSetShader(pick_subentity_vs_.Get(),nullptr,0);context_->PSSetShader(hover_ps_.Get(),nullptr,0);stride=sizeof(PickVertex);constants.pick[1]=hover_.kind;constants.pick[2]=hover_.id;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);
     const int radius=hover_.kind==2?1:3;for(int oy=-radius;oy<=radius;++oy)for(int ox=-radius;ox<=radius;++ox){D3D11_VIEWPORT highlight_vp{static_cast<float>(ox),static_cast<float>(oy),static_cast<float>(width_),static_cast<float>(height_),0,1};context_->RSSetViewports(1,&highlight_vp);if(hover_.kind==2&&e.edge_buffer&&hover_.id*2<=e.edge_vertices.size()){context_->IASetVertexBuffers(0,1,e.edge_buffer.GetAddressOf(),&stride,&offset);context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);context_->Draw(2,(hover_.id-1)*2);}else if(hover_.kind==3&&e.point_buffer&&hover_.id<=e.point_vertices.size()){context_->IASetVertexBuffers(0,1,e.point_buffer.GetAddressOf(),&stride,&offset);context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);context_->Draw(1,hover_.id-1);}}context_->RSSetViewports(1,&vp);}}
   context_->Flush();++frames_;const auto now=std::chrono::steady_clock::now();const double elapsed=std::chrono::duration<double>(now-metric_start_).count();if(elapsed>=1){fps_=frames_/elapsed;frames_=0;metric_start_=now;}
@@ -531,6 +676,12 @@ void NativeViewportHost::Pan(double dx,double dy){std::scoped_lock lock(mutex_);
 void NativeViewportHost::Zoom(double factor){std::scoped_lock lock(mutex_);camera_.ZoomFactor(static_cast<float>(factor));Render();}
 void NativeViewportHost::SetCamera(const flutter::EncodableMap& arguments) {
   std::scoped_lock lock(mutex_);
+  if (const auto *value = Find(arguments, "renderStyle")) {
+    const auto style = Number(*value);
+    if (style < 0 || style > 2 || !std::isfinite(style))
+      throw std::runtime_error("Invalid render style");
+    render_style_ = static_cast<uint32_t>(style);
+  }
   ++set_camera_calls_;
   const auto read_vector = [&arguments](const char* key, float output[3]) {
     const auto* raw = Find(arguments, key);

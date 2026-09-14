@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../navigation/cad_camera_navigation_adapter.dart';
@@ -14,6 +15,7 @@ import '../navigation/navigation_debug_panel.dart';
 import 'camera/cad_camera_controller.dart';
 import 'rendering/cad_canvas_normal_pipeline.dart';
 import 'rendering/cad_tonal_separation.dart';
+import 'rendering/cad_material_lighting.dart';
 import 'rendering/cad_root_color.dart';
 import 'scene/cad_scene_graph.dart';
 import 'selection/viewport_picking_controller.dart';
@@ -45,6 +47,7 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
     this.renderStyle,
     this.onRenderStyleChanged,
     this.showRenderControls = true,
+    this.onViewportReady,
   });
 
   final CadSceneGraph scene;
@@ -72,6 +75,9 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
   final CadRenderStyle? renderStyle;
   final ValueChanged<CadRenderStyle>? onRenderStyleChanged;
   final bool showRenderControls;
+
+  /// Called after a valid layout has resized the actual interaction camera.
+  final VoidCallback? onViewportReady;
 
   @override
   State<ProfessionalCadViewportWidget> createState() =>
@@ -198,6 +204,9 @@ class _ProfessionalCadViewportWidgetState
       x: event.localPosition.dx,
       y: event.localPosition.dy,
       buttons: event.buttons,
+      control: HardwareKeyboard.instance.isControlPressed,
+      shift: HardwareKeyboard.instance.isShiftPressed,
+      alt: HardwareKeyboard.instance.isAltPressed,
     );
   }
 
@@ -207,6 +216,9 @@ class _ProfessionalCadViewportWidgetState
       x: event.localPosition.dx,
       y: event.localPosition.dy,
       buttons: event.buttons,
+      control: HardwareKeyboard.instance.isControlPressed,
+      shift: HardwareKeyboard.instance.isShiftPressed,
+      alt: HardwareKeyboard.instance.isAltPressed,
     );
   }
 
@@ -216,6 +228,9 @@ class _ProfessionalCadViewportWidgetState
       x: event.localPosition.dx,
       y: event.localPosition.dy,
       buttons: event.buttons,
+      control: HardwareKeyboard.instance.isControlPressed,
+      shift: HardwareKeyboard.instance.isShiftPressed,
+      alt: HardwareKeyboard.instance.isAltPressed,
     );
   }
 
@@ -309,10 +324,15 @@ class _ProfessionalCadViewportWidgetState
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        WidgetsBinding.instance.addPostFrameCallback(
-          (_) =>
-              widget.camera.resize(constraints.maxWidth, constraints.maxHeight),
-        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted ||
+              constraints.maxWidth <= 1 ||
+              constraints.maxHeight <= 1) {
+            return;
+          }
+          widget.camera.resize(constraints.maxWidth, constraints.maxHeight);
+          widget.onViewportReady?.call();
+        });
         final colors = Theme.of(context).colorScheme;
         return MouseRegion(
           cursor: _sketchToolActive
@@ -961,21 +981,27 @@ class _MeshRenderCache {
   final Object trianglesSource;
 
   factory _MeshRenderCache.from(CadSceneEntity entity) {
-    final nodes = (entity.geometry['nodes'] as List).cast<num>();
-    final triangles = (entity.geometry['triangles'] as List).cast<num>();
-    final chunks = CadCanvasNormalPipeline.build(nodes, triangles)
-        .map(
-          (chunk) => _MeshRenderChunk(
-            xyz: chunk.xyz,
-            indices: chunk.indices,
-            normals: chunk.normals,
-          ),
-        )
-        .toList(growable: false);
+    final presentation = cadPresentationGeometry(entity.geometry);
+    final nodes = (presentation['nodes'] as List).cast<num>();
+    final triangles = (presentation['triangles'] as List).cast<num>();
+    final chunks =
+        CadCanvasNormalPipeline.build(
+              nodes,
+              triangles,
+              nativeNormals: (presentation['normals'] as List?)?.cast<num>(),
+            )
+            .map(
+              (chunk) => _MeshRenderChunk(
+                xyz: chunk.xyz,
+                indices: chunk.indices,
+                normals: chunk.normals,
+              ),
+            )
+            .toList(growable: false);
     return _MeshRenderCache._(
       chunks,
-      entity.geometry['nodes'] as Object,
-      entity.geometry['triangles'] as Object,
+      presentation['nodes'] as Object,
+      presentation['triangles'] as Object,
     );
   }
 }
@@ -1078,7 +1104,7 @@ class _CadScenePainter extends CustomPainter {
           _paintMeshFeatureEdges(canvas, entity, size, alpha: .96);
         } else if (style == CadRenderStyle.transparent) {
           _paintMeshBatched(canvas, entity, size, alphaOverride: .24);
-          _paintMeshFeatureEdges(canvas, entity, size, alpha: .72);
+          _paintMeshFeatureEdges(canvas, entity, size, alpha: .38);
         } else if (style == CadRenderStyle.hiddenLine) {
           _paintMeshBatched(canvas, entity, size, alphaOverride: 1);
           _paintMeshFeatureEdges(canvas, entity, size, alpha: .92);
@@ -1268,28 +1294,33 @@ class _CadScenePainter extends CustomPainter {
             : 1.0);
     var cache = meshRenderCaches[entity.id];
     if (cache == null ||
-        !identical(cache.nodesSource, entity.geometry['nodes']) ||
-        !identical(cache.trianglesSource, entity.geometry['triangles'])) {
+        !identical(
+          cache.nodesSource,
+          cadPresentationGeometry(entity.geometry)['nodes'],
+        ) ||
+        !identical(
+          cache.trianglesSource,
+          cadPresentationGeometry(entity.geometry)['triangles'],
+        )) {
       cache = _MeshRenderCache.from(entity);
       meshRenderCaches[entity.id] = cache;
     }
     final matrix = camera.viewProjectionMatrix.values;
     final isHovered = entity.id == hoveredEntityId;
-    final foregroundColor = switch ((
-      entity.selected,
-      isHovered,
-      entity.kind,
-      entity.geometry['displayColor'],
-    )) {
-      (true, _, _, _) => const Color(0xffffb02e),
-      (_, true, _, _) => const Color(0xff38d6ff),
-      (_, _, _, 'destructiveRed') => Colors.redAccent,
-      (_, _, _, 'surfacePreviewBlue') => const Color(0xff38bdf8),
-      (_, _, CadSceneEntityKind.preview, _) => const Color(0xffff9f43),
-      (_, _, CadSceneEntityKind.surface, _) => const Color(0xffe2e7ee),
-      (_, _, CadSceneEntityKind.solid, _) => const Color(0xffd8e0e9),
+    final baseColor = switch ((entity.kind, entity.geometry['displayColor'])) {
+      (_, 'destructiveRed') => Colors.redAccent,
+      (_, 'surfacePreviewBlue') => const Color(0xff38bdf8),
+      (CadSceneEntityKind.preview, _) => const Color(0xffff9f43),
+      (CadSceneEntityKind.surface, _) => const Color(0xffe2e7ee),
+      (CadSceneEntityKind.solid, _) => const Color(0xffd8e0e9),
       _ => cadRootColor(entity.geometry) ?? const Color(0xff7899ad),
     };
+    final foregroundColor = CadMaterialLighting.highlight(
+      baseColor,
+      selected: entity.selected,
+      hovered: isHovered,
+      transparent: alpha < 1,
+    );
     final foreground = foregroundColor.toARGB32();
     final legacyAnalysisMode =
         entity.geometry['surfaceAnalysisMode'] as String?;
@@ -1390,18 +1421,17 @@ class _CadScenePainter extends CustomPainter {
       if (chunk.colorKey != colorKey) {
         for (var i = 0; i < chunk.colors.length; i++) {
           final normalOffset = i * 3;
-          var normal = Vector3(
+          final normal = Vector3(
             chunk.normals[normalOffset],
             chunk.normals[normalOffset + 1],
             chunk.normals[normalOffset + 2],
           );
-          if (normal.dot(towardEye) < 0) normal = normal * -1;
           final key = math.max(0.0, normal.dot(keyLight));
           final fill = math.max(0.0, normal.dot(fillLight));
           final facing = math.max(0.0, normal.dot(towardEye));
           final t = entity.kind == CadSceneEntityKind.surface
               ? (.62 + .24 * key + .08 * fill + .06 * facing).clamp(.58, 1.0)
-              : (.16 + .56 * key + .18 * fill + .07 * facing).clamp(.14, .97);
+              : CadMaterialLighting.signal(normal, keyLight, fillLight);
           final triangleIndex = ((chunkVertexOffsets[chunk] ?? 0) + i) ~/ 3;
           final reconstructionStatus =
               reconstructionStatuses['$triangleIndex'] as String?;
@@ -1541,6 +1571,54 @@ class _CadScenePainter extends CustomPainter {
     Size size, {
     double alpha = .9,
   }) {
+    final topology = entity.geometry['topologicalEdges'];
+    if (topology is List) {
+      final path = Path();
+      for (final polyline in topology.cast<List>()) {
+        var started = false;
+        for (var i = 0; i + 2 < polyline.length; i += 3) {
+          final p = camera.viewProjectionMatrix.transformPoint(
+            Vector3(
+              (polyline[i] as num).toDouble(),
+              (polyline[i + 1] as num).toDouble(),
+              (polyline[i + 2] as num).toDouble(),
+            ),
+          );
+          if (!p.x.isFinite || !p.y.isFinite || p.z < -1 || p.z > 1) {
+            started = false;
+            continue;
+          }
+          final x = (p.x + 1) * size.width / 2, y = (1 - p.y) * size.height / 2;
+          if (started) {
+            path.lineTo(x, y);
+          } else {
+            path.moveTo(x, y);
+            started = true;
+          }
+        }
+      }
+      // One logical-pixel antialiased CAD contour, without dilation or halo.
+      // Gold selection stays narrower than the ordinary black contour.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xff05080b).withValues(alpha: alpha)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..isAntiAlias = true,
+      );
+      if (entity.selected) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = const Color(0xffffb02e).withValues(alpha: alpha * .78)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = .7
+            ..isAntiAlias = true,
+        );
+      }
+      return;
+    }
     final nodes = (entity.geometry['nodes'] as List).cast<num>();
     final triangles = (entity.geometry['triangles'] as List).cast<num>();
     if (nodes.length < 3 || triangles.length < 3) return;
@@ -2174,6 +2252,8 @@ class _CadScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CadScenePainter oldDelegate) =>
+      oldDelegate.renderMeshes != renderMeshes ||
+      oldDelegate.paintBackground != paintBackground ||
       oldDelegate.style != style ||
       oldDelegate.colors != colors ||
       oldDelegate.showGrid != showGrid ||

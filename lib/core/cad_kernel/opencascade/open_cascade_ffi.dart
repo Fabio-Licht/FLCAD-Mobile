@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' show RootIsolateToken;
 import 'package:ffi/ffi.dart';
 import '../io/kernel_io_models.dart';
@@ -303,6 +304,27 @@ typedef _InspectNative =
     Int32 Function(Pointer<Utf8>, Pointer<Utf8>, IntPtr, Pointer<Utf8>, IntPtr);
 typedef _InspectDart =
     int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Utf8>, int);
+
+Map<String, dynamic> _displayGeometryWorker(int address, String token) {
+  const capacity = 64 * 1024 * 1024;
+  final fn = Pointer<NativeFunction<_InspectNative>>.fromAddress(
+    address,
+  ).asFunction<_InspectDart>();
+  final t = token.toNativeUtf8(),
+      out = calloc<Uint8>(capacity).cast<Utf8>(),
+      error = calloc<Uint8>(4096).cast<Utf8>();
+  try {
+    if (fn(t, out, capacity, error, 4096) != 1) {
+      throw StateError(error.toDartString());
+    }
+    return Map<String, dynamic>.from(jsonDecode(out.toDartString()) as Map);
+  } finally {
+    calloc.free(t);
+    calloc.free(out);
+    calloc.free(error);
+  }
+}
+
 typedef _IntersectNative =
     Int32 Function(
       Pointer<Utf8>,
@@ -1117,13 +1139,17 @@ class OpenCascadeFFI
     }
   }
 
-  Future<String> _inspect(String symbol, String token) async {
+  Future<String> _inspect(
+    String symbol,
+    String token, {
+    int capacity = 16384,
+  }) async {
     final t = token.toNativeUtf8(),
-        out = calloc<Uint8>(16384).cast<Utf8>(),
+        out = calloc<Uint8>(capacity).cast<Utf8>(),
         error = calloc<Uint8>(4096).cast<Utf8>(),
         fn = library.lookupFunction<_InspectNative, _InspectDart>(symbol);
     try {
-      if (fn(t, out, 16384, error, 4096) != 1) {
+      if (fn(t, out, capacity, error, 4096) != 1) {
         throw StateError(error.toDartString());
       }
       return out.toDartString();
@@ -1132,6 +1158,15 @@ class OpenCascadeFFI
       calloc.free(out);
       calloc.free(error);
     }
+  }
+
+  Future<Map<String, dynamic>> inspectDisplayGeometry(String token) {
+    final address = library
+        .lookup<NativeFunction<_InspectNative>>('flcad_occ_display_geometry')
+        .address;
+    // The caller retains its custody lease through completion. Only copied
+    // presentation coordinates return; no source payload or owner is moved.
+    return Isolate.run(() => _displayGeometryWorker(address, token));
   }
 
   @override

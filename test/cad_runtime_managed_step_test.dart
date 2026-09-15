@@ -272,7 +272,10 @@ void main() {
         );
         expect(manifestFile.readAsBytesSync(), manifest.encode());
         expect(manifest.name, 'Peça única');
-        expect(entity.data['name'], manifest.name);
+        expect(entity.data['name'], 'part-$mode');
+        expect(entity.data['stepTechnicalName'], manifest.name);
+        expect(entity.data['cadSemanticKind'], 'solid');
+        expect(entity.data['cadVisualType'], 'Sólido STEP');
         expect(manifest.declaredMetersPerUnit, mode == 2 ? 1 : 0.001);
         expect(manifest.resolvedMetersPerUnit, 0.001);
         expect(manifest.hasColor, mode != 1);
@@ -374,7 +377,8 @@ void main() {
         await runtime.open('step-project', project);
         final reopened = runtime.document!.entities[entity.id]!;
         expect(reopened.data['managedStepAssets'], refs.toJson());
-        expect(reopened.data['name'], manifest.name);
+        expect(reopened.data['name'], 'part-$mode');
+        expect(reopened.data['stepTechnicalName'], manifest.name);
         expect(runtime.hasManagedGeometry(entity.id), isTrue);
         expect(adapter.custodyDiagnostics!.allocations, 2);
         expect(
@@ -1126,6 +1130,11 @@ void main() {
       final restored = runtime.document!.entities[entity.id]!;
       expect(references(restored).toJson(), refs.toJson());
       expect(restored.data['name'], entity.data['name']);
+      expect(restored.data['cadSemanticKind'], 'solid');
+      expect(
+        restored.data['stepTechnicalName'],
+        entity.data['stepTechnicalName'],
+      );
       expect(runtime.hasManagedGeometry(entity.id), isTrue);
       expect(adapter.custodyDiagnostics!.allocations, 2);
       expect(runtime.scene.find(entity.id)!.geometry['rootLinearRgb'], [

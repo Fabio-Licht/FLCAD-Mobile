@@ -195,6 +195,9 @@ void main() {
       expect(runtime.scene.find(first.id)?.geometry['triangles'], isNotEmpty);
       expect(runtime.hasManagedGeometry(first.id), isTrue);
       expect(runtime.hasManagedGeometry(second.id), isTrue);
+      expect(first.data['name'], 'shape');
+      expect(first.data['cadSemanticKind'], 'surface');
+      expect(first.data['cadVisualType'], 'Superfície BREP');
       expect(runtime.selection, {existingId});
       expect(adapter.custodyDiagnostics!.allocations, 4);
       expect(

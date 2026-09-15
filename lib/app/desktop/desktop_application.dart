@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/cad_kernel/manager/kernel_manager.dart';
 import '../../core/cad_document/cad_document.dart';
+import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
@@ -1127,6 +1128,7 @@ class _OfficialEngineeringWorkspaceState
     if (entity == null) return null;
     final mesh = entity.mesh;
     final bounds = mesh?.bounds;
+    final managedIdentity = ManagedCadIdentity.fromDocumentData(entity.data);
     final fullName = entity.kind == CadDocumentEntityKind.import
         ? entity.data['name'] as String? ??
               (entity.data['sourcePath'] as String?)
@@ -1152,7 +1154,15 @@ class _OfficialEngineeringWorkspaceState
           title: 'Identity',
           children: [
             _InspectorProperty(label: 'Name', value: shortName),
-            _InspectorProperty(label: 'Type', value: entity.kind.name),
+            _InspectorProperty(
+              label: 'Type',
+              value: managedIdentity?.visualTypeLabel ?? entity.kind.name,
+            ),
+            if (managedIdentity?.technicalName case final technicalName?)
+              _InspectorProperty(
+                label: 'Nome técnico STEP',
+                value: technicalName,
+              ),
             _InspectorProperty(
               label: 'Visibility',
               value: (entity.data['sceneVisible'] as bool? ?? true)
@@ -3617,6 +3627,9 @@ class _OfficialEngineeringWorkspaceState
           .where(
             (entity) =>
                 entity.kind == CadDocumentEntityKind.import &&
+                (ManagedCadIdentity.fromDocumentData(entity.data)?.kind ??
+                        ManagedCadSemanticKind.mesh) ==
+                    ManagedCadSemanticKind.mesh &&
                 entity.data['deleted'] != true,
           )
           .toList(),
@@ -3647,14 +3660,24 @@ class _OfficialEngineeringWorkspaceState
       'Surfaces': entities
           .where(
             (entity) =>
-                entity.kind == CadDocumentEntityKind.surface &&
+                (entity.kind == CadDocumentEntityKind.surface ||
+                    (entity.kind == CadDocumentEntityKind.import &&
+                        ManagedCadIdentity.fromDocumentData(
+                              entity.data,
+                            )?.kind ==
+                            ManagedCadSemanticKind.surface)) &&
                 entity.data['deleted'] != true,
           )
           .toList(),
       'Solids': entities
           .where(
             (entity) =>
-                entity.kind == CadDocumentEntityKind.solid &&
+                (entity.kind == CadDocumentEntityKind.solid ||
+                    (entity.kind == CadDocumentEntityKind.import &&
+                        ManagedCadIdentity.fromDocumentData(
+                              entity.data,
+                            )?.kind ==
+                            ManagedCadSemanticKind.solid)) &&
                 entity.data['deleted'] != true,
           )
           .toList(),
@@ -3724,6 +3747,7 @@ class _OfficialEngineeringWorkspaceState
       final collection = entity.kind == CadDocumentEntityKind.collection;
       final deleted = entity.data['deleted'] == true;
       final visible = entity.data['sceneVisible'] as bool? ?? true;
+      final managedIdentity = ManagedCadIdentity.fromDocumentData(entity.data);
       final fullName = entity.kind == CadDocumentEntityKind.import
           ? entity.data['name'] as String? ??
                 (entity.data['sourcePath'] as String?)
@@ -3805,6 +3829,12 @@ class _OfficialEngineeringWorkspaceState
                 ? _CadGlyphKind.project
                 : entity.kind == CadDocumentEntityKind.section
                 ? _CadGlyphKind.section
+                : managedIdentity?.kind == ManagedCadSemanticKind.solid
+                ? _CadGlyphKind.solid
+                : managedIdentity?.kind == ManagedCadSemanticKind.surface
+                ? _CadGlyphKind.surface
+                : managedIdentity?.kind == ManagedCadSemanticKind.mesh
+                ? _CadGlyphKind.mesh
                 : switch (entity.data['sceneKind']) {
                     'plane' => _CadGlyphKind.plane,
                     'axis' => _CadGlyphKind.axis,
@@ -3996,7 +4026,8 @@ class _OfficialEngineeringWorkspaceState
                 },
         ),
       );
-      return entity.kind == CadDocumentEntityKind.import
+      return entity.kind == CadDocumentEntityKind.import &&
+              managedIdentity?.kind == ManagedCadSemanticKind.mesh
           ? _MeshExplorerNode(
               regions: widget.cad.runtime.operationalEntities.entities
                   .where(
@@ -4176,7 +4207,12 @@ class _OfficialEngineeringWorkspaceState
         ? null
         : widget.cad.runtime.document?.entities[selectedId];
     final target = switch (selected?.kind) {
-      CadDocumentEntityKind.import => 'Recognition',
+      CadDocumentEntityKind.import =>
+        switch (ManagedCadIdentity.fromDocumentData(selected!.data)?.kind) {
+          ManagedCadSemanticKind.solid => 'Solids',
+          ManagedCadSemanticKind.surface => 'Surfaces',
+          _ => 'Recognition',
+        },
       CadDocumentEntityKind.recognition => 'Recognition',
       CadDocumentEntityKind.section => 'Sketch',
       CadDocumentEntityKind.sketch => 'Surfaces',

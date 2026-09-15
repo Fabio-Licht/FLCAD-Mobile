@@ -322,6 +322,12 @@ const char *shape_type(const TopoDS_Shape &s) {
   case TopAbs_SOLID:
     return "solid";
   default:
+    // Imported BREP roots are frequently compounds.  Their display mesh says
+    // nothing about CAD meaning; retain the volumetric identity whenever the
+    // compound owns a closed solid, otherwise it remains a surface compound.
+    TopExp_Explorer solids(s, TopAbs_SOLID);
+    if (solids.More())
+      return "solid";
     return "compound";
   }
 }

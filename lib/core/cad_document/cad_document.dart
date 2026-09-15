@@ -78,6 +78,10 @@ class CadDocumentEntity {
       _validateManagedStlAssets(Map<String, dynamic>.from(managedStl as Map));
     }
     if (managedStep != null) {
+      final hasSemanticIdentity =
+          data.containsKey('cadSemanticKind') ||
+          data.containsKey('cadVisualType') ||
+          data.containsKey('stepTechnicalName');
       if (managedStep is! Map ||
           json['shape'] != null ||
           json['mesh'] != null ||
@@ -85,12 +89,20 @@ class CadDocumentEntity {
           data['format'] != 'step' ||
           data['sceneKind'] != 'mesh' ||
           data['name'] is! String ||
+          (hasSemanticIdentity &&
+              (data['stepTechnicalName'] is! String ||
+                  data['cadSemanticKind'] is! String ||
+                  !{'solid', 'surface'}.contains(data['cadSemanticKind']) ||
+                  data['cadVisualType'] is! String)) ||
           (data.containsKey('sceneVisible') && data['sceneVisible'] is! bool) ||
           _hasStepTransientData(data) ||
           data.keys.any(
-            (k) => !const {
+            (k) => !{
               'name',
               'format',
+              if (hasSemanticIdentity) 'cadSemanticKind',
+              if (hasSemanticIdentity) 'cadVisualType',
+              if (hasSemanticIdentity) 'stepTechnicalName',
               'collectionId',
               'sceneKind',
               'managedStepAssets',

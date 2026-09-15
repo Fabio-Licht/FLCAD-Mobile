@@ -1147,7 +1147,7 @@ extension _CadTransactions on CadRuntime {
             }
             stepAppearance = StepAppearanceManifest.fromJson(json);
             if (!listEquals(bytes, stepAppearance.encode()) ||
-                entity.data['name'] != stepAppearance.name) {
+                _managedStepTechnicalName(entity) != stepAppearance.name) {
               throw const FormatException(
                 'STEP appearance is noncanonical or contradicts document',
               );
@@ -1450,7 +1450,7 @@ extension _CadTransactions on CadRuntime {
     if (entity.data['managedStepAssets'] != null) {
       _managedStepAssetsForEntity(entity);
       if (stepAppearance == null ||
-          stepAppearance.name != entity.data['name'] ||
+          stepAppearance.name != _managedStepTechnicalName(entity) ||
           geometry.shape.descriptor.resourceType != 'solid') {
         throw const FormatException(
           'Restored STEP geometry or appearance is incompatible',
@@ -1489,6 +1489,16 @@ extension _CadTransactions on CadRuntime {
           collection?.data['deleted'] != true,
       transparent: entity.data['sceneTransparent'] as bool? ?? false,
     );
+  }
+
+  String _managedStepTechnicalName(CadDocumentEntity entity) {
+    final technical = entity.data['stepTechnicalName'];
+    if (technical is String) return technical;
+    // Documents written before semantic identity used the appearance name as
+    // their display name. Keep them readable without weakening new writes.
+    final legacy = entity.data['name'];
+    if (legacy is String) return legacy;
+    throw const FormatException('Managed STEP technical name is missing');
   }
 
   Future<ManagedNativeShape> _restoreManagedShape(

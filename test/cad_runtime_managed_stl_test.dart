@@ -424,6 +424,8 @@ void main() {
         expect(entity.shape, isNull);
         expect(entity.mesh, isNull);
         expect(entity.data['managedBrepAssets'], isNull);
+        expect(entity.data['cadSemanticKind'], 'mesh');
+        expect(entity.data['cadVisualType'], 'Malha STL');
         final reference = assets(entity);
         expect(reference.toJson().keys.toSet(), {
           'schema',

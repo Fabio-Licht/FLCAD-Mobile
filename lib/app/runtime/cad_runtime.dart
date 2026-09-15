@@ -12,6 +12,7 @@ import 'package:path/path.dart' as path;
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/entity_placement.dart';
 import '../../core/cad_document/managed_step_contract.dart';
+import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/cad_document/dependency_walk.dart';
 import '../../core/cad_document/cad_document_repository.dart';
 import '../../core/cad_kernel/api/geometry_kernel_api.dart';
@@ -636,14 +637,24 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               shapeSha256: shapeAsset.metadata['sha256'] as String,
               displaySha256: displayAsset.metadata['sha256'] as String,
             );
+            final identity = ManagedCadIdentity.shape(
+              format: 'brep',
+              shapeType: managedShape.descriptor.resourceType,
+            );
             final entity = CadDocumentEntity(
               id: entityId,
               kind: CadDocumentEntityKind.import,
               data: {
                 'name': name?.trim().isNotEmpty == true
                     ? name!.trim()
-                    : openedDisplayName,
+                    : managedCadImportName(
+                        path.basenameWithoutExtension(openedDisplayName),
+                        current.entities.values
+                            .map((candidate) => candidate.data['name'])
+                            .whereType<String>(),
+                      ),
                 'format': 'brep',
+                ...identity.toDocumentData(),
                 'collectionId': 'collection:original',
                 'sceneKind': CadSceneEntityKind.mesh.name,
                 'managedBrepAssets': assets.toJson(),
@@ -753,6 +764,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     final openedIdentity = Map<String, dynamic>.unmodifiable({
       ...openedSource.identity,
     });
+    final openedDisplayName = openedSource.displayName;
     late CadDocumentEntity committedEntity;
     var sourceDisposeAttempted = false;
     var documentCommitted = false;
@@ -892,12 +904,23 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               shapeSha256: shapeAsset.metadata['sha256'] as String,
               displaySha256: displayAsset.metadata['sha256'] as String,
             );
+            final identity = ManagedCadIdentity.shape(
+              format: 'step',
+              shapeType: managedShape.descriptor.resourceType,
+              technicalName: appearance.name,
+            );
             final entity = CadDocumentEntity(
               id: entityId,
               kind: CadDocumentEntityKind.import,
               data: {
-                'name': appearance.name,
+                'name': managedCadImportName(
+                  path.basenameWithoutExtension(openedDisplayName),
+                  current.entities.values
+                      .map((candidate) => candidate.data['name'])
+                      .whereType<String>(),
+                ),
                 'format': 'step',
+                ...identity.toDocumentData(),
                 'collectionId': 'collection:original',
                 'sceneKind': CadSceneEntityKind.mesh.name,
                 'managedStepAssets': assets.toJson(),
@@ -1093,14 +1116,21 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               display: displayAssetId,
               displaySha256: displayAsset.metadata['sha256'] as String,
             );
+            final identity = ManagedCadIdentity.stl();
             final entity = CadDocumentEntity(
               id: entityId,
               kind: CadDocumentEntityKind.import,
               data: {
                 'name': name?.trim().isNotEmpty == true
                     ? name!.trim()
-                    : openedDisplayName,
+                    : managedCadImportName(
+                        path.basenameWithoutExtension(openedDisplayName),
+                        current.entities.values
+                            .map((candidate) => candidate.data['name'])
+                            .whereType<String>(),
+                      ),
                 'format': 'stl',
+                ...identity.toDocumentData(),
                 'collectionId': 'collection:original',
                 'sceneKind': CadSceneEntityKind.mesh.name,
                 'managedStlAssets': assets.toJson(),

@@ -252,6 +252,28 @@ void main() {
       );
     },
   );
+
+  test('cylindrical axis reference is not treated as a Sketch plane', () async {
+    final step = await cad.runtime.importManagedStep(
+      p.join(source.path, 'cylinder.step'),
+      nativeBridgePath: bridge,
+    );
+    final axisId = await cad.runtime.createManagedCadCylinderAxisReference(
+      sourceEntityId: step.id,
+      presentationTriangleId: 1,
+    );
+
+    expect(
+      () => controller.selectSketchSupport(axisId),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('não é um suporte planar'),
+        ),
+      ),
+    );
+  });
 }
 
 ManagedCadReference _reference(DesktopCadController cad, String id) =>
@@ -270,8 +292,8 @@ void _expectFrame(
   expect(sketch.metadata['supportEntityId'], referenceId);
   expect(sketch.plane.parameters['referenceId'], referenceId);
   expect(sketch.coordinates.origin.toJson(), reference.origin.toJson());
-  expect(sketch.coordinates.normal.toJson(), reference.normal.toJson());
-  expect(sketch.coordinates.xAxis.toJson(), reference.xDirection.toJson());
+  expect(sketch.coordinates.normal.toJson(), reference.normal!.toJson());
+  expect(sketch.coordinates.xAxis.toJson(), reference.xDirection!.toJson());
   expect(
     sketch.coordinates.xAxis.dot(sketch.coordinates.normal).abs(),
     lessThan(1e-12),

@@ -1186,7 +1186,14 @@ class _OfficialEngineeringWorkspaceState
               return _InspectorSection(
                 title: 'Managed CAD Reference',
                 children: [
-                  _InspectorProperty(label: 'Type', value: 'Plano por face'),
+                  _InspectorProperty(
+                    label: 'Type',
+                    value: switch (reference.kind) {
+                      ManagedCadReferenceKind.plane => 'Plano por face',
+                      ManagedCadReferenceKind.cylindricalAxis =>
+                        'Eixo por face cilíndrica',
+                    },
+                  ),
                   _InspectorProperty(
                     label: 'Source Entity',
                     value: reference.sourceEntityId,
@@ -1203,14 +1210,25 @@ class _OfficialEngineeringWorkspaceState
                     label: 'Origin',
                     value: reference.origin.toJson(),
                   ),
-                  _InspectorProperty(
-                    label: 'Normal',
-                    value: reference.normal.toJson(),
-                  ),
-                  _InspectorProperty(
-                    label: 'X Direction',
-                    value: reference.xDirection.toJson(),
-                  ),
+                  if (reference.kind == ManagedCadReferenceKind.plane) ...[
+                    _InspectorProperty(
+                      label: 'Normal',
+                      value: reference.normal!.toJson(),
+                    ),
+                    _InspectorProperty(
+                      label: 'X Direction',
+                      value: reference.xDirection!.toJson(),
+                    ),
+                  ] else ...[
+                    _InspectorProperty(
+                      label: 'Direction',
+                      value: reference.direction!.toJson(),
+                    ),
+                    _InspectorProperty(
+                      label: 'Radius',
+                      value: reference.radius,
+                    ),
+                  ],
                   _InspectorProperty(
                     label: 'Status',
                     value:
@@ -7264,7 +7282,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     return widget.runtime.document?.entities[pick.entityId];
   }
 
-  bool get canCreatePlane {
+  bool get canCreateFromFace {
     final entity = source;
     return !busy &&
         widget.pick?.subentityKind == CadViewportSubentityKind.face &&
@@ -7276,7 +7294,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   }
 
   Future<void> createPlane() async {
-    if (!canCreatePlane) return;
+    if (!canCreateFromFace) return;
     setState(() => busy = true);
     try {
       final id = await widget.runtime.createManagedCadPlaneReference(
@@ -7285,6 +7303,28 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
       );
       widget.onCompleted();
       widget.onStatus('Plano de referência criado a partir da face B-Rep: $id');
+    } catch (error) {
+      widget.onStatus(
+        error
+            .toString()
+            .replaceFirst('Bad state: ', '')
+            .replaceFirst('FormatException: ', ''),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> createAxis() async {
+    if (!canCreateFromFace) return;
+    setState(() => busy = true);
+    try {
+      final id = await widget.runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: widget.pick!.entityId,
+        presentationTriangleId: widget.pick!.presentationSubId!,
+      );
+      widget.onCompleted();
+      widget.onStatus('Eixo de referência criado a partir da face B-Rep: $id');
     } catch (error) {
       widget.onStatus(
         error
@@ -7320,7 +7360,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
         ),
         const SizedBox(height: 12),
         FilledButton.icon(
-          onPressed: canCreatePlane ? createPlane : null,
+          onPressed: canCreateFromFace ? createPlane : null,
           icon: busy
               ? const SizedBox.square(
                   dimension: 16,
@@ -7330,9 +7370,15 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
           label: const Text('Plano por face planar'),
         ),
         const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: canCreateFromFace ? createAxis : null,
+          icon: const Icon(Icons.linear_scale, size: 18),
+          label: const Text('Eixo por face cilíndrica'),
+        ),
+        const SizedBox(height: 8),
         const Text(
-          'A face é resolvida na topologia OCCT da shape original. Eixo por '
-          'cilindro e ponto por vértice permanecem fora deste bloco.',
+          'A face é resolvida na topologia OCCT da shape original. Plano e '
+          'eixo cilíndrico nunca usam triângulos da malha de apresentação.',
           style: TextStyle(fontSize: 10),
         ),
       ],

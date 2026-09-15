@@ -2,6 +2,10 @@
 #include "flcad_occ_api.h"
 #include "flcad_occ_step_source.h"
 #include "step_fixture.h"
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepTools.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <STEPControl_Writer.hxx>
 #include <filesystem>
 #include <iostream>
 #include <windows.h>
@@ -93,6 +97,15 @@ int wmain(int argc, wchar_t **argv) {
         CHECK(!FN(caf, caf_close)(file.object).status);
       }
       CHECK(!FN(caf, caf_close)(root.object).status);
+      const gp_Ax2 cylinder_axis(gp_Pnt(4, 5, 6), gp_Dir(0, 0, -1));
+      const TopoDS_Shape cylinder =
+          BRepPrimAPI_MakeCylinder(cylinder_axis, 3, 16).Shape();
+      const auto cylinder_step = (directory / L"cylinder.step").string();
+      const auto cylinder_brep = (directory / L"cylinder.brep").string();
+      STEPControl_Writer writer;
+      CHECK(writer.Transfer(cylinder, STEPControl_AsIs) == IFSelect_RetDone);
+      CHECK(writer.Write(cylinder_step.c_str()) == IFSelect_RetDone);
+      CHECK(BRepTools::Write(cylinder, cylinder_brep.c_str()));
       return 0;
     }
     auto ca = reinterpret_cast<const void *>(

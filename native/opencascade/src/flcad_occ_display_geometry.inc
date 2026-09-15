@@ -275,12 +275,16 @@ extern "C" int flcad_occ_managed_cad_face(
         std::ostringstream json;
         json.imbue(std::locale::classic());
         json << std::setprecision(17) << "{\"faceIndex\":" << face_index;
-        if (surface.GetType() != GeomAbs_Plane) {
-          const char *nature = surface.GetType() == GeomAbs_Cylinder
-                                   ? "cylinder"
-                                   : "unsupported";
-          json << ",\"surfaceType\":\"" << nature << "\"}";
-        } else {
+        if (surface.GetType() == GeomAbs_Cylinder) {
+          const gp_Cylinder cylinder = surface.Cylinder();
+          const gp_Pnt origin = cylinder.Axis().Location();
+          const gp_Dir direction = cylinder.Axis().Direction();
+          json << ",\"surfaceType\":\"cylinder\",\"origin\":[" << origin.X()
+               << ',' << origin.Y() << ',' << origin.Z()
+               << "],\"direction\":[" << direction.X() << ','
+               << direction.Y() << ',' << direction.Z() << "],\"radius\":"
+               << cylinder.Radius() << '}';
+        } else if (surface.GetType() == GeomAbs_Plane) {
           double u_min, u_max, v_min, v_max;
           BRepTools::UVBounds(face, u_min, u_max, v_min, v_max);
           gp_Pnt origin = surface.Plane().Location();
@@ -296,6 +300,13 @@ extern "C" int flcad_occ_managed_cad_face(
                << normal.X() << ',' << normal.Y() << ',' << normal.Z()
                << "],\"xDirection\":[" << x.X() << ',' << x.Y() << ','
                << x.Z() << "]}";
+        } else {
+          const char *nature =
+              surface.GetType() == GeomAbs_Cone       ? "cone"
+              : surface.GetType() == GeomAbs_Sphere   ? "sphere"
+              : surface.GetType() == GeomAbs_Torus    ? "torus"
+                                                      : "unsupported";
+          json << ",\"surfaceType\":\"" << nature << "\"}";
         }
         const auto result = json.str();
         if (!out || result.size() >= size)

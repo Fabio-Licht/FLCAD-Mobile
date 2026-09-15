@@ -190,8 +190,7 @@ void main() {
           'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const sourceId = 'managed-brep:source';
       const referenceId = 'managed-plane:source-face-3';
-      const reference = ManagedCadReference(
-        kind: ManagedCadReferenceKind.plane,
+      const reference = ManagedCadReference.plane(
         sourceEntityId: sourceId,
         sourceFormat: 'brep',
         sourceShapeSha256: hash,
@@ -212,8 +211,8 @@ void main() {
               'sceneKind': 'plane',
               'sceneGeometry': {
                 'origin': reference.origin.toJson(),
-                'normal': reference.normal.toJson(),
-                'xDirection': reference.xDirection.toJson(),
+                'normal': reference.normal!.toJson(),
+                'xDirection': reference.xDirection!.toJson(),
               },
             },
           ),

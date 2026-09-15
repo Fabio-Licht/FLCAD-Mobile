@@ -225,8 +225,7 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         throw const FormatException('Invalid managed CAD face result');
       }
       final format = source.data['managedStepAssets'] != null ? 'step' : 'brep';
-      final definition = ManagedCadReference(
-        kind: ManagedCadReferenceKind.plane,
+      final definition = ManagedCadReference.plane(
         sourceEntityId: sourceEntityId,
         sourceFormat: format,
         sourceShapeSha256: shapeSha256,
@@ -263,6 +262,137 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
                 'xDirection': xDirection.toJson(),
                 'visualSize': visualSize.clamp(1.0, 1000000.0),
                 'displayColor': 'constructionPlane',
+              },
+              'sceneVisible': true,
+              'sceneTransparent': true,
+              ManagedCadReference.dataKey: definition.toJson(),
+            },
+          ),
+        ],
+      );
+    });
+    geometrySelection.select(referenceId);
+    return referenceId;
+  }
+
+  /// Resolves the selected presentation triangle to its OCCT face, then
+  /// persists only the cylinder's durable topological and analytic identity.
+  Future<String> createManagedCadCylinderAxisReference({
+    required String sourceEntityId,
+    required int presentationTriangleId,
+  }) async {
+    if (presentationTriangleId <= 0) {
+      throw const FormatException('Invalid managed CAD face selection');
+    }
+    late String referenceId;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final source = document.entities[sourceEntityId];
+      final rawAssets =
+          source?.data['managedStepAssets'] ??
+          source?.data['managedBrepAssets'];
+      final geometry = _managedGeometry[sourceEntityId];
+      final kernel = kernels.active;
+      if (source == null ||
+          source.data['deleted'] == true ||
+          source.kind != CadDocumentEntityKind.import ||
+          rawAssets is! Map ||
+          source.data['managedStlAssets'] != null ||
+          geometry is! ManagedBrepEntityGeometry ||
+          kernel is! OpenCascadeKernelAdapter) {
+        throw StateError('Selecione uma face de um STEP/BREP managed ativo.');
+      }
+      final inspected = await geometry.shape.inspectManagedCadFace(
+        kernel,
+        presentationTriangleId,
+      );
+      tx.validate();
+      final surfaceType = inspected['surfaceType'];
+      if (surfaceType != 'cylinder') {
+        const labels = {
+          'plane': 'plana',
+          'cone': 'cônica',
+          'sphere': 'esférica',
+          'torus': 'toroidal',
+          'unsupported': 'não cilíndrica',
+        };
+        throw StateError(
+          'A face selecionada não é cilíndrica '
+          '(tipo OCCT: ${labels[surfaceType] ?? surfaceType ?? 'desconhecido'}).',
+        );
+      }
+      Vector3 vector(String key) {
+        final raw = inspected[key];
+        if (raw is! List ||
+            raw.length != 3 ||
+            raw.any((value) => value is! num || !value.isFinite)) {
+          throw const FormatException('Invalid native cylinder geometry');
+        }
+        return Vector3(
+          (raw[0] as num).toDouble(),
+          (raw[1] as num).toDouble(),
+          (raw[2] as num).toDouble(),
+        );
+      }
+
+      var origin = vector('origin');
+      var direction = vector('direction');
+      final rawRadius = inspected['radius'];
+      final placement = source.placement;
+      if (placement != null && placement.operations.isNotEmpty) {
+        final matrix = placement.matrix;
+        final transformedZero = matrix.transformPoint(Vector3.zero);
+        origin = matrix.transformPoint(origin);
+        direction = matrix.transformPoint(direction) - transformedZero;
+      }
+      direction = ManagedCadReference.canonicalAxisDirection(direction);
+      final faceIndex = inspected['faceIndex'];
+      final shapeSha256 = rawAssets['shapeSha256'];
+      if (faceIndex is! int ||
+          faceIndex <= 0 ||
+          shapeSha256 is! String ||
+          rawRadius is! num ||
+          !rawRadius.isFinite ||
+          rawRadius <= 0) {
+        throw const FormatException('Invalid managed CAD cylinder result');
+      }
+      final radius = rawRadius.toDouble();
+      final format = source.data['managedStepAssets'] != null ? 'step' : 'brep';
+      final definition = ManagedCadReference.cylindricalAxis(
+        sourceEntityId: sourceEntityId,
+        sourceFormat: format,
+        sourceShapeSha256: shapeSha256,
+        faceIndex: faceIndex,
+        origin: origin,
+        direction: direction,
+        radius: radius,
+      );
+      final sourceName = source.data['name'] as String? ?? source.id;
+      final baseName = 'Eixo $sourceName F$faceIndex';
+      final names = document.entities.values
+          .map((entity) => entity.data['name'])
+          .whereType<String>()
+          .toSet();
+      var name = baseName;
+      for (var suffix = 2; names.contains(name); suffix++) {
+        name = '$baseName ($suffix)';
+      }
+      referenceId = 'managed-axis:${DateTime.now().microsecondsSinceEpoch}';
+      await _mutateDocument(
+        tx,
+        command: 'references.managedCad.axisFromCylindricalFace',
+        requested: [
+          CadDocumentEntity(
+            id: referenceId,
+            kind: CadDocumentEntityKind.reference,
+            data: {
+              'name': name,
+              'collectionId': 'collection:references',
+              'sceneKind': CadSceneEntityKind.axis.name,
+              'sceneGeometry': {
+                'origin': origin.toJson(),
+                'direction': direction.toJson(),
+                'displayColor': 'constructionVector',
               },
               'sceneVisible': true,
               'sceneTransparent': true,

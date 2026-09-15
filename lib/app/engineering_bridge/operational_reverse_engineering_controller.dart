@@ -1933,13 +1933,18 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           'A referência CAD selecionada está órfã; restaure a entidade-origem antes de criar o Sketch.',
         );
       }
+      if (reference.kind != ManagedCadReferenceKind.plane) {
+        throw StateError(
+          'A referência CAD selecionada não é um suporte planar.',
+        );
+      }
       return PlaneGeometry(
         Vec3(reference.origin.x, reference.origin.y, reference.origin.z),
-        Vec3(reference.normal.x, reference.normal.y, reference.normal.z),
+        Vec3(reference.normal!.x, reference.normal!.y, reference.normal!.z),
         xDirection: Vec3(
-          reference.xDirection.x,
-          reference.xDirection.y,
-          reference.xDirection.z,
+          reference.xDirection!.x,
+          reference.xDirection!.y,
+          reference.xDirection!.z,
         ),
       );
     }

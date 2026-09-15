@@ -981,15 +981,20 @@ void main() {
     },
   );
 
-  test('managed STL cannot create a false B-Rep plane reference', () async {
+  test('managed STL cannot create false B-Rep face references', () async {
     final source = await importFile('ascii.stl');
-    await expectLater(
+    for (final operation in [
       runtime.createManagedCadPlaneReference(
         sourceEntityId: source.id,
         presentationTriangleId: 1,
       ),
-      throwsA(isA<StateError>()),
-    );
+      runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: source.id,
+        presentationTriangleId: 1,
+      ),
+    ]) {
+      await expectLater(operation, throwsA(isA<StateError>()));
+    }
     expect(
       runtime.document!.entities.values.where(
         (entity) => entity.data['managedCadReference'] != null,

@@ -1434,6 +1434,28 @@ void main() {
   );
 
   test(
+    'spherical managed BREP face is rejected for cylindrical axis',
+    () async {
+      final source = await importOne();
+      final before = runtime.document!.entities.length;
+      await expectLater(
+        runtime.createManagedCadCylinderAxisReference(
+          sourceEntityId: source.id,
+          presentationTriangleId: 1,
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('tipo OCCT: esférica'),
+          ),
+        ),
+      );
+      expect(runtime.document!.entities.length, before);
+    },
+  );
+
+  test(
     'shutdown revokes a suspended managed Redo and drains custody',
     () async {
       final entity = await importOne();

@@ -376,7 +376,7 @@ void main() {
           Directory(p.join(source.path, 'must-not-open.step')).existsSync(),
           isFalse,
         );
-        expect(source.listSync().whereType<File>().length, 16);
+        expect(source.listSync().whereType<File>().length, 18);
         await runtime.open('step-project', project);
         final reopened = runtime.document!.entities[entity.id]!;
         expect(reopened.data['managedStepAssets'], refs.toJson());
@@ -1451,6 +1451,107 @@ void main() {
       }
     },
   );
+
+  test(
+    'cylindrical STEP face creates a canonical durable axis and keeps Native GPU eligible',
+    () async {
+      final sourceEntity = await runtime.importManagedStep(
+        p.join(source.path, 'cylinder.step'),
+        nativeBridgePath: bridge,
+      );
+      final referenceId = await runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      );
+      CadDocumentEntity entity() => runtime.document!.entities[referenceId]!;
+      ManagedCadReference reference() => ManagedCadReference.fromJson(
+        Map<String, dynamic>.from(
+          entity().data[ManagedCadReference.dataKey] as Map,
+        ),
+      );
+
+      expect(reference().kind, ManagedCadReferenceKind.cylindricalAxis);
+      expect(reference().sourceFormat, 'step');
+      expect(reference().origin.toJson(), [4.0, 5.0, 6.0]);
+      expect(reference().direction!.toJson(), [0.0, 0.0, 1.0]);
+      expect(reference().direction!.length, closeTo(1, 1e-12));
+      expect(reference().radius, closeTo(3, 1e-12));
+      expect(runtime.scene.find(referenceId)?.kind.name, 'axis');
+      expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
+
+      await runtime.undoDocument();
+      expect(runtime.document!.entities[referenceId], isNull);
+      await runtime.redoDocument();
+      expect(runtime.document!.entities[referenceId], isNotNull);
+
+      await runtime.setEntityVisibility(sourceEntity.id, false);
+      expect(runtime.scene.find(referenceId)?.visible, isTrue);
+      await runtime.setEntityVisibility(referenceId, false);
+      expect(runtime.scene.find(referenceId)?.visible, isFalse);
+      await runtime.setEntityVisibility(referenceId, true);
+      expect(runtime.scene.find(referenceId)?.visible, isTrue);
+
+      await runtime.save();
+      await runtime.open('step-project', project);
+      expect(reference().direction!.toJson(), [0.0, 0.0, 1.0]);
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
+
+      await runtime.removeEntity(
+        sourceEntity.id,
+        command: 'test.remove-cylinder-source',
+      );
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isTrue);
+      expect(runtime.document!.entities[referenceId], isNotNull);
+      await runtime.undoDocument();
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
+
+      final encoded = jsonEncode(entity().toJson());
+      for (final forbidden in ['pathname', 'pointer', 'token', 'primitiveId']) {
+        expect(encoded, isNot(contains(forbidden)));
+      }
+    },
+  );
+
+  test('cylindrical managed BREP uses the same OCCT face contract', () async {
+    final brep = await runtime.importManagedBrep(
+      p.join(source.path, 'cylinder.brep'),
+      name: 'cylinder-brep',
+      nativeBridgePath: bridge,
+    );
+    final referenceId = await runtime.createManagedCadCylinderAxisReference(
+      sourceEntityId: brep.id,
+      presentationTriangleId: 1,
+    );
+    final reference = ManagedCadReference.fromJson(
+      Map<String, dynamic>.from(
+        runtime.document!.entities[referenceId]!.data[ManagedCadReference
+                .dataKey]
+            as Map,
+      ),
+    );
+    expect(reference.sourceFormat, 'brep');
+    expect(reference.direction!.toJson(), [0.0, 0.0, 1.0]);
+    expect(reference.radius, closeTo(3, 1e-12));
+  });
+
+  test('planar managed face is rejected by cylindrical axis command', () async {
+    final sourceEntity = await import(0);
+    final before = runtime.document!.entities.length;
+    await expectLater(
+      runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('tipo OCCT: plana'),
+        ),
+      ),
+    );
+    expect(runtime.document!.entities.length, before);
+  });
 
   test('planar managed BREP face uses the same topological contract', () async {
     final step = await import(0);

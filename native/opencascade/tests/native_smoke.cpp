@@ -159,6 +159,14 @@ int main() {
                                    sizeof(cylinder), fingerprint,
                                    sizeof(fingerprint), error,
                                    sizeof(error)) == 1);
+  char cylinder_face[1024] = {};
+  CHECK(flcad_occ_managed_cad_face(cylinder, 1, cylinder_face,
+                                    sizeof(cylinder_face), error,
+                                    sizeof(error)) == 1);
+  CHECK(std::strstr(cylinder_face, "\"surfaceType\":\"cylinder\"") !=
+        nullptr);
+  CHECK(std::strstr(cylinder_face, "\"radius\":3") != nullptr);
+  CHECK(std::strstr(cylinder_face, "\"direction\":[") != nullptr);
   CHECK(flcad_occ_intersect_surfaces(plane, cylinder, intersection,
                                       sizeof(intersection), error,
                                       sizeof(error)) == 1);

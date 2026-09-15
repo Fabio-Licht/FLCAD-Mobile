@@ -59,6 +59,8 @@ import 'desktop_asset_manager.dart';
 import 'desktop_cad_controller.dart';
 import 'desktop_settings.dart';
 import 'desktop_theme.dart';
+import 'explorer_tree_projection.dart';
+import 'reference_tree_taxonomy.dart';
 
 class FLCADDesktopApplication extends StatefulWidget {
   const FLCADDesktopApplication({
@@ -1176,6 +1178,18 @@ class _OfficialEngineeringWorkspaceState
             ),
           ],
         ),
+        if (ReferenceTreeTaxonomy.isProjectedReference(entity)) ...[
+          const SizedBox(height: 8),
+          _InspectorSection(
+            title: 'Reference Origin',
+            children: [
+              _InspectorProperty(
+                label: 'Origin',
+                value: ReferenceTreeTaxonomy.originLabel(entity),
+              ),
+            ],
+          ),
+        ],
         if (entity.data[ManagedCadReference.dataKey] case final Map raw) ...[
           const SizedBox(height: 8),
           Builder(
@@ -3710,11 +3724,15 @@ class _OfficialEngineeringWorkspaceState
   Widget _documentExplorer(BuildContext context) {
     final entities =
         widget.cad.runtime.document?.entities.values.toList() ?? [];
+    final referenceGroups = ReferenceTreeTaxonomy.grouped(entities);
     final groups = <String, List<CadDocumentEntity>>{
       'Entidades': entities
           .where(
             (entity) =>
                 entity.data['constructionEntity'] is Map &&
+                !ReferenceTreeTaxonomy.isProjectedReference(entity) &&
+                entity.kind != CadDocumentEntityKind.surface &&
+                entity.kind != CadDocumentEntityKind.curve &&
                 entity.data['deleted'] != true,
           )
           .toList(),
@@ -3728,14 +3746,7 @@ class _OfficialEngineeringWorkspaceState
                 entity.data['deleted'] != true,
           )
           .toList(),
-      'References': entities
-          .where(
-            (entity) =>
-                entity.kind == CadDocumentEntityKind.reference &&
-                entity.data['constructionEntity'] is! Map &&
-                entity.data['deleted'] != true,
-          )
-          .toList(),
+      'References': const [],
       'Sketches': entities
           .where(
             (entity) =>
@@ -3749,6 +3760,7 @@ class _OfficialEngineeringWorkspaceState
             (entity) =>
                 entity.kind == CadDocumentEntityKind.curve &&
                 entity.data['constructionEntity'] is! Map &&
+                !ReferenceTreeTaxonomy.isProjectedReference(entity) &&
                 entity.data['deleted'] != true,
           )
           .toList(),
@@ -3804,6 +3816,7 @@ class _OfficialEngineeringWorkspaceState
                   CadDocumentEntityKind.shell,
                   CadDocumentEntityKind.constraint,
                 }.contains(entity.kind) &&
+                !ReferenceTreeTaxonomy.isProjectedReference(entity) &&
                 entity.data['parentSurfaceId'] == null &&
                 entity.data['hiddenFromExplorer'] != true &&
                 entity.data['deleted'] != true,
@@ -4246,6 +4259,32 @@ class _OfficialEngineeringWorkspaceState
           : entityTile;
     }
 
+    Widget referenceFolder(ReferenceTreeGroup group) {
+      final members = referenceGroups[group]!;
+      final glyph = switch (group) {
+        ReferenceTreeGroup.coordinateSystem => _CadGlyphKind.reference,
+        ReferenceTreeGroup.points => _CadGlyphKind.point,
+        ReferenceTreeGroup.axes => _CadGlyphKind.axis,
+        ReferenceTreeGroup.planes => _CadGlyphKind.plane,
+        ReferenceTreeGroup.curves => _CadGlyphKind.curve,
+        ReferenceTreeGroup.other => _CadGlyphKind.construction,
+      };
+      return ExpansionTile(
+        key: ValueKey('workspace-reference-group-${group.name}'),
+        initiallyExpanded:
+            group == ReferenceTreeGroup.coordinateSystem || members.isNotEmpty,
+        dense: true,
+        visualDensity: const VisualDensity(vertical: -3),
+        leading: _CadExplorerGlyph(glyph, size: 15),
+        title: _ExplorerLabel(
+          group.label,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w600,
+        ),
+        children: ExplorerTreeProjection.rowsFor(members).map(row).toList(),
+      );
+    }
+
     return ExpansionTile(
       key: const ValueKey('workspace-project-root'),
       initiallyExpanded: false,
@@ -4282,14 +4321,19 @@ class _OfficialEngineeringWorkspaceState
                 fontSize: 12.5,
                 fontWeight: FontWeight.w600,
               ),
-              children: entry.value.isEmpty
+              children: entry.key == 'References'
                   ? [
-                      const ListTile(
-                        dense: true,
-                        title: _ExplorerLabel('Empty', fontSize: 10.5),
-                      ),
+                      for (final group in ReferenceTreeTaxonomy.orderedGroups)
+                        if (group != ReferenceTreeGroup.other ||
+                            referenceGroups[group]!.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: referenceFolder(group),
+                          ),
                     ]
-                  : entry.value.map(row).toList(),
+                  : ExplorerTreeProjection.rowsFor(
+                      entry.value,
+                    ).map(row).toList(),
             ),
           ),
       ],

@@ -6,6 +6,11 @@ import 'cad_scene_graph.dart';
 
 typedef CadSceneBounds = ({Vector3 minimum, Vector3 maximum});
 
+const CadSceneBounds cadEmptyProjectFitBounds = (
+  minimum: Vector3(-10, -10, -10),
+  maximum: Vector3(10, 10, 10),
+);
+
 bool _isDurableCad(CadSceneEntity entity) => switch (entity.kind) {
   CadSceneEntityKind.mesh ||
   CadSceneEntityKind.surface ||
@@ -72,6 +77,12 @@ CadSceneBounds? cadSceneContentBounds(
     maximum: Vector3(maxX, maxY, maxZ),
   );
 }
+
+/// The initial project frame is CAD-only when available. An empty document has
+/// a fixed, origin-centred cube so WCS and standard planes are wholly usable
+/// before the first entity exists.
+CadSceneBounds cadInitialProjectFitBounds(CadSceneGraph scene) =>
+    cadSceneContentBounds(scene) ?? cadEmptyProjectFitBounds;
 
 /// Presentation-only reference size. The model term follows true CAD bounds;
 /// the view term prevents WCS/reference planes becoming unreadable on screen.

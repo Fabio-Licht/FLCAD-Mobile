@@ -5,6 +5,70 @@ import 'package:flcad_mobile/core/geometric_kernel/geometry/vectors.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('new or reopened empty project uses deterministic origin frame', () {
+    final scene = CadSceneGraph()
+      ..upsert(
+        const CadSceneEntity(
+          id: 'project:world:xy-plane',
+          kind: CadSceneEntityKind.plane,
+          geometry: {
+            'origin': [0.0, 0.0, 0.0],
+            'visualSize': 60.0,
+          },
+        ),
+      );
+    final bounds = cadInitialProjectFitBounds(scene);
+    expect(
+      bounds.minimum.distanceTo(const Vector3(-10, -10, -10)),
+      lessThan(1e-12),
+    );
+    expect(
+      bounds.maximum.distanceTo(const Vector3(10, 10, 10)),
+      lessThan(1e-12),
+    );
+    scene.dispose();
+  });
+
+  test(
+    'initial project Fit uses CAD and Sketch/Solid bounds, never overlays',
+    () {
+      final scene = CadSceneGraph()
+        ..upsert(_solid('STEP', const [0, 0, 0, 10, 20, 30]))
+        ..upsert(
+          const CadSceneEntity(
+            id: 'Sketch001',
+            kind: CadSceneEntityKind.sketch,
+            geometry: {
+              'points': [
+                [-8.0, 7.0, 10.0],
+                [0.0, 13.0, 20.0],
+              ],
+            },
+          ),
+        )
+        ..upsert(_solid('Extrude001', const [-8, 7, 10, 0, 13, 20]))
+        ..upsert(
+          const CadSceneEntity(
+            id: 'project:world:yz-plane',
+            kind: CadSceneEntityKind.plane,
+            geometry: {
+              'origin': [999.0, 999.0, 999.0],
+            },
+          ),
+        );
+      final bounds = cadInitialProjectFitBounds(scene);
+      expect(
+        bounds.minimum.distanceTo(const Vector3(-8, 0, 0)),
+        lessThan(1e-12),
+      );
+      expect(
+        bounds.maximum.distanceTo(const Vector3(10, 20, 30)),
+        lessThan(1e-12),
+      );
+      scene.dispose();
+    },
+  );
+
   test(
     'Fit bounds include CAD and Sketch but ignore construction overlays',
     () {

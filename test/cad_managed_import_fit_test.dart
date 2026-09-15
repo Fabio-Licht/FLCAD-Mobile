@@ -119,4 +119,97 @@ void main() {
     expect(camera.target.y, 0);
     expect(camera.target.z, 0);
   });
+
+  test('project-open Fit waits for layout and never overwrites navigation', () {
+    final camera = CadCameraController();
+    addTearDown(camera.dispose);
+    final gate = CadProjectOpenFitGate();
+    final ticket = gate.schedule();
+    final before = camera.snapshot();
+
+    expect(
+      gate.canApply(
+        ticket: ticket,
+        projectId: 'empty',
+        currentProjectId: 'empty',
+        session: 3,
+        currentSession: 3,
+        revision: 7,
+        currentRevision: 7,
+        scheduledCamera: before,
+        camera: camera,
+      ),
+      isFalse,
+      reason: 'the viewport must be laid out before initial Fit',
+    );
+
+    camera.resize(1200, 800);
+    expect(
+      gate.canApply(
+        ticket: ticket,
+        projectId: 'empty',
+        currentProjectId: 'empty',
+        session: 3,
+        currentSession: 3,
+        revision: 7,
+        currentRevision: 7,
+        scheduledCamera: before,
+        camera: camera,
+      ),
+      isTrue,
+    );
+    camera.orbit(.2, -.1);
+    expect(
+      gate.canApply(
+        ticket: ticket,
+        projectId: 'empty',
+        currentProjectId: 'empty',
+        session: 3,
+        currentSession: 3,
+        revision: 7,
+        currentRevision: 7,
+        scheduledCamera: before,
+        camera: camera,
+      ),
+      isFalse,
+      reason: 'a late initial Fit cannot replace user navigation',
+    );
+  });
+
+  test('project-open Fit is consumed only by its original opening', () {
+    final camera = readyCamera();
+    addTearDown(camera.dispose);
+    final gate = CadProjectOpenFitGate();
+    final first = gate.schedule();
+    final before = camera.snapshot();
+    final second = gate.schedule();
+    expect(
+      gate.canApply(
+        ticket: first,
+        projectId: 'A',
+        currentProjectId: 'A',
+        session: 1,
+        currentSession: 1,
+        revision: 2,
+        currentRevision: 2,
+        scheduledCamera: before,
+        camera: camera,
+      ),
+      isFalse,
+    );
+    expect(
+      gate.canApply(
+        ticket: second,
+        projectId: 'A',
+        currentProjectId: 'B',
+        session: 1,
+        currentSession: 2,
+        revision: 2,
+        currentRevision: 3,
+        scheduledCamera: before,
+        camera: camera,
+      ),
+      isFalse,
+    );
+  });
 }

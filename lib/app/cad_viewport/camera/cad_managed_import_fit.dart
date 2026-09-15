@@ -49,3 +49,35 @@ final class CadManagedImportFitGate {
       a.presentationOffsetNdcX == b.presentationOffsetNdcX &&
       a.presentationOffsetNdcY == b.presentationOffsetNdcY;
 }
+
+/// Guards the one deferred Fit requested at a project boundary. It deliberately
+/// compares only the camera pose and opening identity: viewport dimensions may
+/// settle after the project has been restored, but a pan/orbit must win.
+final class CadProjectOpenFitGate {
+  int _ticket = 0;
+
+  int schedule() => ++_ticket;
+
+  void invalidate() {
+    _ticket++;
+  }
+
+  bool canApply({
+    required int ticket,
+    required String projectId,
+    required String currentProjectId,
+    required int session,
+    required int currentSession,
+    required int revision,
+    required int currentRevision,
+    required CadCameraState scheduledCamera,
+    required CadCameraController camera,
+  }) =>
+      ticket == _ticket &&
+      projectId == currentProjectId &&
+      session == currentSession &&
+      revision == currentRevision &&
+      camera.viewportWidth > 1 &&
+      camera.viewportHeight > 1 &&
+      CadManagedImportFitGate._samePose(scheduledCamera, camera.snapshot());
+}

@@ -1018,7 +1018,9 @@ class _OfficialEngineeringWorkspaceState
       widget.cad.runtime.geometrySelection;
   late final OperationalReverseEngineeringController operational;
   String? fittedDocumentId;
+  int? fittedDocumentSession;
   final _managedImportFitGate = CadManagedImportFitGate();
+  final _projectOpenFitGate = CadProjectOpenFitGate();
   int _handledManagedImportPublication = 0;
   VoidCallback? _pendingManagedImportFit;
   final transformX = TextEditingController(text: '10');
@@ -2188,6 +2190,8 @@ class _OfficialEngineeringWorkspaceState
     if (runtimeDocument == null) {
       operational.detachProject();
       fittedDocumentId = null;
+      fittedDocumentSession = null;
+      _projectOpenFitGate.invalidate();
       _pendingManagedImportFit = null;
       openToolWindows.clear();
       return;
@@ -2202,7 +2206,8 @@ class _OfficialEngineeringWorkspaceState
             ),
           ),
     );
-    if (fittedDocumentId != runtimeDocument.projectId) {
+    if (fittedDocumentId != runtimeDocument.projectId ||
+        fittedDocumentSession != widget.cad.runtime.sessionIdentity) {
       openToolWindows.clear();
       choosingSketchSupport = false;
       modelingViewport.clearPreview();
@@ -2215,6 +2220,12 @@ class _OfficialEngineeringWorkspaceState
         );
       }
       fittedDocumentId = runtimeDocument.projectId;
+      fittedDocumentSession = widget.cad.runtime.sessionIdentity;
+      _scheduleProjectOpenFit(
+        projectId: runtimeDocument.projectId,
+        session: widget.cad.runtime.sessionIdentity,
+        revision: widget.cad.runtime.runtimeRevision,
+      );
     }
     final publication = widget.cad.runtime.managedImportPublication;
     if (publication != null &&
@@ -2226,6 +2237,7 @@ class _OfficialEngineeringWorkspaceState
   }
 
   void _scheduleManagedImportFit(CadManagedImportPublication publication) {
+    _projectOpenFitGate.invalidate();
     final ticket = _managedImportFitGate.schedule();
     final scheduledCamera = camera.snapshot();
     void apply() {
@@ -2274,6 +2286,43 @@ class _OfficialEngineeringWorkspaceState
       );
       return true;
     }());
+  }
+
+  void _scheduleProjectOpenFit({
+    required String projectId,
+    required int session,
+    required int revision,
+  }) {
+    final ticket = _projectOpenFitGate.schedule();
+    final scheduledCamera = camera.snapshot();
+    void apply() {
+      if (camera.viewportWidth <= 1 || camera.viewportHeight <= 1) return;
+      _pendingManagedImportFit = null;
+      final document = widget.cad.runtime.document;
+      if (!mounted ||
+          document == null ||
+          !_projectOpenFitGate.canApply(
+            ticket: ticket,
+            projectId: projectId,
+            currentProjectId: document.projectId,
+            session: session,
+            currentSession: widget.cad.runtime.sessionIdentity,
+            revision: revision,
+            currentRevision: widget.cad.runtime.runtimeRevision,
+            scheduledCamera: scheduledCamera,
+            camera: camera,
+          )) {
+        return;
+      }
+      final bounds = cadInitialProjectFitBounds(scene);
+      navigation.fit(bounds.minimum, bounds.maximum);
+      assert(() {
+        debugPrint('[viewport-project-fit] initial Fit delivered');
+        return true;
+      }());
+    }
+
+    _pendingManagedImportFit = apply;
   }
 
   ({Vector3 minimum, Vector3 maximum})? _visibleSceneBounds() {

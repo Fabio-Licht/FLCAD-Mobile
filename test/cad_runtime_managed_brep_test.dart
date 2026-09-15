@@ -253,6 +253,7 @@ void main() {
         source,
         'sourcePath',
         'registeredPath',
+        'faceTriangleRanges',
         'ShapeHandle',
         'KernelMeshHandle',
         'token',
@@ -1409,6 +1410,28 @@ void main() {
     expect(runtime.canRedo, isTrue);
     expect(pathImports(), 0);
   });
+
+  test(
+    'non-planar managed BREP face is rejected without creating a reference',
+    () async {
+      final source = await importOne();
+      final before = runtime.document!.entities.length;
+      await expectLater(
+        runtime.createManagedCadPlaneReference(
+          sourceEntityId: source.id,
+          presentationTriangleId: 1,
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'A face selecionada não é planar.',
+          ),
+        ),
+      );
+      expect(runtime.document!.entities.length, before);
+    },
+  );
 
   test(
     'shutdown revokes a suspended managed Redo and drains custody',

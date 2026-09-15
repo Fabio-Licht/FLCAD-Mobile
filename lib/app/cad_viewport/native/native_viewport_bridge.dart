@@ -314,6 +314,8 @@ class CadSceneDisplayAdapter {
       );
       final edges = presentation['topologicalEdges'];
       if (edges is List) result['topologicalEdges'] = edges;
+      final faceRanges = presentation['faceTriangleRanges'];
+      if (faceRanges is List) result['faceTriangleRanges'] = faceRanges;
       final rgb = cadRootSrgb(entity.geometry);
       if (rgb != null) result['rootSrgb'] = rgb;
     }
@@ -328,6 +330,7 @@ class CadSceneDisplayAdapter {
       geometry['triangles'],
       geometry['normals'],
       geometry['topologicalEdges'],
+      geometry['faceTriangleRanges'],
       rgb is List && rgb.length == 3 ? (rgb[0], rgb[1], rgb[2]) : null,
     );
   }
@@ -501,6 +504,22 @@ class NativeViewportBridge extends ChangeNotifier {
   Future<void> fit() => _invoke('fit');
   Future<void> textureProbe() => _invoke('textureProbe');
   Future<void> clearHover() => _invoke('clearHover');
+  Future<void> setManagedCadFaceHover({
+    required String entityId,
+    required int presentationSubId,
+  }) => _invoke('setManagedCadFaceHover', {
+    'entityId': entityId,
+    'presentationSubId': presentationSubId,
+  });
+  Future<void> setManagedCadFaceSelection({
+    required String entityId,
+    required int presentationSubId,
+  }) => _invoke('setManagedCadFaceSelection', {
+    'entityId': entityId,
+    'presentationSubId': presentationSubId,
+  });
+  Future<void> clearManagedCadFaceSelection() =>
+      _invoke('clearManagedCadFaceSelection');
   Future<void> setOperationalHover({
     required String operationalEntityId,
     required String entityId,

@@ -1,6 +1,7 @@
 import '../cad_kernel/io/kernel_io_models.dart';
 import '../cad_kernel/models/kernel_models.dart';
 import 'managed_step_contract.dart';
+import 'managed_cad_reference.dart';
 import 'entity_placement.dart';
 
 enum CadDocumentEntityKind {
@@ -118,6 +119,16 @@ class CadDocumentEntity {
       throw const FormatException(
         'STEP appearance requires managed STEP assets',
       );
+    }
+    final managedReference = data[ManagedCadReference.dataKey];
+    if (managedReference != null) {
+      if (json['kind'] != CadDocumentEntityKind.reference.name ||
+          json['shape'] != null ||
+          json['mesh'] != null ||
+          managedReference is! Map) {
+        throw const FormatException('Invalid managed CAD reference entity');
+      }
+      ManagedCadReference.fromJson(Map<String, dynamic>.from(managedReference));
     }
     return CadDocumentEntity(
       id: json['id'] as String,

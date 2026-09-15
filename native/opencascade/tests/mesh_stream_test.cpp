@@ -252,6 +252,11 @@ int main() {
     CHECK(!nodes.empty() && nodes.size() == normals.size() && nodes.size() == indices.size() * 3);
     CHECK(indices.size() / 3 <= flcad::display::Policy::max_triangles);
     if (fixture == 0) {
+      const auto face_begin = json.find("\"faceTriangleRanges\":[");
+      const auto face_end = json.find("],\"topologicalEdges\"", face_begin);
+      CHECK(face_begin != std::string::npos && face_end != std::string::npos);
+      CHECK(std::count(json.begin() + face_begin,
+                       json.begin() + face_end, '[') == 7);
       const auto begin = json.find("\"topologicalEdges\":[");
       const auto end = json.find("],\"bounds\"", begin);
       CHECK(std::count(json.begin() + begin, json.begin() + end, '[') == 13);

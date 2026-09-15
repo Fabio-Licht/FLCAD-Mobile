@@ -304,6 +304,17 @@ typedef _InspectNative =
     Int32 Function(Pointer<Utf8>, Pointer<Utf8>, IntPtr, Pointer<Utf8>, IntPtr);
 typedef _InspectDart =
     int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Utf8>, int);
+typedef _InspectIndexedNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Uint64,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _InspectIndexedDart =
+    int Function(Pointer<Utf8>, int, Pointer<Utf8>, int, Pointer<Utf8>, int);
 
 Map<String, dynamic> _displayGeometryWorker(
   int address,
@@ -503,6 +514,7 @@ class OpenCascadeFFI
     implements
         OpenCascadeNativeBridge,
         OpenCascadeMeshNativeBridge,
+        OpenCascadeManagedCadReferenceNativeBridge,
         OpenCascadeSurfaceNativeBridge {
   OpenCascadeFFI._(this.library)
     : _initialize = library.lookupFunction<_InitNative, _InitDart>(
@@ -1197,6 +1209,36 @@ class OpenCascadeFFI
     jsonDecode(await _inspect('flcad_occ_surface_topology', nativeToken))
         as Map,
   );
+
+  @override
+  Future<Map<String, dynamic>> inspectManagedCadFace(
+    String nativeToken,
+    int presentationTriangleId,
+  ) async {
+    if (presentationTriangleId <= 0) {
+      throw ArgumentError.value(
+        presentationTriangleId,
+        'presentationTriangleId',
+      );
+    }
+    final token = nativeToken.toNativeUtf8();
+    final out = calloc<Uint8>(4096).cast<Utf8>();
+    final error = calloc<Uint8>(4096).cast<Utf8>();
+    final fn = library
+        .lookupFunction<_InspectIndexedNative, _InspectIndexedDart>(
+          'flcad_occ_managed_cad_face',
+        );
+    try {
+      if (fn(token, presentationTriangleId, out, 4096, error, 4096) != 1) {
+        throw StateError(error.toDartString());
+      }
+      return Map<String, dynamic>.from(jsonDecode(out.toDartString()) as Map);
+    } finally {
+      calloc.free(token);
+      calloc.free(out);
+      calloc.free(error);
+    }
+  }
 
   @override
   Future<Map<String, dynamic>> intersectSurfaces(

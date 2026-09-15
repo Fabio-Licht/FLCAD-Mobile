@@ -77,6 +77,15 @@ abstract interface class OpenCascadeManagedMeshNativeBridge {
   Future<void> destroyMesh(String nativeToken);
 }
 
+/// Optional read-only seam for resolving renderer primitive IDs back to the
+/// immutable topology of a managed B-Rep shape.
+abstract interface class OpenCascadeManagedCadReferenceNativeBridge {
+  Future<Map<String, dynamic>> inspectManagedCadFace(
+    String nativeToken,
+    int presentationTriangleId,
+  );
+}
+
 /// Optional OCCT bridge extension for professional surface operators.
 abstract interface class OpenCascadeSurfaceNativeBridge {
   Future<OpenCascadeNativeShape> executeSurfaceOperation(

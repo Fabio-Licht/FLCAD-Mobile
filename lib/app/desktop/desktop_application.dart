@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/cad_kernel/manager/kernel_manager.dart';
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
+import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
@@ -1010,6 +1011,7 @@ class _OfficialEngineeringWorkspaceState
   final modelingViewport = ModelingViewportController();
   CadSceneGraph get scene => widget.cad.runtime.scene;
   final camera = CadCameraController();
+  final managedFaceSelection = CadManagedFaceSelectionController();
   late final NavigationEngine navigation;
   GeometrySelectionManager get geometrySelection =>
       widget.cad.runtime.geometrySelection;
@@ -1171,6 +1173,51 @@ class _OfficialEngineeringWorkspaceState
             ),
           ],
         ),
+        if (entity.data[ManagedCadReference.dataKey] case final Map raw) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final reference = ManagedCadReference.fromJson(
+                Map<String, dynamic>.from(raw),
+              );
+              return _InspectorSection(
+                title: 'Managed CAD Reference',
+                children: [
+                  _InspectorProperty(label: 'Type', value: 'Plano por face'),
+                  _InspectorProperty(
+                    label: 'Source Entity',
+                    value: reference.sourceEntityId,
+                  ),
+                  _InspectorProperty(
+                    label: 'Source Format',
+                    value: reference.sourceFormat.toUpperCase(),
+                  ),
+                  _InspectorProperty(
+                    label: 'Source Face',
+                    value: reference.faceIndex,
+                  ),
+                  _InspectorProperty(
+                    label: 'Origin',
+                    value: reference.origin.toJson(),
+                  ),
+                  _InspectorProperty(
+                    label: 'Normal',
+                    value: reference.normal.toJson(),
+                  ),
+                  _InspectorProperty(
+                    label: 'Status',
+                    value:
+                        widget.cad.runtime.managedCadReferenceIsOrphaned(
+                          reference,
+                        )
+                        ? 'Órfã / origem indisponível'
+                        : 'Válida',
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
         if (entity.data[FeatureLifecycleContract.dataKey]
             case final Map raw) ...[
           const SizedBox(height: 8),
@@ -2090,6 +2137,7 @@ class _OfficialEngineeringWorkspaceState
     operational.dispose();
     navigation.dispose();
     camera.dispose();
+    managedFaceSelection.dispose();
     modelingViewport.dispose();
     super.dispose();
   }
@@ -4267,11 +4315,14 @@ class _OfficialEngineeringWorkspaceState
       controller: operational,
       onApplyAlignment: _applyAlignment,
     ),
-    'Reference' => const _WorkspaceEnvironmentPlaceholder(
-      icon: Icons.architecture_outlined,
-      title: 'Reference Geometry',
-      description: 'Project construction references.',
-      capabilities: ['Point', 'Axis', 'Plane', 'Coordinate System'],
+    'Reference' => _ManagedCadReferencePanel(
+      runtime: widget.cad.runtime,
+      pick: operational.activePick,
+      onStatus: widget.cad.setStatus,
+      onCompleted: () {
+        operational.activePick = null;
+        managedFaceSelection.clear();
+      },
     ),
     'Entidades' => _EntitiesHubPanel(
       key: ValueKey(
@@ -4465,6 +4516,10 @@ class _OfficialEngineeringWorkspaceState
   Widget build(BuildContext context) => CallbackShortcuts(
     bindings: {
       const SingleActivator(LogicalKeyboardKey.escape): () {
+        operational.activePick = null;
+        managedFaceSelection.clear();
+        widget.cad.runtime.operationalSelection.clear();
+        geometrySelection.clear();
         if (choosingSketchSupport) {
           setState(() => choosingSketchSupport = false);
           widget.cad.setStatus('Sketch support selection cancelled.');
@@ -4646,6 +4701,14 @@ class _OfficialEngineeringWorkspaceState
                                       widget.cad.runtime.operationalResolver,
                                   operationalSelection:
                                       widget.cad.runtime.operationalSelection,
+                                  managedFaceSelectionController:
+                                      managedFaceSelection,
+                                  onManagedFaceSelectionCleared: () {
+                                    operational.activePick = null;
+                                    widget.cad.runtime.operationalSelection
+                                        .clear();
+                                    geometrySelection.clear();
+                                  },
                                   showSketchGrid:
                                       module == 'Sketch' &&
                                       operational.stage ==
@@ -7141,6 +7204,109 @@ class _EntitiesWorkspacePanelState extends State<_EntitiesWorkspacePanel> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ManagedCadReferencePanel extends StatefulWidget {
+  const _ManagedCadReferencePanel({
+    required this.runtime,
+    required this.pick,
+    required this.onStatus,
+    required this.onCompleted,
+  });
+
+  final CadRuntime runtime;
+  final CadViewportPick? pick;
+  final ValueChanged<String> onStatus;
+  final VoidCallback onCompleted;
+
+  @override
+  State<_ManagedCadReferencePanel> createState() =>
+      _ManagedCadReferencePanelState();
+}
+
+class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
+  bool busy = false;
+
+  CadDocumentEntity? get source {
+    final pick = widget.pick;
+    if (pick == null) return null;
+    return widget.runtime.document?.entities[pick.entityId];
+  }
+
+  bool get canCreatePlane {
+    final entity = source;
+    return !busy &&
+        widget.pick?.subentityKind == CadViewportSubentityKind.face &&
+        (widget.pick?.presentationSubId ?? 0) > 0 &&
+        entity?.data['deleted'] != true &&
+        entity?.data['managedStlAssets'] == null &&
+        (entity?.data['managedStepAssets'] is Map ||
+            entity?.data['managedBrepAssets'] is Map);
+  }
+
+  Future<void> createPlane() async {
+    if (!canCreatePlane) return;
+    setState(() => busy = true);
+    try {
+      final id = await widget.runtime.createManagedCadPlaneReference(
+        sourceEntityId: widget.pick!.entityId,
+        presentationTriangleId: widget.pick!.presentationSubId!,
+      );
+      widget.onCompleted();
+      widget.onStatus('Plano de referência criado a partir da face B-Rep: $id');
+    } catch (error) {
+      widget.onStatus(
+        error
+            .toString()
+            .replaceFirst('Bad state: ', '')
+            .replaceFirst('FormatException: ', ''),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entity = source;
+    final sourceName = entity?.data['name'] as String?;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Referências CAD managed',
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          sourceName == null
+              ? 'Selecione uma face visível de um STEP/BREP managed.'
+              : 'Origem: $sourceName',
+          style: TextStyle(
+            fontSize: 11,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: canCreatePlane ? createPlane : null,
+          icon: busy
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.crop_square_outlined, size: 18),
+          label: const Text('Plano por face planar'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'A face é resolvida na topologia OCCT da shape original. Eixo por '
+          'cilindro e ponto por vértice permanecem fora deste bloco.',
+          style: TextStyle(fontSize: 10),
+        ),
+      ],
     );
   }
 }

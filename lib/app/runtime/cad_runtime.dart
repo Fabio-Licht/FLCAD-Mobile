@@ -13,6 +13,7 @@ import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/entity_placement.dart';
 import '../../core/cad_document/managed_step_contract.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
+import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/cad_document/dependency_walk.dart';
 import '../../core/cad_document/cad_document_repository.dart';
 import '../../core/cad_kernel/api/geometry_kernel_api.dart';
@@ -147,6 +148,141 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
       'displayMesh': value.displayMesh.descriptor.toManagedMetadata(),
       'meshOnly': value.meshOnly,
     };
+  }
+
+  /// Resolves a transient presentation triangle to its owning OCCT face and
+  /// creates a durable world-space plane reference in one document transaction.
+  Future<String> createManagedCadPlaneReference({
+    required String sourceEntityId,
+    required int presentationTriangleId,
+    double visualSize = 60,
+  }) async {
+    if (presentationTriangleId <= 0 ||
+        !visualSize.isFinite ||
+        visualSize <= 0) {
+      throw const FormatException('Invalid managed CAD face selection');
+    }
+    late String referenceId;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final source = document.entities[sourceEntityId];
+      final rawAssets =
+          source?.data['managedStepAssets'] ??
+          source?.data['managedBrepAssets'];
+      final geometry = _managedGeometry[sourceEntityId];
+      final kernel = kernels.active;
+      if (source == null ||
+          source.data['deleted'] == true ||
+          source.kind != CadDocumentEntityKind.import ||
+          rawAssets is! Map ||
+          source.data['managedStlAssets'] != null ||
+          geometry is! ManagedBrepEntityGeometry ||
+          kernel is! OpenCascadeKernelAdapter) {
+        throw StateError('Selecione uma face de um STEP/BREP managed ativo.');
+      }
+      final inspected = await geometry.shape.inspectManagedCadFace(
+        kernel,
+        presentationTriangleId,
+      );
+      tx.validate();
+      if (inspected['surfaceType'] != 'plane') {
+        throw StateError('A face selecionada não é planar.');
+      }
+      Vector3 vector(String key) {
+        final raw = inspected[key];
+        if (raw is! List ||
+            raw.length != 3 ||
+            raw.any((value) => value is! num || !value.isFinite)) {
+          throw const FormatException('Invalid native face geometry');
+        }
+        return Vector3(
+          (raw[0] as num).toDouble(),
+          (raw[1] as num).toDouble(),
+          (raw[2] as num).toDouble(),
+        );
+      }
+
+      var origin = vector('origin');
+      var normal = vector('normal').normalized;
+      var xDirection = vector('xDirection').normalized;
+      final placement = source.placement;
+      if (placement != null && placement.operations.isNotEmpty) {
+        final matrix = placement.matrix;
+        final transformedZero = matrix.transformPoint(Vector3.zero);
+        origin = matrix.transformPoint(origin);
+        normal = (matrix.transformPoint(normal) - transformedZero).normalized;
+        xDirection =
+            (matrix.transformPoint(xDirection) - transformedZero).normalized;
+      }
+      xDirection = (xDirection - normal * normal.dot(xDirection)).normalized;
+      final faceIndex = inspected['faceIndex'];
+      final shapeSha256 = rawAssets['shapeSha256'];
+      if (faceIndex is! int ||
+          faceIndex <= 0 ||
+          shapeSha256 is! String ||
+          normal.length <= 1e-12 ||
+          xDirection.length <= 1e-12) {
+        throw const FormatException('Invalid managed CAD face result');
+      }
+      final format = source.data['managedStepAssets'] != null ? 'step' : 'brep';
+      final definition = ManagedCadReference(
+        kind: ManagedCadReferenceKind.plane,
+        sourceEntityId: sourceEntityId,
+        sourceFormat: format,
+        sourceShapeSha256: shapeSha256,
+        faceIndex: faceIndex,
+        origin: origin,
+        normal: normal,
+        xDirection: xDirection,
+      );
+      final sourceName = source.data['name'] as String? ?? source.id;
+      final baseName = 'Plano $sourceName F$faceIndex';
+      final names = document.entities.values
+          .map((entity) => entity.data['name'])
+          .whereType<String>()
+          .toSet();
+      var name = baseName;
+      for (var suffix = 2; names.contains(name); suffix++) {
+        name = '$baseName ($suffix)';
+      }
+      referenceId = 'managed-plane:${DateTime.now().microsecondsSinceEpoch}';
+      await _mutateDocument(
+        tx,
+        command: 'references.managedCad.planeFromFace',
+        requested: [
+          CadDocumentEntity(
+            id: referenceId,
+            kind: CadDocumentEntityKind.reference,
+            data: {
+              'name': name,
+              'collectionId': 'collection:references',
+              'sceneKind': CadSceneEntityKind.plane.name,
+              'sceneGeometry': {
+                'origin': origin.toJson(),
+                'normal': normal.toJson(),
+                'xDirection': xDirection.toJson(),
+                'visualSize': visualSize.clamp(1.0, 1000000.0),
+                'displayColor': 'constructionPlane',
+              },
+              'sceneVisible': true,
+              'sceneTransparent': true,
+              ManagedCadReference.dataKey: definition.toJson(),
+            },
+          ),
+        ],
+      );
+    });
+    geometrySelection.select(referenceId);
+    return referenceId;
+  }
+
+  bool managedCadReferenceIsOrphaned(ManagedCadReference reference) {
+    final source = _document?.entities[reference.sourceEntityId];
+    if (source == null || source.data['deleted'] == true) return true;
+    final assets =
+        source.data['managedStepAssets'] ?? source.data['managedBrepAssets'];
+    return assets is! Map ||
+        assets['shapeSha256'] != reference.sourceShapeSha256;
   }
 
   /// Managed imports install this only after their documentary commit. It is

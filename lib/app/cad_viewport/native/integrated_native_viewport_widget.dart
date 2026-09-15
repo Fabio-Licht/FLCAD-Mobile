@@ -15,6 +15,23 @@ import '../../operational_entities/operational_entity.dart';
 import '../../operational_entities/operational_entity_resolver.dart';
 import 'native_viewport_bridge.dart';
 
+class CadManagedFaceSelectionController extends ChangeNotifier {
+  ManagedCadFaceHighlight? _selection;
+  ManagedCadFaceHighlight? get selection => _selection;
+
+  void select(ManagedCadFaceHighlight value) {
+    if (_selection == value) return;
+    _selection = value;
+    notifyListeners();
+  }
+
+  void clear() {
+    if (_selection == null) return;
+    _selection = null;
+    notifyListeners();
+  }
+}
+
 class IntegratedCadViewportWidget extends StatefulWidget {
   const IntegratedCadViewportWidget({
     super.key,
@@ -37,6 +54,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     this.operationalSelection,
     this.onViewportReady,
     this.enableInspectionHover = false,
+    this.managedFaceSelectionController,
+    this.onManagedFaceSelectionCleared,
   });
 
   /// The viewport owns and disposes the bridge returned by this factory.
@@ -60,6 +79,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
   final OperationalSelectionManager? operationalSelection;
   final VoidCallback? onViewportReady;
   final bool enableInspectionHover;
+  final CadManagedFaceSelectionController? managedFaceSelectionController;
+  final VoidCallback? onManagedFaceSelectionCleared;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -99,6 +120,50 @@ class _IntegratedCadViewportWidgetState
   CadRenderStyle _renderStyle = CadRenderStyle.shaded;
   Offset? _pendingHover;
   Offset? _lastHoverPosition;
+  ManagedCadFaceHighlight? _managedFaceHover;
+  ManagedCadFaceHighlight? _managedFaceSelection;
+
+  void _managedFaceControllerChanged() {
+    final next = widget.managedFaceSelectionController?.selection;
+    if (_managedFaceSelection == next) return;
+    if (next == null && _managedFaceHover != null) {
+      _managedFaceHover = null;
+      if (_nativeActive) native.clearHover();
+    }
+    _publishManagedFaceSelection(next);
+  }
+
+  void _publishManagedFaceSelection(ManagedCadFaceHighlight? next) {
+    if (mounted && _managedFaceSelection != next) {
+      setState(() => _managedFaceSelection = next);
+    }
+    if (!_nativeActive) return;
+    if (next == null) {
+      native.clearManagedCadFaceSelection();
+    } else {
+      native.setManagedCadFaceSelection(
+        entityId: next.entityId,
+        presentationSubId: next.presentationSubId,
+      );
+    }
+  }
+
+  void _selectManagedFace(ManagedCadFaceHighlight? next) {
+    final controller = widget.managedFaceSelectionController;
+    final previous = controller?.selection ?? _managedFaceSelection;
+    if (controller != null) {
+      if (next == null) {
+        controller.clear();
+      } else {
+        controller.select(next);
+      }
+    } else {
+      _publishManagedFaceSelection(next);
+    }
+    if (previous != null && next == null) {
+      widget.onManagedFaceSelectionCleared?.call();
+    }
+  }
 
   void _setRenderStyle(CadRenderStyle style) {
     _tapGeneration++;
@@ -140,14 +205,25 @@ class _IntegratedCadViewportWidgetState
     if (!_canPublishTap(token, scene)) return;
     final result = await native.pick(position.dx, position.dy);
     if (!_canPublishTap(token, scene)) return;
-    // No hit (or an unresolvable hit) leaves selection unchanged, just as
-    // Canvas picking does. Never substitute the last hover for this click.
-    if (result == null || result.kind == NativePickKind.none) return;
+    // Empty space clears only transient B-Rep face state. Entity selection and
+    // durable document state remain owned by their existing controllers.
+    if (result == null || result.kind == NativePickKind.none) {
+      _selectManagedFace(null);
+      return;
+    }
     final source = scene.find(result.entityId);
-    if (source == null || !source.visible) return;
+    if (source == null || !source.visible) {
+      _selectManagedFace(null);
+      return;
+    }
+    final managedFace = result.kind == NativePickKind.face
+        ? managedCadFaceHighlight(source, result.subId)
+        : null;
     // Normal entity selection must not segment a STEP display mesh into regions.
-    final resolved =
-        !widget.enableInspectionHover && source.kind == CadSceneEntityKind.mesh
+    final resolved = managedFace != null
+        ? _managedFaceResolution(source, managedFace)
+        : !widget.enableInspectionHover &&
+              source.kind == CadSceneEntityKind.mesh
         ? _entityResolution(source)
         : await operationalResolver.resolve(result, scene);
     if (!_canPublishTap(token, scene) || resolved == null) return;
@@ -156,12 +232,20 @@ class _IntegratedCadViewportWidgetState
       additive: additive,
       toggle: toggle,
     );
+    _selectManagedFace(managedFace);
     final point = result.point;
     if (point.length >= 3 && point.take(3).every((value) => value.isFinite)) {
       widget.camera.focusOn(Vector3(point[0], point[1], point[2]));
       widget.onPick?.call(
         CadViewportPick(
           entityId: resolved.entity.ownerId,
+          subentityKind: switch (result.kind) {
+            NativePickKind.face => CadViewportSubentityKind.face,
+            NativePickKind.edge => CadViewportSubentityKind.edge,
+            NativePickKind.vertex => CadViewportSubentityKind.vertex,
+            NativePickKind.none => null,
+          },
+          presentationSubId: managedFace?.presentationSubId ?? result.subId,
           hit: MeshHit(
             triangleIndex: -1,
             point: Vector3(point[0], point[1], point[2]),
@@ -188,8 +272,35 @@ class _IntegratedCadViewportWidgetState
     return OperationalResolution(entity: entity, triangleIndices: const []);
   }
 
+  OperationalResolution _managedFaceResolution(
+    CadSceneEntity source,
+    ManagedCadFaceHighlight face,
+  ) {
+    final entity = OperationalEntity(
+      id: 'operational:${source.id}:brep-face:${face.faceIndex}',
+      type: OperationalEntityType.cadFace,
+      ownerId: source.id,
+      ownerDomain: 'brepFace',
+      documentId: source.id,
+      revision: 1,
+      label: '${source.id} · Face ${face.faceIndex}',
+      capabilities: const {
+        OperationalCapability.selectable,
+        OperationalCapability.inspectable,
+        OperationalCapability.reference,
+        OperationalCapability.topological,
+      },
+      properties: {
+        'sceneEntityId': source.id,
+        'faceIndex': face.faceIndex,
+        'presentationOnly': true,
+      },
+    );
+    operationalEntities.replaceOwner(source.id, [entity]);
+    return OperationalResolution(entity: entity, triangleIndices: const []);
+  }
+
   Future<void> _updateNativeHover(Offset position) async {
-    if (!widget.enableInspectionHover) return;
     _lastHoverPosition = position;
     _pendingHover = position;
     if (_hoverRequestActive || !_nativeActive || _nativeNavigating) return;
@@ -199,18 +310,28 @@ class _IntegratedCadViewportWidgetState
       final current = _pendingHover!;
       _pendingHover = null;
       final result = await native.pick(current.dx, current.dy);
-      final resolved = result == null
+      final source = result == null ? null : widget.scene.find(result.entityId);
+      final managedFace = result?.kind == NativePickKind.face && source != null
+          ? managedCadFaceHighlight(source, result!.subId)
+          : null;
+      final resolved = !widget.enableInspectionHover || managedFace != null
+          ? null
+          : result == null
           ? null
           : await operationalResolver.resolve(result, widget.scene);
       if (!mounted ||
           !_nativeActive ||
           generation != _backendGeneration ||
-          !widget.enableInspectionHover ||
           _pendingHover != null ||
           _nativeNavigating) {
         continue;
       }
-      if (resolved == null) {
+      if (managedFace != null) {
+        await native.setManagedCadFaceHover(
+          entityId: managedFace.entityId,
+          presentationSubId: managedFace.presentationSubId,
+        );
+      } else if (resolved == null) {
         await native.clearHover();
       } else {
         await native.setOperationalHover(
@@ -223,6 +344,7 @@ class _IntegratedCadViewportWidgetState
         setState(() {
           _nativeHover = result;
           _operationalHover = resolved;
+          _managedFaceHover = managedFace;
         });
       }
     }
@@ -235,6 +357,34 @@ class _IntegratedCadViewportWidgetState
     NativePickKind.face => SystemMouseCursors.click,
     _ => MouseCursor.defer,
   };
+
+  void _pickCanvas(CadViewportPick pick) {
+    final source = widget.scene.find(pick.entityId);
+    final face = source == null || pick.hit.triangleIndex < 0
+        ? null
+        : managedCadFaceHighlight(source, pick.hit.triangleIndex + 1);
+    _selectManagedFace(face);
+    widget.onPick?.call(
+      face == null
+          ? pick
+          : CadViewportPick(
+              entityId: pick.entityId,
+              hit: pick.hit,
+              subentityKind: CadViewportSubentityKind.face,
+              presentationSubId: face.presentationSubId,
+            ),
+    );
+  }
+
+  void _hoverCanvas(CadViewportPick? pick) {
+    final source = pick == null ? null : widget.scene.find(pick.entityId);
+    final next = source == null || pick == null || pick.hit.triangleIndex < 0
+        ? null
+        : managedCadFaceHighlight(source, pick.hit.triangleIndex + 1);
+    if (_managedFaceHover != next && mounted) {
+      setState(() => _managedFaceHover = next);
+    }
+  }
 
   @override
   void initState() {
@@ -253,6 +403,10 @@ class _IntegratedCadViewportWidgetState
     widget.scene.addListener(_sceneChanged);
     widget.camera.addListener(_cameraChanged);
     operationalSelection.addListener(_operationalSelectionChanged);
+    widget.managedFaceSelectionController?.addListener(
+      _managedFaceControllerChanged,
+    );
+    _managedFaceSelection = widget.managedFaceSelectionController?.selection;
     if (widget.enableInspectionHover) operationalResolver.prepare(widget.scene);
     _requestedBackend = backend;
   }
@@ -260,10 +414,21 @@ class _IntegratedCadViewportWidgetState
   @override
   void didUpdateWidget(covariant IntegratedCadViewportWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.managedFaceSelectionController !=
+        widget.managedFaceSelectionController) {
+      oldWidget.managedFaceSelectionController?.removeListener(
+        _managedFaceControllerChanged,
+      );
+      widget.managedFaceSelectionController?.addListener(
+        _managedFaceControllerChanged,
+      );
+      _managedFaceControllerChanged();
+    }
     if (oldWidget.enableInspectionHover && !widget.enableInspectionHover) {
       _pendingHover = null;
       _nativeHover = null;
       _operationalHover = null;
+      _managedFaceHover = null;
       native.clearHover();
     }
     if (oldWidget.scene != widget.scene) {
@@ -303,6 +468,14 @@ class _IntegratedCadViewportWidgetState
 
   void _sceneChanged() {
     _tapGeneration++;
+    final selectedFace = _managedFaceSelection;
+    final selectedSource = selectedFace == null
+        ? null
+        : widget.scene.find(selectedFace.entityId);
+    if (selectedFace != null &&
+        (selectedSource == null || !selectedSource.visible)) {
+      _selectManagedFace(null);
+    }
     if (widget.enableInspectionHover) operationalResolver.prepare(widget.scene);
     if (backend == ViewportBackend.flutterCanvas &&
         _requestedBackend == ViewportBackend.nativeGpu &&
@@ -315,7 +488,13 @@ class _IntegratedCadViewportWidgetState
       return;
     }
     if (!_nativeActive || _initializing) return;
-    native.sendDelta(widget.scene);
+    unawaited(
+      native.sendDelta(widget.scene).then((_) {
+        if (mounted && _nativeActive) {
+          _publishManagedFaceSelection(_managedFaceSelection);
+        }
+      }),
+    );
   }
 
   void _cameraChanged() {
@@ -413,6 +592,7 @@ class _IntegratedCadViewportWidgetState
       _switchBackend(ViewportBackend.flutterCanvas, recovery: true);
     } else if (mounted && !_switching) {
       _operationalSelectionChanged();
+      _publishManagedFaceSelection(_managedFaceSelection);
       setState(() {});
       await _viewportReady();
     }
@@ -430,6 +610,7 @@ class _IntegratedCadViewportWidgetState
     _pendingHover = null;
     _nativeHover = null;
     _operationalHover = null;
+    _managedFaceHover = null;
     _nativeNavigating = false;
     setState(() {
       if (recovery) _requestedBackend = ViewportBackend.flutterCanvas;
@@ -461,6 +642,7 @@ class _IntegratedCadViewportWidgetState
         }
       });
       _operationalSelectionChanged();
+      _publishManagedFaceSelection(_managedFaceSelection);
       await _viewportReady();
     });
   }
@@ -474,6 +656,9 @@ class _IntegratedCadViewportWidgetState
     widget.camera.removeListener(_cameraChanged);
     native.removeListener(_changed);
     operationalSelection.removeListener(_operationalSelectionChanged);
+    widget.managedFaceSelectionController?.removeListener(
+      _managedFaceControllerChanged,
+    );
     native.dispose();
     if (_ownsOperationalState) {
       operationalSelection.dispose();
@@ -537,6 +722,7 @@ class _IntegratedCadViewportWidgetState
                 setState(() {
                   _nativeHover = null;
                   _operationalHover = null;
+                  _managedFaceHover = null;
                 });
               }
             : null,
@@ -561,6 +747,11 @@ class _IntegratedCadViewportWidgetState
                   scene: widget.scene,
                   camera: widget.camera,
                   onPick: widget.onPick,
+                  onManagedFacePick: useNative ? null : _pickCanvas,
+                  onEmptyNormalTap: () => _selectManagedFace(null),
+                  onManagedFaceHover: useNative ? null : _hoverCanvas,
+                  managedFaceHover: _managedFaceHover,
+                  managedFaceSelection: _managedFaceSelection,
                   onNormalTap: useNative ? _pickNativeTap : null,
                   onSketchSupportPick: widget.onSketchSupportPick,
                   onSketchEntityPick: widget.onSketchEntityPick,

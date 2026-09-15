@@ -30,6 +30,11 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
     required this.camera,
     this.onPick,
     this.onNormalTap,
+    this.onManagedFacePick,
+    this.onEmptyNormalTap,
+    this.onManagedFaceHover,
+    this.managedFaceHover,
+    this.managedFaceSelection,
     this.onSketchSupportPick,
     this.onSketchEntityPick,
     this.onSketchEntityDoublePick,
@@ -58,6 +63,11 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
 
   /// Overrides only normal picking; Sketch gestures retain priority.
   final ValueChanged<Offset>? onNormalTap;
+  final ValueChanged<CadViewportPick>? onManagedFacePick;
+  final VoidCallback? onEmptyNormalTap;
+  final ValueChanged<CadViewportPick?>? onManagedFaceHover;
+  final ManagedCadFaceHighlight? managedFaceHover;
+  final ManagedCadFaceHighlight? managedFaceSelection;
   final ValueChanged<CadViewportPick>? onSketchSupportPick;
   final ValueChanged<CadViewportPick>? onSketchEntityPick;
   final ValueChanged<CadViewportPick>? onSketchEntityDoublePick;
@@ -192,7 +202,7 @@ class _ProfessionalCadViewportWidgetState
       widget.onNormalTap!(event.localPosition);
       return;
     }
-    if (widget.onPick == null) return;
+    if (widget.onPick == null && widget.onManagedFacePick == null) return;
     final hit = picking.pick(
       position: event.localPosition,
       camera: widget.camera,
@@ -200,7 +210,13 @@ class _ProfessionalCadViewportWidgetState
     );
     if (hit != null) {
       navigation.focus(hit.hit.point);
-      widget.onPick!(hit);
+      if (widget.onManagedFacePick != null) {
+        widget.onManagedFacePick!(hit);
+      } else {
+        widget.onPick!(hit);
+      }
+    } else {
+      widget.onEmptyNormalTap?.call();
     }
   }
 
@@ -283,6 +299,7 @@ class _ProfessionalCadViewportWidgetState
       scene: widget.scene,
     );
     final next = hit?.entityId;
+    widget.onManagedFaceHover?.call(hit);
     if (next != hoveredEntityId && mounted) {
       setState(() => hoveredEntityId = next);
     }
@@ -370,6 +387,7 @@ class _ProfessionalCadViewportWidgetState
             }
           },
           onExit: (_) {
+            widget.onManagedFaceHover?.call(null);
             if (hoveredEntityId != null) {
               setState(() => hoveredEntityId = null);
             }
@@ -486,6 +504,8 @@ class _ProfessionalCadViewportWidgetState
                             showGrid: widget.showSketchGrid,
                             meshRenderCaches: meshRenderCaches,
                             hoveredEntityId: hoveredEntityId,
+                            managedFaceHover: widget.managedFaceHover,
+                            managedFaceSelection: widget.managedFaceSelection,
                             rotationCenterMarker: _rotationCenterMarker,
                             renderMeshes: widget.renderMeshes,
                             paintBackground: widget.paintBackground,
@@ -1076,6 +1096,8 @@ class _CadScenePainter extends CustomPainter {
     required this.showGrid,
     required this.meshRenderCaches,
     required this.hoveredEntityId,
+    required this.managedFaceHover,
+    required this.managedFaceSelection,
     required this.rotationCenterMarker,
     required this.renderMeshes,
     required this.paintBackground,
@@ -1090,6 +1112,8 @@ class _CadScenePainter extends CustomPainter {
   final bool showGrid;
   final Map<String, _MeshRenderCache> meshRenderCaches;
   final String? hoveredEntityId;
+  final ManagedCadFaceHighlight? managedFaceHover;
+  final ManagedCadFaceHighlight? managedFaceSelection;
   final Vector3? rotationCenterMarker;
   final bool renderMeshes, paintBackground;
   final bool highlightSketchSupports;
@@ -1180,6 +1204,7 @@ class _CadScenePainter extends CustomPainter {
         } else {
           _paintMeshBatched(canvas, entity, size);
         }
+        _paintManagedCadFaceHighlight(canvas, entity, size);
       } else {
         _paintReference(canvas, size, entity);
       }
@@ -1367,7 +1392,9 @@ class _CadScenePainter extends CustomPainter {
       meshRenderCaches[entity.id] = cache;
     }
     final matrix = camera.viewProjectionMatrix.values;
-    final isHovered = entity.id == hoveredEntityId;
+    final hasManagedFaceHover = managedFaceHover?.entityId == entity.id;
+    final hasManagedFaceSelection = managedFaceSelection?.entityId == entity.id;
+    final isHovered = entity.id == hoveredEntityId && !hasManagedFaceHover;
     final baseColor = switch ((entity.kind, entity.geometry['displayColor'])) {
       (_, 'destructiveRed') => Colors.redAccent,
       (_, 'surfacePreviewBlue') => const Color(0xff38bdf8),
@@ -1378,7 +1405,7 @@ class _CadScenePainter extends CustomPainter {
     };
     final foregroundColor = CadMaterialLighting.highlight(
       baseColor,
-      selected: entity.selected,
+      selected: entity.selected && !hasManagedFaceSelection,
       hovered: isHovered,
       transparent: alpha < 1,
     );
@@ -1626,6 +1653,129 @@ class _CadScenePainter extends CustomPainter {
     canvas.drawPath(path, paint);
   }
 
+  void _paintManagedCadFaceHighlight(
+    Canvas canvas,
+    CadSceneEntity entity,
+    Size size,
+  ) {
+    final selected = managedFaceSelection?.entityId == entity.id
+        ? managedFaceSelection
+        : null;
+    final hovered = managedFaceHover?.entityId == entity.id
+        ? managedFaceHover
+        : null;
+    if (selected == null && hovered == null) return;
+    final presentation = cadPresentationGeometry(entity.geometry);
+    final rawNodes = presentation['nodes'];
+    final rawTriangles = presentation['triangles'];
+    if (rawNodes is! List || rawTriangles is! List) return;
+    final nodes = rawNodes.cast<num>();
+    final triangles = rawTriangles.cast<num>();
+
+    Offset? project(int vertex) {
+      if (vertex < 0 || vertex * 3 + 2 >= nodes.length) return null;
+      final point = camera.viewProjectionMatrix.transformPoint(
+        Vector3(
+          nodes[vertex * 3].toDouble(),
+          nodes[vertex * 3 + 1].toDouble(),
+          nodes[vertex * 3 + 2].toDouble(),
+        ),
+      );
+      if (!point.x.isFinite ||
+          !point.y.isFinite ||
+          point.z < -1 ||
+          point.z > 1) {
+        return null;
+      }
+      return Offset(
+        (point.x + 1) * size.width / 2,
+        (1 - point.y) * size.height / 2,
+      );
+    }
+
+    void paint(ManagedCadFaceHighlight face, {required bool persistent}) {
+      final end = face.firstTriangle + face.triangleCount;
+      if (face.firstTriangle < 0 || end * 3 > triangles.length) return;
+      final fill = Path();
+      final pointIds = <(double, double, double), int>{};
+      final points = <Offset>[];
+      final edgeCounts = <(int, int), int>{};
+      int pointId(int vertex, Offset projected) {
+        final key = (
+          nodes[vertex * 3].toDouble(),
+          nodes[vertex * 3 + 1].toDouble(),
+          nodes[vertex * 3 + 2].toDouble(),
+        );
+        return pointIds.putIfAbsent(key, () {
+          points.add(projected);
+          return points.length - 1;
+        });
+      }
+
+      for (var triangle = face.firstTriangle; triangle < end; triangle++) {
+        final offset = triangle * 3;
+        final vertices = [
+          triangles[offset].toInt(),
+          triangles[offset + 1].toInt(),
+          triangles[offset + 2].toInt(),
+        ];
+        final projected = vertices.map(project).toList(growable: false);
+        if (projected.any((point) => point == null)) continue;
+        final a = projected[0]!, b = projected[1]!, c = projected[2]!;
+        fill
+          ..moveTo(a.dx, a.dy)
+          ..lineTo(b.dx, b.dy)
+          ..lineTo(c.dx, c.dy)
+          ..close();
+        final ids = [
+          pointId(vertices[0], a),
+          pointId(vertices[1], b),
+          pointId(vertices[2], c),
+        ];
+        for (final pair in [
+          (ids[0], ids[1]),
+          (ids[1], ids[2]),
+          (ids[2], ids[0]),
+        ]) {
+          final edge = pair.$1 < pair.$2 ? pair : (pair.$2, pair.$1);
+          edgeCounts[edge] = (edgeCounts[edge] ?? 0) + 1;
+        }
+      }
+      const color = Color(0xff42d7ff);
+      if (style != CadRenderStyle.wireframe) {
+        canvas.drawPath(
+          fill,
+          Paint()
+            ..style = PaintingStyle.fill
+            ..color = color.withValues(alpha: persistent ? .34 : .16)
+            ..isAntiAlias = true,
+        );
+      }
+      final outline = Path();
+      for (final entry in edgeCounts.entries.where(
+        (entry) => entry.value == 1,
+      )) {
+        final a = points[entry.key.$1], b = points[entry.key.$2];
+        outline
+          ..moveTo(a.dx, a.dy)
+          ..lineTo(b.dx, b.dy);
+      }
+      canvas.drawPath(
+        outline,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..color = color.withValues(alpha: persistent ? .96 : .72)
+          ..strokeWidth = persistent ? 1.2 : .85
+          ..isAntiAlias = true,
+      );
+    }
+
+    if (selected != null) paint(selected, persistent: true);
+    if (hovered != null && hovered.faceIndex != selected?.faceIndex) {
+      paint(hovered, persistent: false);
+    }
+  }
+
   void _paintMeshFeatureEdges(
     Canvas canvas,
     CadSceneEntity entity,
@@ -1668,7 +1818,7 @@ class _CadScenePainter extends CustomPainter {
           ..strokeWidth = 1.0
           ..isAntiAlias = true,
       );
-      if (entity.selected) {
+      if (entity.selected && managedFaceSelection?.entityId != entity.id) {
         canvas.drawPath(
           path,
           Paint()
@@ -2322,5 +2472,7 @@ class _CadScenePainter extends CustomPainter {
       oldDelegate.navigationActive != navigationActive ||
       oldDelegate.orbitActive != orbitActive ||
       oldDelegate.hoveredEntityId != hoveredEntityId ||
+      oldDelegate.managedFaceHover != managedFaceHover ||
+      oldDelegate.managedFaceSelection != managedFaceSelection ||
       oldDelegate.rotationCenterMarker != rotationCenterMarker;
 }

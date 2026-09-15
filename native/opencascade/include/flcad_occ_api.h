@@ -38,6 +38,8 @@ FLCAD_OCC_EXPORT int flcad_occ_display_geometry(const char *token, char *result,
                                                 size_t result_size, char *error,
                                                 size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_topology(const char* token,char* topology,size_t topology_size,char* error,size_t error_size);
+// Resolves a transient display-triangle ID to immutable B-Rep face facts.
+FLCAD_OCC_EXPORT int flcad_occ_managed_cad_face(const char* token,size_t presentation_triangle_id,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_intersect_surfaces(const char* first,const char* second,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_quality(const char* token,const double* draft_direction,int samples,char* result,size_t result_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_surface_operation(const char* operation,const char* source_token,const char* reference_tokens,const double* values,size_t value_count,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* type,size_t type_size,char* error,size_t error_size);

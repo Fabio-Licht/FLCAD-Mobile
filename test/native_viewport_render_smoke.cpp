@@ -124,6 +124,7 @@ int main(int argc, char **argv) {
         entity.vertices.push_back({p.x, p.y, p.z, n.x, n.y, n.z});
       }
       entity.indices = {0, 1, 2, 0, 2, 3};
+      entity.face_triangle_ranges = {{1, 1}, {2, 1}};
       for (const int i : {0, 1, 1, 2, 2, 3, 3, 0})
         entity.display_edges.push_back(entity.vertices[i]);
       host.Upload(entity);
@@ -140,6 +141,33 @@ int main(int argc, char **argv) {
       host.render_style_ = 0;
       host.Render();
       const auto shaded = Pixels(host);
+      if (step == 0) {
+        host.SetManagedFaceHighlight(host.managed_face_hover_, "fixture", 1);
+        Require(host.managed_face_hover_.first_triangle == 0 &&
+                    host.managed_face_hover_.triangle_count == 1 &&
+                    host.managed_face_hover_.boundary_vertex_count == 6,
+                "Managed CAD hover did not resolve one resident face");
+        host.Render();
+        const auto hovered_face = Pixels(host);
+        size_t hover_delta = 0;
+        for (size_t i = 0; i < hovered_face.size(); ++i)
+          hover_delta += hovered_face[i] != shaded[i];
+        Require(hover_delta > 50 && hover_delta < 20000,
+                "Managed CAD hover changed no face or the entire viewport");
+        host.SetManagedFaceHighlight(host.managed_face_selection_, "fixture",
+                                     2);
+        Require(host.managed_face_selection_.first_triangle == 1 &&
+                    host.managed_face_selection_.triangle_count == 1,
+                "Managed CAD selection did not replace the previous face");
+        host.managed_face_hover_ = {};
+        host.Render();
+        Require(Pixels(host) != hovered_face,
+                "Managed CAD selected face did not replace hover");
+        host.managed_face_selection_ = {};
+        host.Render();
+        Require(Pixels(host) == shaded,
+                "Managed CAD face clear did not restore the material");
+      }
       const auto center = shaded[128 * 256 + 128];
       if (step == 0)
         reference = center;
@@ -384,6 +412,7 @@ int main(int argc, char **argv) {
                  "cycles passed\n";
     std::cout << "D3D11: 12 rigid orientations, shaded/edges/wireframe, "
                  "ambient passed\n";
+    std::cout << "D3D11: managed CAD face hover/selection/clear passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

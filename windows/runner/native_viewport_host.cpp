@@ -8,14 +8,16 @@
 #include <cmath>
 #include <climits>
 #include <cstring>
+#include <map>
 #include <stdexcept>
+#include <tuple>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
 namespace {
 const char *kShader = R"(
-cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; row_major float4x4 normalView; };
+cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; uint4 managedFace; row_major float4x4 normalView; };
 struct In { float3 p:POSITION; float3 n:NORMAL; };
 struct Out { float4 p:SV_POSITION; float3 n:NORMAL; };
 Out VSMain(In i) { Out o; o.p=mul(float4(i.p,1),mvp); o.n=mul(i.n,(float3x3)normalView); return o; }
@@ -26,7 +28,12 @@ float4 PSMain(Out i,uint primitiveId:SV_PrimitiveID):SV_TARGET {
  float d=.42+.46*saturate(dot(n,normalize(float3(-.22,.48,.78))))+
          .12*saturate(dot(n,normalize(float3(.66,-.28,.42))));
  float3 result=color.rgb*d;
- if(pick.y==1 && pick.z==primitiveId+1)
+ uint faceId=primitiveId+1;
+ if(managedFace.y>0 && faceId>=managedFace.x && faceId<managedFace.x+managedFace.y)
+   result=lerp(result,float3(0.18,0.82,1.0)*d,0.48);
+ else if(managedFace.w>0 && faceId>=managedFace.z && faceId<managedFace.z+managedFace.w)
+   result=lerp(result,float3(0.22,0.88,1.0)*d,0.22);
+ else if(pick.y==1 && pick.z==faceId)
    result=lerp(result,float3(0.18,0.88,1.0)*d,0.24);
  return float4(result,color.a);
 }
@@ -50,7 +57,7 @@ LineOut PSLine(Out i) {
 )";
 
 const char *kPickShader = R"(
-cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; row_major float4x4 normalView; };
+cbuffer Scene : register(b0) { row_major float4x4 mvp; float4 color; uint4 pick; uint4 managedFace; row_major float4x4 normalView; };
 struct MeshIn { float3 p:POSITION; float3 n:NORMAL; };
 struct PickIn { float3 p:POSITION; uint id:PICKID; };
 struct Out { float4 p:SV_POSITION; nointerpolation uint id:PICKID; };
@@ -138,6 +145,29 @@ void NativeViewportHost::HandleMethod(
       std::scoped_lock lock(mutex_);
       const auto raw_pick = Pick(x, y); hover_ = {}; Render();
       result->Success(flutter::EncodableValue(EncodePick(raw_pick)));
+    } else if (call.method_name() == "setManagedCadFaceHover" && arguments) {
+      std::scoped_lock lock(mutex_);
+      const auto *id = std::get_if<std::string>(Find(*arguments, "entityId"));
+      const auto *sub_id = Find(*arguments, "presentationSubId");
+      if (id && sub_id)
+        SetManagedFaceHighlight(managed_face_hover_, *id,
+                                static_cast<uint32_t>(Number(*sub_id)));
+      Render();
+      result->Success();
+    } else if (call.method_name() == "setManagedCadFaceSelection" && arguments) {
+      std::scoped_lock lock(mutex_);
+      const auto *id = std::get_if<std::string>(Find(*arguments, "entityId"));
+      const auto *sub_id = Find(*arguments, "presentationSubId");
+      if (id && sub_id)
+        SetManagedFaceHighlight(managed_face_selection_, *id,
+                                static_cast<uint32_t>(Number(*sub_id)));
+      Render();
+      result->Success();
+    } else if (call.method_name() == "clearManagedCadFaceSelection") {
+      std::scoped_lock lock(mutex_);
+      managed_face_selection_ = {};
+      Render();
+      result->Success();
     } else if (call.method_name() == "setOperationalHover" && arguments) {
       std::scoped_lock lock(mutex_); operational_hover_index_buffer_.Reset();
       operational_hover_index_count_=0; operational_hover_entity_id_.clear();operational_hover_id_.clear();
@@ -158,7 +188,7 @@ void NativeViewportHost::HandleMethod(
     } else if (call.method_name() == "clearOperationalSelection") {
       std::scoped_lock lock(mutex_);operational_selection_index_buffer_.Reset();operational_selection_index_count_=0;operational_selection_entity_id_.clear();operational_selection_id_.clear();Render();result->Success();
     } else if (call.method_name() == "clearHover") {
-      std::scoped_lock lock(mutex_); hover_ = {}; operational_hover_index_buffer_.Reset();operational_hover_index_count_=0;operational_hover_entity_id_.clear();operational_hover_id_.clear();Render(); result->Success();
+      std::scoped_lock lock(mutex_); hover_ = {}; managed_face_hover_ = {}; operational_hover_index_buffer_.Reset();operational_hover_index_count_=0;operational_hover_entity_id_.clear();operational_hover_id_.clear();Render(); result->Success();
     } else if (call.method_name() == "stats") {
       if (device_) Check(device_->GetDeviceRemovedReason(), "D3D device unavailable");
       result->Success(flutter::EncodableValue(Stats()));
@@ -338,7 +368,11 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
   const auto* raw_revision = Find(snapshot, "revision");
   const int64_t revision = raw_revision ? static_cast<int64_t>(Number(*raw_revision)) : 0;
   if (raw_revision && revision <= scene_revision_) return;
-  if (replace) entities_.clear();
+  if (replace) {
+    entities_.clear();
+    managed_face_hover_ = {};
+    managed_face_selection_ = {};
+  }
   const auto* raw=Find(snapshot,"entities");
   const auto* list=raw ? std::get_if<flutter::EncodableList>(raw) : nullptr;
   if (!list) return;
@@ -402,6 +436,29 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
     for(size_t i=0;i<positions.size();++i) entity.vertices[i]={positions[i].x,positions[i].y,positions[i].z,0,0,0};
     entity.indices.reserve(indices->size());
     for(const auto& index:*indices) entity.indices.push_back(static_cast<uint32_t>(Number(index)));
+    if (const auto *range_value = Find(*map, "faceTriangleRanges")) {
+      const auto *ranges = std::get_if<flutter::EncodableList>(range_value);
+      if (!ranges)
+        throw std::runtime_error("Invalid managed CAD face ranges");
+      uint32_t expected_first = 1;
+      for (const auto &entry : *ranges) {
+        const auto *range = std::get_if<flutter::EncodableList>(&entry);
+        if (!range || range->size() != 2)
+          throw std::runtime_error("Invalid managed CAD face range");
+        const double first = Number((*range)[0]);
+        const double count = Number((*range)[1]);
+        if (!std::isfinite(first) || !std::isfinite(count) ||
+            first != std::floor(first) || count != std::floor(count) ||
+            first != expected_first || count < 0 ||
+            first + count - 1 > entity.indices.size() / 3)
+          throw std::runtime_error("Managed CAD face range is out of bounds");
+        entity.face_triangle_ranges.emplace_back(
+            static_cast<uint32_t>(first), static_cast<uint32_t>(count));
+        expected_first += static_cast<uint32_t>(count);
+      }
+      if (expected_first != entity.indices.size() / 3 + 1)
+        throw std::runtime_error("Managed CAD face ranges are incomplete");
+    }
     for (size_t i = 0; i < entity.vertices.size(); ++i) {
       XMFLOAT3 n{static_cast<float>(Number((*normals)[i * 3])),
                  static_cast<float>(Number((*normals)[i * 3 + 1])),
@@ -437,7 +494,14 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
         }
       }
     }
-    Upload(entity); entities_[*id]=std::move(entity);
+    Upload(entity);
+    entities_[*id] = std::move(entity);
+    // A full geometry replacement invalidates renderer-local face identity.
+    // Visibility/selection deltas take the no-nodes branch above and retain it.
+    if (managed_face_hover_.entity_id == *id)
+      managed_face_hover_ = {};
+    if (managed_face_selection_.entity_id == *id)
+      managed_face_selection_ = {};
   }
   // Dart owns the canonical pose. Scene/selection deltas must never refit it.
   if (raw_revision) scene_revision_ = revision;
@@ -462,6 +526,91 @@ void NativeViewportHost::Upload(SceneEntity& entity) {
     Check(device_->CreateBuffer(&vb, &edges, &entity.display_edge_buffer),
           "CAD edges VB");
   }
+}
+
+void NativeViewportHost::SetManagedFaceHighlight(
+    ManagedFaceHighlight &highlight, const std::string &entity_id,
+    uint32_t presentation_sub_id) {
+  const auto found = entities_.find(entity_id);
+  if (found == entities_.end() || presentation_sub_id == 0) {
+    highlight = {};
+    return;
+  }
+  const auto &entity = found->second;
+  const auto range = std::find_if(
+      entity.face_triangle_ranges.begin(), entity.face_triangle_ranges.end(),
+      [presentation_sub_id](const auto &candidate) {
+        return presentation_sub_id >= candidate.first &&
+               presentation_sub_id < candidate.first + candidate.second;
+      });
+  if (range == entity.face_triangle_ranges.end()) {
+    highlight = {};
+    return;
+  }
+  if (highlight.entity_id == entity_id &&
+      highlight.first_triangle == range->first - 1 &&
+      highlight.triangle_count == range->second)
+    return;
+
+  ManagedFaceHighlight next;
+  next.entity_id = entity_id;
+  next.first_triangle = range->first - 1;
+  next.triangle_count = range->second;
+  using Point = std::tuple<float, float, float>;
+  using Edge = std::pair<Point, Point>;
+  struct EdgeState {
+    uint32_t count = 0;
+    Vertex a{};
+    Vertex b{};
+  };
+  std::map<Edge, EdgeState> edges;
+  auto point = [](const Vertex &value) {
+    return Point{value.x, value.y, value.z};
+  };
+  auto add_edge = [&](const Vertex &a, const Vertex &b) {
+    auto first = point(a), second = point(b);
+    if (second < first)
+      std::swap(first, second);
+    auto &state = edges[{first, second}];
+    if (state.count++ == 0) {
+      state.a = a;
+      state.b = b;
+    }
+  };
+  const size_t end = static_cast<size_t>(next.first_triangle +
+                                         next.triangle_count);
+  for (size_t triangle = next.first_triangle; triangle < end; ++triangle) {
+    const size_t base = triangle * 3;
+    if (base + 2 >= entity.indices.size()) {
+      highlight = {};
+      return;
+    }
+    const Vertex &a = entity.vertices[entity.indices[base]];
+    const Vertex &b = entity.vertices[entity.indices[base + 1]];
+    const Vertex &c = entity.vertices[entity.indices[base + 2]];
+    add_edge(a, b);
+    add_edge(b, c);
+    add_edge(c, a);
+  }
+  std::vector<Vertex> boundary;
+  for (const auto &[_, state] : edges) {
+    if (state.count == 1) {
+      boundary.push_back(state.a);
+      boundary.push_back(state.b);
+    }
+  }
+  if (!boundary.empty()) {
+    D3D11_BUFFER_DESC descriptor{};
+    descriptor.ByteWidth =
+        static_cast<UINT>(boundary.size() * sizeof(Vertex));
+    descriptor.Usage = D3D11_USAGE_IMMUTABLE;
+    descriptor.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA source{boundary.data()};
+    Check(device_->CreateBuffer(&descriptor, &source, &next.boundary_buffer),
+          "managed CAD face boundary VB");
+    next.boundary_vertex_count = static_cast<uint32_t>(boundary.size());
+  }
+  highlight = std::move(next);
 }
 
 void NativeViewportHost::Render() {
@@ -491,11 +640,31 @@ void NativeViewportHost::Render() {
     if (render_style_ == 2)
       continue;
     std::copy(std::begin(e.root_srgb), std::end(e.root_srgb), constants.color);
-    if (e.selected) {
+    const bool has_managed_face_selection =
+        id == managed_face_selection_.entity_id &&
+        managed_face_selection_.valid();
+    if (e.selected && !has_managed_face_selection) {
       constants.color[0] = .82f; constants.color[1] = .64f; constants.color[2] = .27f;
     }
     constants.pick[1] = id == hover_.entity_id ? hover_.kind : 0;
     constants.pick[2] = id == hover_.entity_id ? hover_.id : 0;
+    constants.managed_face[0] = has_managed_face_selection
+                                    ? managed_face_selection_.first_triangle + 1
+                                    : 0;
+    constants.managed_face[1] = has_managed_face_selection
+                                    ? managed_face_selection_.triangle_count
+                                    : 0;
+    const bool has_managed_face_hover =
+        id == managed_face_hover_.entity_id && managed_face_hover_.valid() &&
+        (!has_managed_face_selection ||
+         managed_face_hover_.first_triangle !=
+             managed_face_selection_.first_triangle);
+    constants.managed_face[2] = has_managed_face_hover
+                                    ? managed_face_hover_.first_triangle + 1
+                                    : 0;
+    constants.managed_face[3] = has_managed_face_hover
+                                    ? managed_face_hover_.triangle_count
+                                    : 0;
     context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
     ++constant_buffer_updates_;
     context_->IASetVertexBuffers(0, 1, e.vertex_buffer.GetAddressOf(), &stride,
@@ -554,6 +723,7 @@ void NativeViewportHost::Render() {
     context_->OMSetBlendState(nullptr,nullptr,UINT_MAX);
   }
   if (render_style_ != 2) {
+  std::fill(std::begin(constants.managed_face), std::end(constants.managed_face), 0);
   if(operational_selection_index_buffer_&&operational_selection_index_count_>0){auto found=entities_.find(operational_selection_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.92f;constants.color[1]=.38f;constants.color[2]=.04f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_selection_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_selection_index_count_,0,0);}}
   if(operational_hover_id_!=operational_selection_id_&&operational_hover_index_buffer_&&operational_hover_index_count_>0){auto found=entities_.find(operational_hover_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.08f;constants.color[1]=.78f;constants.color[2]=.92f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_hover_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_hover_index_count_,0,0);}}
   }
@@ -571,6 +741,42 @@ void NativeViewportHost::Render() {
     context_->RSSetViewports(1,&vp);context_->RSSetState(rasterizer_.Get());
     context_->OMSetBlendState(nullptr,nullptr,UINT_MAX);
   }
+  const auto draw_managed_face_boundary = [&](const ManagedFaceHighlight &face,
+                                               bool selected) {
+    if (!face.valid() || !face.boundary_buffer ||
+        face.boundary_vertex_count == 0)
+      return;
+    const auto found = entities_.find(face.entity_id);
+    if (found == entities_.end() || !found->second.visible)
+      return;
+    constants.color[0] = .18f;
+    constants.color[1] = selected ? .78f : .86f;
+    constants.color[2] = 1.f;
+    constants.color[3] = selected ? .98f : .74f;
+    constants.pick[1] = constants.pick[2] = constants.pick[3] = 0;
+    std::fill(std::begin(constants.managed_face),
+              std::end(constants.managed_face), 0);
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0,
+                                0);
+    context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(), 0);
+    context_->OMSetBlendState(cad_edge_blend_.Get(), nullptr, UINT_MAX);
+    context_->RSSetState(cad_edge_rasterizer_.Get());
+    context_->IASetInputLayout(input_layout_.Get());
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+    context_->IASetVertexBuffers(0, 1, face.boundary_buffer.GetAddressOf(),
+                                 &stride, &offset);
+    context_->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+    context_->VSSetShader(vertex_shader_.Get(), nullptr, 0);
+    context_->PSSetShader(line_shader_.Get(), nullptr, 0);
+    context_->Draw(face.boundary_vertex_count, 0);
+  };
+  draw_managed_face_boundary(managed_face_selection_, true);
+  if (managed_face_hover_.entity_id != managed_face_selection_.entity_id ||
+      managed_face_hover_.first_triangle !=
+          managed_face_selection_.first_triangle)
+    draw_managed_face_boundary(managed_face_hover_, false);
+  context_->RSSetState(rasterizer_.Get());
+  context_->OMSetBlendState(nullptr, nullptr, UINT_MAX);
   if(hover_.valid()&&hover_.kind>=2){auto found=entities_.find(hover_.entity_id);if(found!=entities_.end()){auto&e=found->second;context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(pick_input_layout_.Get());context_->IASetIndexBuffer(nullptr,DXGI_FORMAT_UNKNOWN,0);context_->VSSetShader(pick_subentity_vs_.Get(),nullptr,0);context_->PSSetShader(hover_ps_.Get(),nullptr,0);stride=sizeof(PickVertex);constants.pick[1]=hover_.kind;constants.pick[2]=hover_.id;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);
     const int radius=hover_.kind==2?1:3;for(int oy=-radius;oy<=radius;++oy)for(int ox=-radius;ox<=radius;++ox){D3D11_VIEWPORT highlight_vp{static_cast<float>(ox),static_cast<float>(oy),static_cast<float>(width_),static_cast<float>(height_),0,1};context_->RSSetViewports(1,&highlight_vp);if(hover_.kind==2&&e.edge_buffer&&hover_.id*2<=e.edge_vertices.size()){context_->IASetVertexBuffers(0,1,e.edge_buffer.GetAddressOf(),&stride,&offset);context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);context_->Draw(2,(hover_.id-1)*2);}else if(hover_.kind==3&&e.point_buffer&&hover_.id<=e.point_vertices.size()){context_->IASetVertexBuffers(0,1,e.point_buffer.GetAddressOf(),&stride,&offset);context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);context_->Draw(1,hover_.id-1);}}context_->RSSetViewports(1,&vp);}}
   context_->Flush();++frames_;const auto now=std::chrono::steady_clock::now();const double elapsed=std::chrono::duration<double>(now-metric_start_).count();if(elapsed>=1){fps_=frames_/elapsed;frames_=0;metric_start_=now;}
@@ -778,7 +984,7 @@ void NativeViewportHost::SetCamera(const flutter::EncodableMap& arguments) {
   }
   Render();
 }
-void NativeViewportHost::RemoveEntity(const std::string&id){std::scoped_lock lock(mutex_);entities_.erase(id);Render();}
+void NativeViewportHost::RemoveEntity(const std::string&id){std::scoped_lock lock(mutex_);entities_.erase(id);if(managed_face_hover_.entity_id==id)managed_face_hover_={};if(managed_face_selection_.entity_id==id)managed_face_selection_={};Render();}
 flutter::EncodableMap NativeViewportHost::Stats()const{std::string gpu;gpu.reserve(adapter_name_.size());for(const wchar_t character:adapter_name_)gpu.push_back(character<=0x7f?static_cast<char>(character):'?');return{{flutter::EncodableValue("fps"),flutter::EncodableValue(fps_)},{flutter::EncodableValue("drawCalls"),flutter::EncodableValue(static_cast<int64_t>(entities_.size()))},{flutter::EncodableValue("triangles"),flutter::EncodableValue(static_cast<int64_t>(triangles_))},{flutter::EncodableValue("uploadMs"),flutter::EncodableValue(upload_ms_)},{flutter::EncodableValue("renderMs"),flutter::EncodableValue(render_ms_)},{flutter::EncodableValue("pickingMs"),flutter::EncodableValue(picking_ms_)},{flutter::EncodableValue("gpu"),flutter::EncodableValue(gpu)},{flutter::EncodableValue("setCameraCalls"),flutter::EncodableValue(static_cast<int64_t>(set_camera_calls_))},{flutter::EncodableValue("renderCalls"),flutter::EncodableValue(static_cast<int64_t>(render_calls_))},{flutter::EncodableValue("constantBufferUpdates"),flutter::EncodableValue(static_cast<int64_t>(constant_buffer_updates_))},{flutter::EncodableValue("drawIndexedCalls"),flutter::EncodableValue(static_cast<int64_t>(draw_indexed_calls_))},{flutter::EncodableValue("fitCalls"),flutter::EncodableValue(static_cast<int64_t>(fit_calls_))},{flutter::EncodableValue("cameraDistance"),flutter::EncodableValue(static_cast<double>(camera_.Distance()))},{flutter::EncodableValue("cameraRadius"),flutter::EncodableValue(static_cast<double>(camera_.Radius()))},{flutter::EncodableValue("cameraNear"),flutter::EncodableValue(static_cast<double>(camera_.NearPlane()))},{flutter::EncodableValue("cameraFar"),flutter::EncodableValue(static_cast<double>(camera_.FarPlane()))},{flutter::EncodableValue("textureId"),flutter::EncodableValue(texture_id_)},{flutter::EncodableValue("textureRegistered"),flutter::EncodableValue(texture_registered_)},{flutter::EncodableValue("textureCallbacks"),flutter::EncodableValue(static_cast<int64_t>(texture_callbacks_.load()))},{flutter::EncodableValue("textureCallbackHz"),flutter::EncodableValue(texture_callback_hz_)},{flutter::EncodableValue("frameMarks"),flutter::EncodableValue(static_cast<int64_t>(frame_marks_.load()))},{flutter::EncodableValue("successfulFrameMarks"),flutter::EncodableValue(static_cast<int64_t>(successful_frame_marks_.load()))},{flutter::EncodableValue("requestedWidth"),flutter::EncodableValue(static_cast<int64_t>(last_requested_width_))},{flutter::EncodableValue("requestedHeight"),flutter::EncodableValue(static_cast<int64_t>(last_requested_height_))},{flutter::EncodableValue("sampledBgra"),flutter::EncodableValue(static_cast<int64_t>(sampled_bgra_))},{flutter::EncodableValue("sampledClearBgra"),flutter::EncodableValue(static_cast<int64_t>(sampled_clear_bgra_))}};}
 const FlutterDesktopGpuSurfaceDescriptor *
 NativeViewportHost::SurfaceState::Describe(size_t width, size_t height) {
@@ -821,6 +1027,8 @@ void NativeViewportHost::Shutdown(std::function<void()> completed) {
   operational_selection_entity_id_.clear();
   operational_selection_id_.clear();
   hover_ = {};
+  managed_face_hover_ = {};
+  managed_face_selection_ = {};
   target_view_.Reset();
   target_texture_.Reset();
   shared_texture_handle_ = nullptr;

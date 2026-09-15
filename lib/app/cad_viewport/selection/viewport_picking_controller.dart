@@ -10,6 +10,7 @@ import '../../engineering_bridge/selection/professional_picking_pipeline.dart';
 import '../camera/cad_camera_controller.dart';
 import '../scene/cad_scene_graph.dart';
 import '../rendering/stl_display_lod.dart';
+import '../rendering/cad_canvas_normal_pipeline.dart';
 
 // In the native interaction overlay, picking borrows canonical display arrays.
 // No second complete Canvas geometry is allocated or retained for navigation.
@@ -41,10 +42,99 @@ class _IntView extends ListBase<int> {
       throw UnsupportedError('Read-only display view');
 }
 
+enum CadViewportSubentityKind { face, edge, vertex }
+
+class ManagedCadFaceHighlight {
+  const ManagedCadFaceHighlight({
+    required this.entityId,
+    required this.faceIndex,
+    required this.presentationSubId,
+    required this.firstTriangle,
+    required this.triangleCount,
+  });
+
+  final String entityId;
+  final int faceIndex;
+  final int presentationSubId;
+
+  /// Zero-based presentation triangle range. This is transient viewport state.
+  final int firstTriangle;
+  final int triangleCount;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ManagedCadFaceHighlight &&
+      other.entityId == entityId &&
+      other.faceIndex == faceIndex &&
+      other.presentationSubId == presentationSubId &&
+      other.firstTriangle == firstTriangle &&
+      other.triangleCount == triangleCount;
+
+  @override
+  int get hashCode => Object.hash(
+    entityId,
+    faceIndex,
+    presentationSubId,
+    firstTriangle,
+    triangleCount,
+  );
+}
+
+ManagedCadFaceHighlight? managedCadFaceHighlight(
+  CadSceneEntity source,
+  int presentationSubId,
+) {
+  if (presentationSubId <= 0 ||
+      source.geometry['brepPresentation'] is! Map ||
+      StlDisplayLod.simplified(source.geometry)) {
+    return null;
+  }
+  final ranges = cadPresentationGeometry(source.geometry)['faceTriangleRanges'];
+  if (ranges is! List) return null;
+  for (var face = 0; face < ranges.length; face++) {
+    final range = ranges[face];
+    if (range is! List || range.length != 2) return null;
+    final first = range[0];
+    final count = range[1];
+    if (first is! num || count is! num) return null;
+    final firstId = first.toInt();
+    final triangleCount = count.toInt();
+    if (first != firstId ||
+        count != triangleCount ||
+        firstId <= 0 ||
+        triangleCount < 0) {
+      return null;
+    }
+    if (presentationSubId >= firstId &&
+        presentationSubId < firstId + triangleCount) {
+      return ManagedCadFaceHighlight(
+        entityId: source.id,
+        faceIndex: face + 1,
+        // Normalize all triangles of one face to its first presentation ID so
+        // pointer motion within the face emits no redundant host delta.
+        presentationSubId: firstId,
+        firstTriangle: firstId - 1,
+        triangleCount: triangleCount,
+      );
+    }
+  }
+  return null;
+}
+
 class CadViewportPick {
-  const CadViewportPick({required this.entityId, required this.hit});
+  const CadViewportPick({
+    required this.entityId,
+    required this.hit,
+    this.subentityKind,
+    this.presentationSubId,
+  });
   final String entityId;
   final MeshHit hit;
+  final CadViewportSubentityKind? subentityKind;
+
+  /// Transient renderer-local ID. It must be resolved against native B-Rep
+  /// before any durable command is created.
+  final int? presentationSubId;
 }
 
 class ViewportPickingController {
@@ -71,9 +161,12 @@ class ViewportPickingController {
   void synchronize(CadSceneGraph scene) {
     for (final id in _geometries.keys.toList()) {
       final entity = scene.find(id);
+      final presentation = entity == null
+          ? null
+          : cadPresentationGeometry(entity.geometry);
       if (entity == null ||
-          !identical(_nodeSources[id], entity.geometry['nodes']) ||
-          !identical(_triangleSources[id], entity.geometry['triangles'])) {
+          !identical(_nodeSources[id], presentation?['nodes']) ||
+          !identical(_triangleSources[id], presentation?['triangles'])) {
         _geometries.remove(id);
         _indexes.remove(id);
         _nodeSources.remove(id);
@@ -103,13 +196,14 @@ class ViewportPickingController {
             CadSceneEntityKind.surface,
             CadSceneEntityKind.solid,
           }.contains(item.kind) &&
-          item.geometry['nodes'] is List &&
-          item.geometry['triangles'] is List,
+          cadPresentationGeometry(item.geometry)['nodes'] is List &&
+          cadPresentationGeometry(item.geometry)['triangles'] is List,
     )) {
-      final nodes = (entity.geometry['nodes'] as List).cast<num>();
-      final triangles = (entity.geometry['triangles'] as List).cast<num>();
-      final nodesSource = entity.geometry['nodes'] as Object;
-      final trianglesSource = entity.geometry['triangles'] as Object;
+      final presentation = cadPresentationGeometry(entity.geometry);
+      final nodes = (presentation['nodes'] as List).cast<num>();
+      final triangles = (presentation['triangles'] as List).cast<num>();
+      final nodesSource = presentation['nodes'] as Object;
+      final trianglesSource = presentation['triangles'] as Object;
       if (!identical(_nodeSources[entity.id], nodesSource) ||
           !identical(_triangleSources[entity.id], trianglesSource)) {
         _geometries[entity.id] = KernelMeshGeometry(

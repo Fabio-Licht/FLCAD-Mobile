@@ -981,6 +981,23 @@ void main() {
     },
   );
 
+  test('managed STL cannot create a false B-Rep plane reference', () async {
+    final source = await importFile('ascii.stl');
+    await expectLater(
+      runtime.createManagedCadPlaneReference(
+        sourceEntityId: source.id,
+        presentationTriangleId: 1,
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(
+      runtime.document!.entities.values.where(
+        (entity) => entity.data['managedCadReference'] != null,
+      ),
+      isEmpty,
+    );
+  });
+
   test('contradictory and incomplete mesh-only JSON is rejected', () {
     final validId = {
       'schema': 'flcad.geometry-asset',

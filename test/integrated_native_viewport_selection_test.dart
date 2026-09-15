@@ -20,6 +20,11 @@ class _Bridge extends NativeViewportBridge {
     textureId = 1;
   }
   final positions = <Offset>[];
+  final managedFaceHovers = <(String, int)>[];
+  final managedFaceSelections = <(String, int)>[];
+  var managedFaceSelectionClears = 0;
+  var hoverClears = 0;
+  var scenePublications = 0;
   Future<NativeViewportPick?> Function(Offset)? answer;
   @override
   Future<NativeViewportPick?> pick(double x, double y) async {
@@ -31,13 +36,43 @@ class _Bridge extends NativeViewportBridge {
   @override
   Future<void> resize(double width, double height) async {}
   @override
-  Future<void> sendInitial(CadSceneGraph scene) async {}
+  Future<void> sendInitial(CadSceneGraph scene) async {
+    scenePublications++;
+  }
+
   @override
-  Future<void> sendDelta(CadSceneGraph scene) async {}
+  Future<void> sendDelta(CadSceneGraph scene) async {
+    scenePublications++;
+  }
+
   @override
   Future<void> setCamera(CadCameraController camera) async {}
   @override
-  Future<void> clearHover() async {}
+  Future<void> clearHover() async {
+    hoverClears++;
+  }
+
+  @override
+  Future<void> setManagedCadFaceHover({
+    required String entityId,
+    required int presentationSubId,
+  }) async {
+    managedFaceHovers.add((entityId, presentationSubId));
+  }
+
+  @override
+  Future<void> setManagedCadFaceSelection({
+    required String entityId,
+    required int presentationSubId,
+  }) async {
+    managedFaceSelections.add((entityId, presentationSubId));
+  }
+
+  @override
+  Future<void> clearManagedCadFaceSelection() async {
+    managedFaceSelectionClears++;
+  }
+
   @override
   Future<void> setOperationalHover({
     required String operationalEntityId,
@@ -59,13 +94,16 @@ class _Bridge extends NativeViewportBridge {
   }
 }
 
-NativeViewportPick hit(String id, {List<double> point = const [1, 2, 3]}) =>
-    NativeViewportPick(
-      entityId: id,
-      kind: NativePickKind.face,
-      subId: 1,
-      point: point,
-    );
+NativeViewportPick hit(
+  String id, {
+  int subId = 1,
+  List<double> point = const [1, 2, 3],
+}) => NativeViewportPick(
+  entityId: id,
+  kind: NativePickKind.face,
+  subId: subId,
+  point: point,
+);
 
 class _Selection extends OperationalSelectionManager {
   _Selection(super.registry);
@@ -96,6 +134,7 @@ class _Fixture {
   final bridge = _Bridge();
   final registry = OperationalEntityRegistry();
   late final selection = _Selection(registry);
+  final managedFaceSelection = CadManagedFaceSelectionController();
   final picks = <CadViewportPick>[];
   final camera = CadCameraController(
     eye: const Vector3(0, 0, 5),
@@ -124,6 +163,66 @@ class _Fixture {
       ),
     );
 
+  void makeManagedCad() {
+    scene.upsert(
+      const CadSceneEntity(
+        id: 'a',
+        kind: CadSceneEntityKind.mesh,
+        geometry: {
+          'nodes': [-2.0, -2.0, 0.0, 2.0, -2.0, 0.0, 0.0, 2.0, 0.0],
+          'triangles': [0, 1, 2],
+          'brepPresentation': {
+            'nodes': [
+              -2.0,
+              -2.0,
+              0.0,
+              2.0,
+              -2.0,
+              0.0,
+              2.0,
+              2.0,
+              0.0,
+              -2.0,
+              -2.0,
+              0.0,
+              2.0,
+              2.0,
+              0.0,
+              -2.0,
+              2.0,
+              0.0,
+            ],
+            'triangles': [0, 1, 2, 3, 4, 5],
+            'normals': [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+            ],
+            'faceTriangleRanges': [
+              [1, 1],
+              [2, 1],
+            ],
+          },
+        },
+      ),
+    );
+  }
+
   Future<void> mount(
     WidgetTester tester, {
     OperationalEntityResolver? resolver,
@@ -144,6 +243,7 @@ class _Fixture {
           operationalEntities: registry,
           operationalSelection: selection,
           operationalResolver: resolver,
+          managedFaceSelectionController: managedFaceSelection,
           onPick: picks.add,
           onSketchTap: sketchTap,
           onSketchEntityPick: sketchEntity,
@@ -185,6 +285,8 @@ void main() {
       expect(f.selection.activeId, 'operational:b');
       expect(f.picks, hasLength(1));
       expect(f.picks.single.entityId, 'b');
+      expect(f.picks.single.subentityKind, CadViewportSubentityKind.face);
+      expect(f.picks.single.presentationSubId, 1);
       expect(
         f.picks.single.hit.point.distanceTo(const Vector3(4, 5, 6)),
         lessThan(1e-12),
@@ -340,6 +442,90 @@ void main() {
     expect(f.bridge.positions, isEmpty);
     expect(f.selection.calls, 0);
     expect(f.picks.single.entityId, 'a');
+  });
+
+  testWidgets(
+    'managed B-Rep hover is face-only and clears without scene data',
+    (tester) async {
+      final f = _Fixture()..makeManagedCad();
+      f.bridge.answer = (_) async => hit('a');
+      await f.mount(tester);
+      final mouse = TestPointer(17, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(const Offset(560, 390)));
+      await tester.pump();
+      expect(f.bridge.managedFaceHovers, [('a', 1)]);
+      expect(f.managedFaceSelection.selection, isNull);
+      f.bridge.answer = (_) async => null;
+      await tester.sendEventToBinding(mouse.hover(const Offset(900, 700)));
+      await tester.pump();
+      expect(f.bridge.hoverClears, greaterThan(0));
+    },
+  );
+
+  testWidgets(
+    'managed B-Rep click replaces and clears one persistent face selection',
+    (tester) async {
+      final f = _Fixture()..makeManagedCad();
+      f.bridge.answer = (_) async => hit('a');
+      await f.mount(tester);
+      await tap(tester);
+      expect(f.managedFaceSelection.selection?.faceIndex, 1);
+      expect(f.selection.active?.type, OperationalEntityType.cadFace);
+      expect(f.bridge.managedFaceSelections, [('a', 1)]);
+
+      f.bridge.answer = (_) async => hit('a', subId: 2);
+      await tap(tester, const Offset(620, 420));
+      expect(f.managedFaceSelection.selection?.faceIndex, 2);
+      expect(f.bridge.managedFaceSelections.last, ('a', 2));
+      expect(f.bridge.managedFaceSelections, hasLength(2));
+
+      f.bridge.answer = (_) async => null;
+      await tap(tester, const Offset(1000, 700));
+      expect(f.managedFaceSelection.selection, isNull);
+      expect(f.bridge.managedFaceSelectionClears, 1);
+    },
+  );
+
+  testWidgets('Escape controller clears managed B-Rep selected face', (
+    tester,
+  ) async {
+    final f = _Fixture()..makeManagedCad();
+    await f.mount(tester);
+    await tap(tester);
+    expect(f.managedFaceSelection.selection, isNotNull);
+    f.managedFaceSelection.clear();
+    await tester.pump();
+    expect(f.bridge.managedFaceSelectionClears, 1);
+    expect(f.managedFaceSelection.selection, isNull);
+  });
+
+  testWidgets('Canvas uses the same managed B-Rep face contract', (
+    tester,
+  ) async {
+    final f = _Fixture()..makeManagedCad();
+    await f.mount(tester);
+    await tester.tap(find.text('Flutter Canvas'));
+    await tester.pumpAndSettle();
+    await tap(tester, const Offset(600, 400));
+    expect(f.bridge.positions, isEmpty);
+    expect(f.picks.single.subentityKind, CadViewportSubentityKind.face);
+    expect(f.picks.single.presentationSubId, isNotNull);
+    expect(f.managedFaceSelection.selection?.faceIndex, isNotNull);
+    await tap(tester, const Offset(1100, 400));
+    expect(f.managedFaceSelection.selection, isNull);
+  });
+
+  test('STL presentation cannot resolve a managed B-Rep face', () {
+    const stl = CadSceneEntity(
+      id: 'stl',
+      kind: CadSceneEntityKind.mesh,
+      geometry: {
+        'nodes': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        'triangles': [0, 1, 2],
+        'stlPresentation': true,
+      },
+    );
+    expect(managedCadFaceHighlight(stl, 1), isNull);
   });
 
   for (final mode in ['entity', 'support', 'tap', 'double', 'drag']) {

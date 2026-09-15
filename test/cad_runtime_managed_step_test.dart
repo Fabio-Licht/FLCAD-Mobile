@@ -8,9 +8,11 @@ import 'package:flcad_mobile/app/runtime/cad_runtime.dart';
 import 'package:flcad_mobile/app/runtime/cad_asset_fs_native.dart';
 import 'package:flcad_mobile/app/cad_viewport/native/native_viewport_bridge.dart';
 import 'package:flcad_mobile/app/cad_viewport/rendering/cad_root_color.dart';
+import 'package:flcad_mobile/app/cad_viewport/selection/viewport_picking_controller.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document_repository.dart';
 import 'package:flcad_mobile/core/cad_document/managed_step_contract.dart';
+import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
@@ -329,6 +331,7 @@ void main() {
             '$document${jsonEncode(journals())}${manifestFile.readAsStringSync()}';
         for (final forbidden in [
           'brepPresentation',
+          'faceTriangleRanges',
           'sourcePath',
           'registeredPath',
           'pointer',
@@ -1383,6 +1386,95 @@ void main() {
       }
     },
   );
+
+  test(
+    'planar STEP face creates a durable reference with history and orphan state',
+    () async {
+      final sourceEntity = await import(0);
+      final highlighted = managedCadFaceHighlight(
+        runtime.scene.find(sourceEntity.id)!,
+        1,
+      );
+      expect(highlighted, isNotNull);
+      final referenceId = await runtime.createManagedCadPlaneReference(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      );
+      CadDocumentEntity referenceEntity() =>
+          runtime.document!.entities[referenceId]!;
+      ManagedCadReference reference() => ManagedCadReference.fromJson(
+        Map<String, dynamic>.from(
+          referenceEntity().data[ManagedCadReference.dataKey] as Map,
+        ),
+      );
+
+      expect(referenceEntity().kind, CadDocumentEntityKind.reference);
+      expect(reference().sourceFormat, 'step');
+      expect(reference().faceIndex, highlighted!.faceIndex);
+      expect(runtime.scene.find(referenceId)?.kind.name, 'plane');
+      expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
+
+      await runtime.undoDocument();
+      expect(runtime.document!.entities[referenceId], isNull);
+      await runtime.redoDocument();
+      expect(referenceEntity().data[ManagedCadReference.dataKey], isA<Map>());
+      final duplicateId = await runtime.createManagedCadPlaneReference(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      );
+      expect(referenceEntity().data['name'], 'Plano part-0 F1');
+      expect(
+        runtime.document!.entities[duplicateId]!.data['name'],
+        'Plano part-0 F1 (2)',
+      );
+
+      await runtime.setEntityVisibility(sourceEntity.id, false);
+      expect(runtime.scene.find(referenceId)?.visible, isTrue);
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
+      await runtime.save();
+      await runtime.open('step-project', project);
+      expect(referenceEntity().data[ManagedCadReference.dataKey], isA<Map>());
+
+      await runtime.removeEntity(
+        sourceEntity.id,
+        command: 'test.remove-managed-source',
+      );
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isTrue);
+      expect(runtime.document!.entities[referenceId], isNotNull);
+      await runtime.undoDocument();
+      expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
+
+      final encoded = jsonEncode(referenceEntity().toJson());
+      for (final forbidden in ['pathname', 'pointer', 'token']) {
+        expect(encoded, isNot(contains(forbidden)));
+      }
+    },
+  );
+
+  test('planar managed BREP face uses the same topological contract', () async {
+    final step = await import(0);
+    final stepAssets = references(step);
+    final brep = await runtime.importManagedBrep(
+      asset(stepAssets.shape, CadAssetFile.brep).path,
+      name: 'planar-brep',
+      nativeBridgePath: bridge,
+    );
+    final referenceId = await runtime.createManagedCadPlaneReference(
+      sourceEntityId: brep.id,
+      presentationTriangleId: 1,
+    );
+    final reference = ManagedCadReference.fromJson(
+      Map<String, dynamic>.from(
+        runtime.document!.entities[referenceId]!.data[ManagedCadReference
+                .dataKey]
+            as Map,
+      ),
+    );
+    expect(reference.sourceFormat, 'brep');
+    expect(reference.sourceEntityId, brep.id);
+    expect(reference.faceIndex, greaterThan(0));
+  });
 
   test(
     'STEP Redo parses a coherent invalid appearance from durable history',

@@ -57,6 +57,7 @@ private:
     std::string id;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<std::pair<uint32_t, uint32_t>> face_triangle_ranges;
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> index_buffer;
     std::vector<Vertex> display_edges;
@@ -69,10 +70,21 @@ private:
     bool selected = false;
     float root_srgb[3]{.30f, .50f, .68f};
   };
+  struct ManagedFaceHighlight {
+    std::string entity_id;
+    uint32_t first_triangle = 0;
+    uint32_t triangle_count = 0;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> boundary_buffer;
+    uint32_t boundary_vertex_count = 0;
+    bool valid() const {
+      return !entity_id.empty() && triangle_count > 0;
+    }
+  };
   struct Constants {
     float matrix[16];
     float color[4];
     uint32_t pick[4]{};
+    uint32_t managed_face[4]{};
     float normal_view[16];
   };
 
@@ -97,6 +109,9 @@ private:
   void CreatePipeline();
   void CreateTarget(uint32_t width, uint32_t height);
   void Upload(SceneEntity& entity);
+  void SetManagedFaceHighlight(ManagedFaceHighlight &highlight,
+                               const std::string &entity_id,
+                               uint32_t presentation_sub_id);
   const FlutterDesktopGpuSurfaceDescriptor* SurfaceDescriptor(size_t width,
                                                                size_t height);
 
@@ -143,6 +158,8 @@ private:
   uint32_t operational_selection_index_count_ = 0;
   std::unordered_map<std::string, SceneEntity> entities_;
   PickResult hover_;
+  ManagedFaceHighlight managed_face_hover_;
+  ManagedFaceHighlight managed_face_selection_;
   FlutterDesktopGpuSurfaceDescriptor surface_descriptor_{};
   uint32_t width_ = 1, height_ = 1;
   uint32_t render_style_ = 0;

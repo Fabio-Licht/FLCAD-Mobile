@@ -440,6 +440,23 @@ final class ManagedNativeShape {
     }
   }
 
+  Future<Map<String, dynamic>> inspectManagedCadFace(
+    OpenCascadeKernelAdapter kernel,
+    int presentationTriangleId,
+  ) => withLease((lease) async {
+    final bridge = kernel._nativeBridge;
+    if (bridge is! OpenCascadeManagedCadReferenceNativeBridge) {
+      throw UnsupportedError(
+        'Managed CAD face inspection is unavailable in this kernel host',
+      );
+    }
+    return (bridge as OpenCascadeManagedCadReferenceNativeBridge)
+        .inspectManagedCadFace(
+          lease._record.identity._token,
+          presentationTriangleId,
+        );
+  });
+
   ManagedNativeShape transfer() {
     if (_transferred || _disposal != null) {
       throw StateError('Managed shape is unavailable');

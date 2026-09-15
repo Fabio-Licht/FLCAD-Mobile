@@ -85,6 +85,7 @@ class CadDocumentEntity {
           data['format'] != 'step' ||
           data['sceneKind'] != 'mesh' ||
           data['name'] is! String ||
+          (data.containsKey('sceneVisible') && data['sceneVisible'] is! bool) ||
           _hasStepTransientData(data) ||
           data.keys.any(
             (k) => !const {
@@ -94,6 +95,7 @@ class CadDocumentEntity {
               'sceneKind',
               'managedStepAssets',
               'featureLifecycle',
+              'sceneVisible',
             }.contains(k),
           )) {
         throw const FormatException('Invalid managed STEP document entity');

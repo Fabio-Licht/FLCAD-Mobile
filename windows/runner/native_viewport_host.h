@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -29,6 +30,15 @@ public:
   NativeViewportHost &operator=(const NativeViewportHost &) = delete;
 
 private:
+  struct SurfaceState {
+    std::mutex mutex;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    FlutterDesktopGpuSurfaceDescriptor descriptor{};
+    std::function<void(size_t, size_t)> on_callback;
+    const FlutterDesktopGpuSurfaceDescriptor *Describe(size_t width,
+                                                       size_t height);
+  };
+  std::shared_ptr<SurfaceState> surface_state_;
   struct Vertex {
     float x, y, z, nx, ny, nz;
   };
@@ -56,6 +66,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> edge_buffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> point_buffer;
     bool visible = true;
+    bool selected = false;
     float root_srgb[3]{.30f, .50f, .68f};
   };
   struct Constants {
@@ -69,7 +80,7 @@ private:
                     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   void Initialize(uint32_t width, uint32_t height);
   void Resize(uint32_t width, uint32_t height);
-  void Shutdown();
+  void Shutdown(std::function<void()> completed = {});
   void ApplySnapshot(const flutter::EncodableMap& snapshot, bool replace);
   void RemoveEntity(const std::string& id);
   void Render();
@@ -143,14 +154,15 @@ private:
   uint64_t constant_buffer_updates_ = 0;
   uint64_t draw_indexed_calls_ = 0;
   uint64_t fit_calls_ = 0;
+  int64_t scene_revision_ = 0;
   std::atomic<uint64_t> texture_callbacks_{0};
   uint64_t callback_window_count_ = 0;
-  double texture_callback_hz_ = 0;
+  std::atomic<double> texture_callback_hz_{0};
   std::chrono::steady_clock::time_point callback_metric_start_{};
   std::atomic<uint64_t> frame_marks_{0};
   std::atomic<uint64_t> successful_frame_marks_{0};
-  size_t last_requested_width_ = 0;
-  size_t last_requested_height_ = 0;
+  std::atomic<size_t> last_requested_width_{0};
+  std::atomic<size_t> last_requested_height_{0};
   bool texture_registered_ = false;
   uint32_t sampled_bgra_ = 0;
   uint32_t sampled_clear_bgra_ = 0;

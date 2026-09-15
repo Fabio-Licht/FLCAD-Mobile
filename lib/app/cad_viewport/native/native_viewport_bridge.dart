@@ -12,6 +12,106 @@ import '../camera/cad_camera_controller.dart';
 
 enum ViewportBackend { flutterCanvas, nativeGpu }
 
+/// Viewport chrome/reference presentation stays in Flutter above the native
+/// texture. It is not CAD geometry and therefore cannot affect backend
+/// eligibility or be published to the triangle renderer.
+bool isNativeViewportOverlay(CadSceneEntity entity) => switch (entity.kind) {
+  CadSceneEntityKind.gizmo ||
+  CadSceneEntityKind.axis ||
+  CadSceneEntityKind.plane ||
+  CadSceneEntityKind.coordinateSystem => true,
+  CadSceneEntityKind.point =>
+    entity.geometry['type'] == 'point' || entity.id.contains(':world:'),
+  _ => false,
+};
+
+String _nativeCadCategory(CadSceneEntityKind kind) => switch (kind) {
+  CadSceneEntityKind.mesh => 'malha CAD',
+  CadSceneEntityKind.sketch => 'sketch CAD',
+  CadSceneEntityKind.curve => 'curva CAD',
+  CadSceneEntityKind.surface => 'superfície CAD',
+  CadSceneEntityKind.solid => 'sólido CAD',
+  CadSceneEntityKind.preview => 'pré-visualização CAD',
+  CadSceneEntityKind.point => 'ponto CAD',
+  _ => 'entidade CAD',
+};
+
+final Expando<
+  ({Object nodes, Object triangles, Object? normals, String? issue})
+>
+_nativePayloadValidation = Expando('native-payload-validation');
+
+String? _nativePayloadIssue(Map<String, dynamic> geometry) {
+  final nodes = geometry['nodes'];
+  final triangles = geometry['triangles'];
+  final normals = geometry['normals'];
+  if (nodes is! List ||
+      triangles is! List ||
+      nodes.isEmpty ||
+      triangles.isEmpty ||
+      nodes.length % 3 != 0 ||
+      triangles.length % 3 != 0) {
+    return 'malha triangular ausente ou com dimensões inválidas';
+  }
+  final cached = _nativePayloadValidation[geometry];
+  if (cached != null &&
+      identical(cached.nodes, nodes) &&
+      identical(cached.triangles, triangles) &&
+      identical(cached.normals, normals)) {
+    return cached.issue;
+  }
+  String? issue;
+  if (nodes.any((value) => value is! num || !value.isFinite)) {
+    issue = 'nodes contêm coordenadas não finitas';
+  } else if (triangles.any((value) {
+    if (value is! num || !value.isFinite) return true;
+    final index = value.toInt();
+    return value != index || index < 0 || index >= nodes.length ~/ 3;
+  })) {
+    issue = 'indices triangulares estão fora do intervalo de nodes';
+  } else if (normals != null &&
+      (normals is! List ||
+          normals.length != nodes.length ||
+          normals.any((value) => value is! num || !value.isFinite))) {
+    issue = 'normals estão ausentes, desalinhadas ou não finitas';
+  }
+  _nativePayloadValidation[geometry] = (
+    nodes: nodes,
+    triangles: triangles,
+    normals: normals,
+    issue: issue,
+  );
+  return issue;
+}
+
+/// Eligibility is evaluated only for real visible CAD geometry before
+/// encoding. Flutter overlays are deliberately outside this policy.
+String? nativeSceneUnsupportedReason(
+  CadSceneGraph scene, {
+  required int style,
+}) {
+  for (final entity in scene.entities.where(
+    (e) => e.visible && !isNativeViewportOverlay(e),
+  )) {
+    final category = _nativeCadCategory(entity.kind);
+    final geometry = cadPresentationGeometry(entity.geometry);
+    final payloadIssue = _nativePayloadIssue(geometry);
+    if (payloadIssue != null) {
+      return 'Payload Native GPU inválido para $category: $payloadIssue.';
+    }
+    if ((style == 1 || style == 2) && geometry['topologicalEdges'] is! List) {
+      return '$category sem arestas topológicas CAD para este modo.';
+    }
+    try {
+      StlDisplayLod.preflight(geometry);
+      cadRootSrgb(entity.geometry);
+    } on FormatException {
+      return 'Contrato de display Native GPU inválido para $category.';
+    }
+  }
+  return null;
+}
+
 enum NativePickKind { none, face, edge, vertex }
 
 @immutable
@@ -120,12 +220,21 @@ class CadSceneDisplayAdapter {
   final Map<String, (bool, bool)> _displayState = {};
   int _revision = 0;
 
+  void clear() {
+    _geometryIdentity.clear();
+    _displayState.clear();
+  }
+
+  @visibleForTesting
+  int get retainedGeometryCount => _geometryIdentity.length;
+
   DisplaySnapshot initial(CadSceneGraph scene) {
     _geometryIdentity.clear();
     _displayState.clear();
     return DisplaySnapshot(
       revision: ++_revision,
       entities: scene.entities
+          .where((entity) => !isNativeViewportOverlay(entity))
           .map((entity) => _encode(entity, includeGeometry: true))
           .whereType<Map<String, Object?>>()
           .toList(),
@@ -135,13 +244,11 @@ class CadSceneDisplayAdapter {
   DisplaySnapshot delta(CadSceneGraph scene) {
     final changed = <Map<String, Object?>>[];
     final live = <String>{};
-    for (final entity in scene.entities) {
+    for (final entity in scene.entities.where(
+      (entity) => !isNativeViewportOverlay(entity),
+    )) {
       live.add(entity.id);
-      final geometry = entity.geometry;
-      final geometryChanged = !identical(
-        _geometryIdentity[entity.id],
-        geometry,
-      );
+      final geometryChanged = _geometryIdentity[entity.id] != _identity(entity);
       final displayChanged =
           _displayState[entity.id] != (entity.visible, entity.selected);
       if (geometryChanged || displayChanged) {
@@ -167,10 +274,15 @@ class CadSceneDisplayAdapter {
     CadSceneEntity entity, {
     required bool includeGeometry,
   }) {
-    _geometryIdentity[entity.id] = entity.geometry;
+    if (isNativeViewportOverlay(entity)) return null;
+    if (!entity.visible && !_geometryIdentity.containsKey(entity.id)) {
+      return null;
+    }
+    _geometryIdentity[entity.id] = _identity(entity);
     _displayState[entity.id] = (entity.visible, entity.selected);
-    final nodes = entity.geometry['nodes'];
-    final triangles = entity.geometry['triangles'];
+    final presentation = cadPresentationGeometry(entity.geometry);
+    final nodes = presentation['nodes'];
+    final triangles = presentation['triangles'];
     if (nodes is! List || triangles is! List) return null;
     final result = <String, Object?>{
       'id': entity.id,
@@ -179,7 +291,6 @@ class CadSceneDisplayAdapter {
       'selected': entity.selected,
     };
     if (includeGeometry) {
-      final presentation = cadPresentationGeometry(entity.geometry);
       StlDisplayLod.preflight(presentation);
       if (StlDisplayLod.simplified(presentation)) {
         // Native LOD already carries indexed vertices and winding normals.
@@ -201,12 +312,24 @@ class CadSceneDisplayAdapter {
         (presentation['triangles'] as List).length,
         (i) => i,
       );
-      final edges = entity.geometry['topologicalEdges'];
+      final edges = presentation['topologicalEdges'];
       if (edges is List) result['topologicalEdges'] = edges;
       final rgb = cadRootSrgb(entity.geometry);
       if (rgb != null) result['rootSrgb'] = rgb;
     }
     return result;
+  }
+
+  Object _identity(CadSceneEntity entity) {
+    final geometry = cadPresentationGeometry(entity.geometry);
+    final rgb = entity.geometry['rootLinearRgb'];
+    return (
+      geometry['nodes'],
+      geometry['triangles'],
+      geometry['normals'],
+      geometry['topologicalEdges'],
+      rgb is List && rgb.length == 3 ? (rgb[0], rgb[1], rgb[2]) : null,
+    );
   }
 }
 
@@ -218,16 +341,82 @@ class NativeViewportBridge extends ChangeNotifier {
   bool available = false;
   NativeViewportStats stats = const NativeViewportStats();
   Timer? _statsTimer;
+  bool _disposed = false;
+  int _generation = 0;
+  Future<void>? _shutdown;
+  Future<void>? _publishing;
+  CadSceneGraph? _pendingScene;
+  bool _replacePending = false;
+  int acknowledgedSceneRevision = 0;
+  Future<void>? _cameraDelivery;
+  CadCameraController? _pendingCamera;
+  // The channel/host belongs to the window, including across widget rebuilds.
+  static Future<void>? _hostDrain;
+  static NativeViewportBridge? _hostOwner;
+
+  void _failed() {
+    if (_disposed) return;
+    available = false;
+    _statsTimer?.cancel();
+    notifyListeners();
+  }
+
+  /// Drain the channel before permitting Canvas to allocate its display cache.
+  Future<void> deactivate() {
+    if (_shutdown != null) return _shutdown!;
+    final ownsHost = identical(_hostOwner, this);
+    ++_generation;
+    available = false;
+    _statsTimer?.cancel();
+    adapter.clear();
+    _pendingScene = null;
+    _replacePending = false;
+    _pendingCamera = null;
+    textureId = null;
+    if (!ownsHost) return Future<void>.value();
+    _hostOwner = null;
+    final closing = (_hostDrain ?? Future<void>.value()).then((_) async {
+      await _publishing;
+      await _cameraDelivery;
+      try {
+        await _channel.invokeMethod<void>('shutdown');
+      } on PlatformException {
+        // The failed host may already be gone. No scene authority is affected.
+      } on MissingPluginException {
+        // No host was installed (tests or unsupported platform).
+      }
+    });
+    late final Future<void> drained;
+    drained = closing.whenComplete(() {
+      _shutdown = null;
+      if (identical(_hostDrain, drained)) _hostDrain = null;
+    });
+    _shutdown = drained;
+    _hostDrain = _shutdown!;
+    return _shutdown!;
+  }
 
   Future<bool> initialize(double width, double height) async {
     if (!Platform.isWindows) return false;
+    await _hostDrain;
+    if (_disposed) return false;
+    final previous = _hostOwner;
+    if (previous != null && !identical(previous, this)) {
+      await previous.deactivate();
+    }
+    if (_disposed) return false;
+    final generation = ++_generation;
+    _hostOwner = this;
     try {
-      textureId = await _channel.invokeMethod<int>('initialize', {
-        'width': width.round().clamp(1, 16384),
-        'height': height.round().clamp(1, 16384),
-      });
+      final initializedTextureId = await _channel
+          .invokeMethod<int>('initialize', {
+            'width': width.round().clamp(1, 16384),
+            'height': height.round().clamp(1, 16384),
+          });
+      if (_disposed || generation != _generation) return false;
+      textureId = initializedTextureId;
       available = textureId != null && textureId! >= 0;
-      if (available && kDebugMode) {
+      if (available) {
         _statsTimer = Timer.periodic(
           const Duration(seconds: 1),
           (_) => refreshStats(),
@@ -236,8 +425,10 @@ class NativeViewportBridge extends ChangeNotifier {
       notifyListeners();
       return available;
     } on PlatformException {
-      available = false;
-      notifyListeners();
+      if (generation == _generation) _failed();
+      return false;
+    } on MissingPluginException {
+      if (generation == _generation) _failed();
       return false;
     }
   }
@@ -247,10 +438,59 @@ class NativeViewportBridge extends ChangeNotifier {
     'height': height.round().clamp(1, 16384),
   });
   Future<void> sendInitial(CadSceneGraph scene) =>
-      _invoke('snapshot', adapter.initial(scene).toMessage());
-  Future<void> sendDelta(CadSceneGraph scene) async {
-    final value = adapter.delta(scene);
-    if (value.entities.isNotEmpty) await _invoke('delta', value.toMessage());
+      _publish(scene, replace: true);
+  Future<void> sendDelta(CadSceneGraph scene) =>
+      _publish(scene, replace: false);
+
+  Future<void> _publish(CadSceneGraph scene, {required bool replace}) {
+    if (!available || _disposed) return Future<void>.value();
+    _pendingScene = scene;
+    _replacePending |= replace;
+    if (_publishing != null) return _publishing!;
+    final generation = _generation;
+    // One call in flight; intervening visibility changes coalesce before encode.
+    late final Future<void> draining;
+    draining =
+        Future<void>.microtask(() async {
+          while (available &&
+              !_disposed &&
+              generation == _generation &&
+              _pendingScene != null) {
+            final next = _pendingScene!;
+            final replace = _replacePending;
+            _pendingScene = null;
+            _replacePending = false;
+            if (nativeSceneUnsupportedReason(next, style: renderStyle) !=
+                null) {
+              _failed();
+              break;
+            }
+            final snapshot = replace
+                ? adapter.initial(next)
+                : adapter.delta(next);
+            if (snapshot.entities.isEmpty) continue;
+            try {
+              final ack = await _channel.invokeMethod<int>(
+                replace ? 'snapshot' : 'delta',
+                snapshot.toMessage(),
+              );
+              if (!_disposed &&
+                  available &&
+                  generation == _generation &&
+                  ack == snapshot.revision) {
+                acknowledgedSceneRevision = ack!;
+              }
+            } on PlatformException {
+              if (generation == _generation) _failed();
+            } on MissingPluginException {
+              if (generation == _generation) _failed();
+            }
+          }
+        }).whenComplete(() {
+          if (identical(_publishing, draining)) _publishing = null;
+        });
+    _publishing = draining;
+    return draining;
   }
 
   Future<void> orbit(double dx, double dy) =>
@@ -283,11 +523,13 @@ class NativeViewportBridge extends ChangeNotifier {
       _invoke('clearOperationalSelection');
   Future<NativeViewportPick?> pick(double x, double y) async {
     if (!available) return null;
+    final generation = _generation;
     try {
       final value = await _channel.invokeMapMethod<Object?, Object?>('pick', {
         'x': x.round(),
         'y': y.round(),
       });
+      if (_disposed || !available || generation != _generation) return null;
       if (value == null || value['entityId'] is! String) return null;
       final rawPoint = value['point'] as List<Object?>? ?? const [];
       return NativeViewportPick(
@@ -300,55 +542,96 @@ class NativeViewportBridge extends ChangeNotifier {
             .toList(growable: false),
       );
     } on PlatformException {
+      if (generation == _generation) _failed();
+      return null;
+    } on MissingPluginException {
+      if (generation == _generation) _failed();
       return null;
     }
   }
 
-  Future<void> setCamera(CadCameraController camera) => _invoke('setCamera', {
-    'renderStyle': renderStyle,
-    'eye': [
-      camera.presentationEye.x,
-      camera.presentationEye.y,
-      camera.presentationEye.z,
-    ],
-    'target': [
-      camera.presentationTarget.x,
-      camera.presentationTarget.y,
-      camera.presentationTarget.z,
-    ],
-    'up': [camera.up.x, camera.up.y, camera.up.z],
-    'fov': camera.fieldOfViewRadians,
-    'near': camera.nearPlane,
-    'far': camera.farPlane,
-    'projectionMode': camera.projectionMode.name,
-    'orthographicHeight': camera.orthographicHeight,
-    'panOffsetX': camera.presentationOffsetNdcX,
-    'panOffsetY': camera.presentationOffsetNdcY,
-  });
+  Future<void> setCamera(CadCameraController camera) {
+    if (!available || _disposed) return Future<void>.value();
+    _pendingCamera = camera;
+    if (_cameraDelivery != null) return _cameraDelivery!;
+    final generation = _generation;
+    late final Future<void> delivery;
+    delivery =
+        Future<void>.microtask(() async {
+          while (available &&
+              !_disposed &&
+              generation == _generation &&
+              _pendingCamera != null) {
+            final next = _pendingCamera!;
+            _pendingCamera = null;
+            await _deliverCamera(next);
+          }
+        }).whenComplete(() {
+          if (identical(_cameraDelivery, delivery)) _cameraDelivery = null;
+        });
+    _cameraDelivery = delivery;
+    return delivery;
+  }
+
+  Future<void> _deliverCamera(CadCameraController camera) =>
+      _invoke('setCamera', {
+        'renderStyle': renderStyle,
+        'eye': [
+          camera.presentationEye.x,
+          camera.presentationEye.y,
+          camera.presentationEye.z,
+        ],
+        'target': [
+          camera.presentationTarget.x,
+          camera.presentationTarget.y,
+          camera.presentationTarget.z,
+        ],
+        'up': [camera.up.x, camera.up.y, camera.up.z],
+        'fov': camera.fieldOfViewRadians,
+        'near': camera.nearPlane,
+        'far': camera.farPlane,
+        'projectionMode': camera.projectionMode.name,
+        'orthographicHeight': camera.orthographicHeight,
+        'panOffsetX': camera.presentationOffsetNdcX,
+        'panOffsetY': camera.presentationOffsetNdcY,
+      });
 
   Future<void> refreshStats() async {
     if (!available) return;
-    final value = await _channel.invokeMapMethod<Object?, Object?>('stats');
-    if (value != null) {
-      stats = NativeViewportStats.fromMap(value);
-      notifyListeners();
+    final generation = _generation;
+    try {
+      final value = await _channel.invokeMapMethod<Object?, Object?>('stats');
+      if (!_disposed &&
+          available &&
+          generation == _generation &&
+          value != null) {
+        stats = NativeViewportStats.fromMap(value);
+        notifyListeners();
+      }
+    } on PlatformException {
+      if (generation == _generation) _failed();
+    } on MissingPluginException {
+      if (generation == _generation) _failed();
     }
   }
 
   Future<void> _invoke(String method, [Map<String, Object?>? arguments]) async {
-    if (!available) return;
+    if (!available || _disposed) return;
+    final generation = _generation;
     try {
       await _channel.invokeMethod<void>(method, arguments);
     } on PlatformException {
-      available = false;
-      notifyListeners();
+      if (generation == _generation) _failed();
+    } on MissingPluginException {
+      if (generation == _generation) _failed();
     }
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _statsTimer?.cancel();
-    if (available) _channel.invokeMethod<void>('shutdown');
+    unawaited(deactivate());
     super.dispose();
   }
 }

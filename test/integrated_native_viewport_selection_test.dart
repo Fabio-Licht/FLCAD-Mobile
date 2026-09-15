@@ -117,7 +117,10 @@ class _Fixture {
       const CadSceneEntity(
         id: 'b',
         kind: CadSceneEntityKind.solid,
-        geometry: {},
+        geometry: {
+          'nodes': [3.0, -2.0, 0.0, 7.0, -2.0, 0.0, 3.0, 2.0, 0.0],
+          'triangles': [0, 1, 2],
+        },
       ),
     );
 
@@ -332,7 +335,7 @@ void main() {
     final f = _Fixture();
     await f.mount(tester);
     await tester.tap(find.text('Flutter Canvas'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     await tap(tester);
     expect(f.bridge.positions, isEmpty);
     expect(f.selection.calls, 0);

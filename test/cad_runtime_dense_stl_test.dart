@@ -181,7 +181,50 @@ void main() {
         expect(durableTriangles, external == null ? 259200 : 1956958);
         expect(durableSize, 84 + durableTriangles * 50);
         final before = runtime.scene.find(entity.id)!.geometry;
+        final visibilityAdapter = CadSceneDisplayAdapter();
+        visibilityAdapter.initial(runtime.scene);
+        final ownersBeforeVisibility = adapter.custodyDiagnostics!.allocations;
+        for (final visible in [false, true, false, true]) {
+          await runtime.setEntityVisibility(entity.id, visible);
+          expect(runtime.scene.find(entity.id)!.visible, visible);
+          expect(
+            identical(runtime.scene.find(entity.id)!.geometry, before),
+            isTrue,
+          );
+          final delta = visibilityAdapter.delta(runtime.scene);
+          expect(delta.entities.single['visible'], visible);
+          expect(delta.entities.single.containsKey('nodes'), isFalse);
+          expect(
+            adapter.custodyDiagnostics!.allocations,
+            ownersBeforeVisibility,
+          );
+          expect(adapter.custodyDiagnostics!.leases, 0);
+        }
+        for (var i = 0; i < 4; i++) {
+          await runtime.undoDocument();
+          expect(
+            identical(runtime.scene.find(entity.id)!.geometry, before),
+            isTrue,
+          );
+        }
         StlDisplayLod.preflight(before);
+        expect(runtime.scene.find(entity.id)!.visible, isTrue);
+        expect(before['nodes'], isA<List>());
+        expect(before['triangles'], isA<List>());
+        expect(before['normals'], isA<List>());
+        expect(
+          (before['nodes'] as List),
+          hasLength((before['normals'] as List).length),
+        );
+        expect(
+          (before['triangles'] as List).every(
+            (index) =>
+                index is int &&
+                index >= 0 &&
+                index < (before['nodes'] as List).length ~/ 3,
+          ),
+          isTrue,
+        );
         final lod = before['presentationLod'] as Map;
         expect(lod['originalTriangles'], external == null ? 259200 : 1956958);
         expect(
@@ -193,6 +236,8 @@ void main() {
           lessThanOrEqualTo(StlDisplayLod.maxVertices),
         );
         final display = jsonEncode(before);
+        // Default viewport references remain Flutter overlays and must not
+        // contaminate the STL CAD backend decision or native payload.
         final snapshot = CadSceneDisplayAdapter().initial(runtime.scene);
         expect(
           (snapshot.entities.firstWhere(
@@ -213,6 +258,28 @@ void main() {
               return null;
             });
         final viewport = NativeViewportBridge()..available = true;
+        final eligibility = nativeSceneUnsupportedReason(
+          runtime.scene,
+          style: 0,
+        );
+        stdout.writeln(
+          'native-stl eligibility id=${entity.id} kind=${runtime.scene.find(entity.id)!.kind.name} '
+          'visible=${runtime.scene.find(entity.id)!.visible} '
+          'nodes=${(before['nodes'] as List).length} '
+          'triangles-as-indices=${(before['triangles'] as List).length} '
+          'normals=${(before['normals'] as List).length} '
+          'result=${eligibility ?? 'native-approved'}',
+        );
+        expect(
+          eligibility,
+          isNull,
+          reason: runtime.scene.entities
+              .map(
+                (e) =>
+                    '${e.kind.name}:visible=${e.visible}:nodes=${(e.geometry['nodes'] as List?)?.length}:faces=${(e.geometry['triangles'] as List?)?.length}',
+              )
+              .join(';'),
+        );
         await viewport.sendInitial(runtime.scene);
         expect(delivered, isNotNull);
         final hostEntity = (delivered!['entities'] as List)
@@ -227,6 +294,8 @@ void main() {
           (lod['displayTriangles'] as int) * 3,
         );
         expect(hostEntity['presentationLod'], isNotNull);
+        expect(hostEntity['visible'], isTrue);
+        expect(hostEntity['kind'], 'mesh');
         final methodBytes = const StandardMethodCodec().encodeMethodCall(
           MethodCall('snapshot', delivered),
         );

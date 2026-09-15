@@ -10,8 +10,8 @@
 #include <cstring>
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <flutter/standard_method_codec.h>
 #include <flutter/standard_message_codec.h>
+#include <flutter/standard_method_codec.h>
 #include <flutter/texture_registrar.h>
 #include <fstream>
 #include <iostream>
@@ -33,6 +33,22 @@ struct TestMessenger : flutter::BinaryMessenger {
             flutter::BinaryReply = nullptr) const override {}
   void SetMessageHandler(const std::string &,
                          flutter::BinaryMessageHandler) override {}
+};
+
+struct GatedRegistrar : flutter::TextureRegistrar {
+  flutter::TextureVariant *texture = nullptr;
+  std::function<void()> pending;
+  int64_t RegisterTexture(flutter::TextureVariant *value) override {
+    texture = value;
+    return 1;
+  }
+  bool MarkTextureFrameAvailable(int64_t) override { return true; }
+  bool UnregisterTexture(int64_t) override {
+    throw std::runtime_error("Synchronous retirement used");
+  }
+  void UnregisterTexture(int64_t, std::function<void()> callback) override {
+    pending = callback;
+  }
 };
 
 void Require(bool value, const char *reason) {
@@ -65,6 +81,26 @@ std::vector<uint32_t> Pixels(NativeViewportHost &host) {
 int main(int argc, char **argv) {
   try {
     TestMessenger messenger;
+    GatedRegistrar registrar;
+    {
+      auto retiring =
+          std::make_unique<NativeViewportHost>(&messenger, &registrar);
+      retiring->Initialize(32, 32);
+      auto surface = retiring->surface_state_;
+      bool completed = false;
+      retiring->Shutdown([&] { completed = true; });
+      Require(!completed && registrar.pending,
+              "Shutdown did not wait for unregister completion");
+      retiring.reset();
+      Require(surface->Describe(32, 32) == nullptr,
+              "Retired callback reached destroyed host/resources");
+      Require(std::get_if<flutter::GpuSurfaceTexture>(registrar.texture) !=
+                  nullptr,
+              "Texture variant destroyed before unregister completion");
+      registrar.pending();
+      Require(completed, "Shutdown completion missing");
+      registrar.pending = {};
+    }
     NativeViewportHost host(&messenger, nullptr);
     host.CreateDevice();
     host.CreatePipeline();
@@ -133,14 +169,20 @@ int main(int argc, char **argv) {
         const size_t i = 128 * 256 + x;
         const double before = shaded[i] & 255;
         const double after = edged[i] & 255;
-        if (before > 5) effective_row_width += std::clamp((before-after)/(before-5),0.0,1.0);
+        if (before > 5)
+          effective_row_width +=
+              std::clamp((before - after) / (before - 5), 0.0, 1.0);
       }
-      if (step == 0) std::cout << "CAD two-contour effective width=" << effective_row_width << '\n';
-      Require(effective_row_width > .8 && effective_row_width <= 2.5,
-              "CAD contour exceeds 1.25 screen pixels including alpha coverage");
+      if (step == 0)
+        std::cout << "CAD two-contour effective width=" << effective_row_width
+                  << '\n';
+      Require(
+          effective_row_width > .8 && effective_row_width <= 2.5,
+          "CAD contour exceeds 1.25 screen pixels including alpha coverage");
       Require(changed > 150 && changed < 4000,
               "edge pass missing or covering shaded surface");
-      Require(black_edges > 50, "CAD contours do not darken the bright material");
+      Require(black_edges > 50,
+              "CAD contours do not darken the bright material");
       // An opaque operational selection must leave the CAD contours readable.
       const uint32_t selected_indices[] = {0, 1, 2};
       D3D11_BUFFER_DESC selection_desc{};
@@ -148,9 +190,10 @@ int main(int argc, char **argv) {
       selection_desc.Usage = D3D11_USAGE_IMMUTABLE;
       selection_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
       D3D11_SUBRESOURCE_DATA selection_source{selected_indices};
-      Check(host.device_->CreateBuffer(&selection_desc, &selection_source,
-                                       &host.operational_selection_index_buffer_),
-            "selection index buffer");
+      Check(
+          host.device_->CreateBuffer(&selection_desc, &selection_source,
+                                     &host.operational_selection_index_buffer_),
+          "selection index buffer");
       host.operational_selection_index_count_ = 3;
       host.operational_selection_entity_id_ = "fixture";
       host.render_style_ = 0;
@@ -165,8 +208,7 @@ int main(int argc, char **argv) {
             (selected[i] & 255) < (selected_fill[i] & 255) * .75)
           ++selected_black_edges;
       }
-      Require(selected_black_edges > 50,
-              "selection obscured normal CAD edges");
+      Require(selected_black_edges > 50, "selection obscured normal CAD edges");
       host.operational_selection_index_buffer_.Reset();
       host.operational_selection_index_count_ = 0;
       host.operational_selection_entity_id_.clear();
@@ -178,6 +220,19 @@ int main(int argc, char **argv) {
       Require(std::count_if(wire.begin(), wire.end(),
                             [&](uint32_t p) { return p != wire[0]; }) > 50,
               "wireframe edges are absent");
+      host.operational_selection_entity_id_ = host.entities_.begin()->first;
+      host.operational_selection_index_buffer_ =
+          host.entities_.begin()->second.index_buffer;
+      host.operational_selection_index_count_ =
+          host.entities_.begin()->second.indices.size();
+      host.Render();
+      const auto selected_wire = Pixels(host);
+      Require(selected_wire[128 * 256 + 128] == selected_wire[0],
+              "wireframe selection published a filled surface");
+      Require(selected_wire != wire, "wireframe selection lost its contour");
+      host.operational_selection_index_buffer_.Reset();
+      host.operational_selection_index_count_ = 0;
+      host.operational_selection_entity_id_.clear();
       // A back-oriented surface retains ambient; no normal flipping allowed.
       auto &resident = host.entities_.begin()->second;
       for (auto &vertex : resident.vertices) {
@@ -196,6 +251,16 @@ int main(int argc, char **argv) {
       Require(((ambient >> 16) & 255) >= 30 && (ambient & 255) >= 70,
               "oriented back surface lost bounded ambient light");
       Require(ambient != center, "normal orientation was silently inverted");
+      resident.selected = true;
+      host.Render();
+      const auto selected_pixels = Pixels(host);
+      Require(selected_pixels != ambient_pixels,
+              "Entity selection is absent on native backend");
+      host.render_style_ = 3;
+      host.Render();
+      Require(Pixels(host) != selected_pixels,
+              "Selected entity lost transparency");
+      resident.selected = false;
     }
     if (argc > 1) {
       // A bounded presentation snapshot produced by the real CAF runtime test;
@@ -251,6 +316,72 @@ int main(int argc, char **argv) {
                 << resident.vertices.size()
                 << " triangles=" << resident.indices.size() / 3 << " passed\n";
     }
+    host.render_style_ = 3;
+    NativeViewportHost::SceneEntity cad_fixture;
+    cad_fixture.id = "step-fixture";
+    cad_fixture.vertices = {
+        {-1, -1, 0, 0, 0, 1}, {1, -1, 0, 0, 0, 1}, {0, 1, 0, 0, 0, 1}};
+    cad_fixture.indices = {0, 1, 2};
+    host.Upload(cad_fixture);
+    host.entities_[cad_fixture.id] = std::move(cad_fixture);
+    Require(host.entities_.size() == 2, "Mixed scene lost a native entity");
+    for (auto &[id, entity] : host.entities_) {
+      const auto vertex_buffer = entity.vertex_buffer.Get();
+      const auto index_buffer = entity.index_buffer.Get();
+      for (const bool visible : {false, true}) {
+        const auto revision = host.scene_revision_ + 1;
+        host.ApplySnapshot({{flutter::EncodableValue("revision"),
+                             flutter::EncodableValue(revision)},
+                            {flutter::EncodableValue("entities"),
+                             flutter::EncodableValue(flutter::EncodableList{
+                                 flutter::EncodableValue(flutter::EncodableMap{
+                                     {flutter::EncodableValue("id"),
+                                      flutter::EncodableValue(id)},
+                                     {flutter::EncodableValue("visible"),
+                                      flutter::EncodableValue(visible)}})})}},
+                           false);
+        Require(entity.visible == visible &&
+                    entity.vertex_buffer.Get() == vertex_buffer &&
+                    entity.index_buffer.Get() == index_buffer,
+                "Hide/Show recreated native geometry buffers");
+      }
+      const auto renders = host.render_calls_;
+      host.ApplySnapshot({{flutter::EncodableValue("revision"),
+                           flutter::EncodableValue(host.scene_revision_ - 1)},
+                          {flutter::EncodableValue("entities"),
+                           flutter::EncodableValue(flutter::EncodableList{
+                               flutter::EncodableValue(flutter::EncodableMap{
+                                   {flutter::EncodableValue("id"),
+                                    flutter::EncodableValue(id)},
+                                   {flutter::EncodableValue("visible"),
+                                    flutter::EncodableValue(false)}})})}},
+                         false);
+      Require(entity.visible && host.render_calls_ == renders,
+              "Late visibility revision changed/rendered the scene");
+    }
+    host.Render();
+    const auto translucent = Pixels(host);
+    host.render_style_ = 0;
+    host.Render();
+    Require(translucent != Pixels(host),
+            "Native transparency did not change composition");
+    for (int cycle = 0; cycle < 3; ++cycle) {
+      host.Shutdown();
+      Require(host.entities_.empty() && !host.device_ && !host.context_ &&
+                  !host.pick_texture_ && !host.pick_readback_ &&
+                  !host.pick_target_ && !host.constants_ &&
+                  !host.vertex_shader_ &&
+                  !host.operational_selection_index_buffer_ &&
+                  !host.operational_hover_index_buffer_,
+              "Inactive native backend retains visual resources");
+      host.CreateDevice();
+      host.CreatePipeline();
+      host.CreateTarget(256, 256);
+      Require(host.entities_.empty() && host.device_ && host.target_view_,
+              "Native backend could not restart cleanly");
+    }
+    std::cout << "D3D11: transparency and three complete shutdown/reinitialize "
+                 "cycles passed\n";
     std::cout << "D3D11: 12 rigid orientations, shaded/edges/wireframe, "
                  "ambient passed\n";
     return 0;

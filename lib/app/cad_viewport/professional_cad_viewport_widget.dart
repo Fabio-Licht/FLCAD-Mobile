@@ -43,6 +43,7 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
     this.renderMeshes = true,
     this.paintBackground = true,
     this.enablePicking = true,
+    this.enableEntityHover = true,
     this.onNavigationChanged,
     this.showNavigationDebug = false,
     this.renderStyle,
@@ -71,6 +72,7 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
   final bool renderMeshes;
   final bool paintBackground;
   final bool enablePicking;
+  final bool enableEntityHover;
   final ValueChanged<bool>? onNavigationChanged;
   final bool showNavigationDebug;
   final CadRenderStyle? renderStyle;
@@ -120,15 +122,26 @@ class _ProfessionalCadViewportWidgetState
   @override
   void initState() {
     super.initState();
+    picking.copyMeshArrays = widget.renderMeshes;
+    widget.scene.addListener(_synchronizePicking);
     navigation = _createNavigationEngine();
   }
 
   @override
   void didUpdateWidget(covariant ProfessionalCadViewportWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    picking.copyMeshArrays = widget.renderMeshes;
+    if (!widget.renderMeshes) {
+      meshRenderCaches.clear();
+    }
     if (oldWidget.camera != widget.camera || oldWidget.scene != widget.scene) {
       navigation.dispose();
       navigation = _createNavigationEngine();
+    }
+    if (oldWidget.scene != widget.scene) {
+      oldWidget.scene.removeListener(_synchronizePicking);
+      widget.scene.addListener(_synchronizePicking);
+      picking.clear();
     }
   }
 
@@ -143,9 +156,11 @@ class _ProfessionalCadViewportWidgetState
         )
         ?.hit
         .point,
-    onNavigationChanged: widget.onNavigationChanged,
+    onNavigationChanged: (value) => widget.onNavigationChanged?.call(value),
     onRotationCenterSet: _showRotationCenterMarker,
   );
+
+  void _synchronizePicking() => picking.synchronize(widget.scene);
 
   bool get _hasSketchGesture =>
       widget.onSketchEntityPick != null ||
@@ -253,6 +268,9 @@ class _ProfessionalCadViewportWidgetState
 
   @override
   void dispose() {
+    widget.scene.removeListener(_synchronizePicking);
+    meshRenderCaches.clear();
+    picking.clear();
     _rotationCenterMarkerTimer?.cancel();
     navigation.dispose();
     super.dispose();
@@ -345,7 +363,9 @@ class _ProfessionalCadViewportWidgetState
             if (!_isMouseNavigating) {
               widget.onSketchHover?.call(event.localPosition);
             }
-            if (widget.enablePicking && !_isMouseNavigating) {
+            if (widget.enablePicking &&
+                widget.enableEntityHover &&
+                !_isMouseNavigating) {
               _updateHover(event.localPosition);
             }
           },

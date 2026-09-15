@@ -538,6 +538,32 @@ extension _CadTransactions on CadRuntime {
       if (kernel is OpenCascadeKernelAdapter) {
         for (final entry in retained.entries) {
           final entity = candidate.entities[entry.key]!;
+          final previousEntity = tx.document?.entities[entry.key];
+          final previousScene = this.scene.find(entry.key);
+          // Retained owners/assets were validated above. Display-only changes
+          // reuse confirmed coordinates rather than regenerating/uploading LOD.
+          if (previousEntity != null &&
+              previousScene != null &&
+              _sameJson(
+                _renderDefinition(previousEntity),
+                _renderDefinition(entity),
+              ) &&
+              _sameJson(
+                previousEntity.placement?.toJson(),
+                entity.placement?.toJson(),
+              )) {
+            final collection = candidate.entities[entity.data['collectionId']];
+            prepared.scene[entry.key] = previousScene.copyWith(
+              visible:
+                  entity.data['deleted'] != true &&
+                  (entity.data['sceneVisible'] as bool? ?? true) &&
+                  collection?.data['visible'] != false &&
+                  collection?.data['deleted'] != true,
+              transparent: entity.data['sceneTransparent'] as bool? ?? false,
+            );
+            tx.validate();
+            continue;
+          }
           prepared.scene[entry.key] = entity.data['managedStlAssets'] is Map
               ? await _prepareRetainedStlSceneEntity(
                   candidate,

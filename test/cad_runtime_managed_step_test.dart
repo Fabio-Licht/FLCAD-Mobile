@@ -179,6 +179,69 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  test(
+    'STEP Hide/Show reuses confirmed presentation and preserves assets/owners',
+    () async {
+      final first = await import(0);
+      final second = await import(7);
+      for (final invalid in [null, 0, 'true']) {
+        final json =
+            jsonDecode(jsonEncode(first.toJson())) as Map<String, dynamic>;
+        (json['data'] as Map)['sceneVisible'] = invalid;
+        expect(
+          () => CadDocumentEntity.fromJson(json),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              'Invalid managed STEP document entity',
+            ),
+          ),
+        );
+      }
+      final original = await inventory(project);
+      final firstScene = runtime.scene.find(first.id)!;
+      final secondScene = runtime.scene.find(second.id)!;
+      final display = CadSceneDisplayAdapter()..initial(runtime.scene);
+      final allocations = adapter.custodyDiagnostics!.allocations;
+      for (final entity in [first, second]) {
+        final originalScene = entity.id == first.id ? firstScene : secondScene;
+        for (final visible in [false, true, false, true]) {
+          await runtime.setEntityVisibility(entity.id, visible);
+          expect(runtime.scene.find(entity.id)!.visible, visible);
+          expect(
+            identical(
+              runtime.scene.find(entity.id)!.geometry,
+              originalScene.geometry,
+            ),
+            isTrue,
+          );
+          final delta = display.delta(runtime.scene);
+          expect(delta.entities, hasLength(1));
+          expect(delta.entities.single['id'], entity.id);
+          expect(delta.entities.single['visible'], visible);
+          expect(delta.entities.single.containsKey('nodes'), isFalse);
+          expect(adapter.custodyDiagnostics!.allocations, allocations);
+          expect(adapter.custodyDiagnostics!.leases, 0);
+        }
+      }
+      final after = await inventory(project);
+      // Document/history/journal legitimately change. All three durable assets do not.
+      for (final entity in [first, second]) {
+        final refs = references(entity);
+        for (final id in [refs.shape, refs.display, refs.appearance]) {
+          final keys = original.keys
+              .where((key) => key.contains(id.value))
+              .toList();
+          expect(keys, isNotEmpty);
+          for (final key in keys) {
+            expect(after[key], original[key]);
+          }
+        }
+      }
+    },
+  );
+
   for (final mode in [0, 1, 2, 7, 10]) {
     test(
       'real STEP mode $mode persists root appearance and canonical geometry',

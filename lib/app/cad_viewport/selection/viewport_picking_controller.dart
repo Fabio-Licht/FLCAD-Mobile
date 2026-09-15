@@ -1,4 +1,5 @@
 import 'package:flutter/painting.dart';
+import 'dart:collection';
 
 import '../../../core/cad_kernel/io/kernel_io_models.dart';
 import '../../../core/geometric_kernel/geometry/vectors.dart';
@@ -10,6 +11,36 @@ import '../camera/cad_camera_controller.dart';
 import '../scene/cad_scene_graph.dart';
 import '../rendering/stl_display_lod.dart';
 
+// In the native interaction overlay, picking borrows canonical display arrays.
+// No second complete Canvas geometry is allocated or retained for navigation.
+class _DoubleView extends ListBase<double> {
+  _DoubleView(this.source);
+  final List<num> source;
+  @override
+  int get length => source.length;
+  @override
+  set length(int value) => throw UnsupportedError('Read-only display view');
+  @override
+  double operator [](int index) => source[index].toDouble();
+  @override
+  void operator []=(int index, double value) =>
+      throw UnsupportedError('Read-only display view');
+}
+
+class _IntView extends ListBase<int> {
+  _IntView(this.source);
+  final List<num> source;
+  @override
+  int get length => source.length;
+  @override
+  set length(int value) => throw UnsupportedError('Read-only display view');
+  @override
+  int operator [](int index) => source[index].toInt();
+  @override
+  void operator []=(int index, int value) =>
+      throw UnsupportedError('Read-only display view');
+}
+
 class CadViewportPick {
   const CadViewportPick({required this.entityId, required this.hit});
   final String entityId;
@@ -17,6 +48,40 @@ class CadViewportPick {
 }
 
 class ViewportPickingController {
+  bool _copyMeshArrays = true;
+  bool get copyMeshArrays => _copyMeshArrays;
+  set copyMeshArrays(bool value) {
+    if (_copyMeshArrays != value) clear();
+    _copyMeshArrays = value;
+  }
+
+  int get copiedMeshCount => _geometries.values
+      .where(
+        (mesh) => mesh.nodes is! _DoubleView || mesh.triangles is! _IntView,
+      )
+      .length;
+  void clear() {
+    _indexes.clear();
+    _geometries.clear();
+    _nodeSources.clear();
+    _triangleSources.clear();
+  }
+
+  /// Visibility/selection notifications must not rebuild a navigation BVH.
+  void synchronize(CadSceneGraph scene) {
+    for (final id in _geometries.keys.toList()) {
+      final entity = scene.find(id);
+      if (entity == null ||
+          !identical(_nodeSources[id], entity.geometry['nodes']) ||
+          !identical(_triangleSources[id], entity.geometry['triangles'])) {
+        _geometries.remove(id);
+        _indexes.remove(id);
+        _nodeSources.remove(id);
+        _triangleSources.remove(id);
+      }
+    }
+  }
+
   final Map<String, MeshBvh> _indexes = {};
   final Map<String, KernelMeshGeometry> _geometries = {};
   final Map<String, Object> _nodeSources = {};
@@ -48,10 +113,12 @@ class ViewportPickingController {
       if (!identical(_nodeSources[entity.id], nodesSource) ||
           !identical(_triangleSources[entity.id], trianglesSource)) {
         _geometries[entity.id] = KernelMeshGeometry(
-          nodes: nodes.map((value) => value.toDouble()).toList(growable: false),
-          triangles: triangles
-              .map((value) => value.toInt())
-              .toList(growable: false),
+          nodes: copyMeshArrays
+              ? nodes.map((value) => value.toDouble()).toList(growable: false)
+              : _DoubleView(nodes),
+          triangles: copyMeshArrays
+              ? triangles.map((value) => value.toInt()).toList(growable: false)
+              : _IntView(triangles),
         );
         _nodeSources[entity.id] = nodesSource;
         _triangleSources[entity.id] = trianglesSource;

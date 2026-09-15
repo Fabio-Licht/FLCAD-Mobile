@@ -28,7 +28,7 @@ float4 PSMain(Out i,uint primitiveId:SV_PrimitiveID):SV_TARGET {
  float3 result=color.rgb*d;
  if(pick.y==1 && pick.z==primitiveId+1)
    result=lerp(result,float3(0.18,0.88,1.0)*d,0.24);
- return float4(result,1);
+ return float4(result,color.a);
 }
 struct LineOut { float4 color:SV_TARGET; float depth:SV_Depth; };
 LineOut PSLine(Out i) {
@@ -116,7 +116,7 @@ void NativeViewportHost::HandleMethod(
       result->Success();
     } else if ((call.method_name() == "snapshot" || call.method_name() == "delta") && arguments) {
       ApplySnapshot(*arguments, call.method_name() == "snapshot");
-      result->Success();
+      result->Success(flutter::EncodableValue(scene_revision_));
     } else if (call.method_name() == "remove" && arguments) {
       if (const auto* id = std::get_if<std::string>(Find(*arguments, "id"))) RemoveEntity(*id);
       result->Success();
@@ -160,9 +160,11 @@ void NativeViewportHost::HandleMethod(
     } else if (call.method_name() == "clearHover") {
       std::scoped_lock lock(mutex_); hover_ = {}; operational_hover_index_buffer_.Reset();operational_hover_index_count_=0;operational_hover_entity_id_.clear();operational_hover_id_.clear();Render(); result->Success();
     } else if (call.method_name() == "stats") {
+      if (device_) Check(device_->GetDeviceRemovedReason(), "D3D device unavailable");
       result->Success(flutter::EncodableValue(Stats()));
     } else if (call.method_name() == "shutdown") {
-      Shutdown(); result->Success();
+      auto reply = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(std::move(result));
+      Shutdown([reply] { reply->Success(); });
     } else {
       result->NotImplemented();
     }
@@ -176,9 +178,10 @@ void NativeViewportHost::Initialize(uint32_t width, uint32_t height) {
   if (!device_) { CreateDevice(); CreatePipeline(); }
   CreateTarget(std::max(width, 1u), std::max(height, 1u));
   if (texture_id_ < 0) {
+    const auto surface = surface_state_;
     flutter_texture_ = std::make_unique<flutter::TextureVariant>(
         flutter::GpuSurfaceTexture(kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle,
-          [this](size_t width, size_t height) { return SurfaceDescriptor(width, height); }));
+          [surface](size_t width, size_t height) { return surface->Describe(width, height); }));
     texture_id_ = registrar_->RegisterTexture(flutter_texture_.get());
     texture_registered_ = texture_id_ >= 0;
   }
@@ -307,6 +310,21 @@ void NativeViewportHost::CreateTarget(uint32_t width, uint32_t height) {
   surface_descriptor_ = {sizeof(surface_descriptor_), target_texture_.Get(), width_, height_,
       width_, height_, kFlutterDesktopPixelFormatBGRA8888,
       ReleaseFlutterTexture, target_texture_.Get()};
+  if (!surface_state_) surface_state_ = std::make_shared<SurfaceState>();
+  std::scoped_lock surface_lock(surface_state_->mutex);
+  surface_state_->texture = target_texture_;
+  surface_state_->descriptor = surface_descriptor_;
+  surface_state_->descriptor.handle = shared_texture_handle_;
+  surface_state_->on_callback = [this](size_t w, size_t h) {
+    ++texture_callbacks_; ++callback_window_count_;
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - callback_metric_start_).count();
+    if (elapsed >= 1) {
+      texture_callback_hz_ = callback_window_count_ / elapsed;
+      callback_window_count_ = 0; callback_metric_start_ = now;
+    }
+    last_requested_width_ = w; last_requested_height_ = h;
+  };
 }
 
 void NativeViewportHost::Resize(uint32_t width, uint32_t height) {
@@ -317,6 +335,9 @@ void NativeViewportHost::Resize(uint32_t width, uint32_t height) {
 
 void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bool replace) {
   const auto start=std::chrono::steady_clock::now(); std::scoped_lock lock(mutex_);
+  const auto* raw_revision = Find(snapshot, "revision");
+  const int64_t revision = raw_revision ? static_cast<int64_t>(Number(*raw_revision)) : 0;
+  if (raw_revision && revision <= scene_revision_) return;
   if (replace) entities_.clear();
   const auto* raw=Find(snapshot,"entities");
   const auto* list=raw ? std::get_if<flutter::EncodableList>(raw) : nullptr;
@@ -335,6 +356,8 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
       const auto existing = entities_.find(*id);
       if (existing != entities_.end() && Find(*map, "visible"))
         existing->second.visible = std::get<bool>(*Find(*map, "visible"));
+      if (existing != entities_.end() && Find(*map, "selected"))
+        existing->second.selected = std::get<bool>(*Find(*map, "selected"));
       continue;
     }
     if (Find(*map, "presentationLod")) {
@@ -366,6 +389,7 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
       }
     }
     entity.visible = Find(*map,"visible") ? std::get<bool>(*Find(*map,"visible")) : true;
+    entity.selected = Find(*map,"selected") ? std::get<bool>(*Find(*map,"selected")) : false;
     std::vector<XMFLOAT3> positions; positions.reserve(nodes->size()/3);
     for(size_t i=0;i+2<nodes->size();i+=3) positions.push_back({
       static_cast<float>(Number((*nodes)[i])),static_cast<float>(Number((*nodes)[i+1])),
@@ -416,6 +440,7 @@ void NativeViewportHost::ApplySnapshot(const flutter::EncodableMap& snapshot, bo
     Upload(entity); entities_[*id]=std::move(entity);
   }
   // Dart owns the canonical pose. Scene/selection deltas must never refit it.
+  if (raw_revision) scene_revision_ = revision;
   upload_ms_ = std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - start)
                    .count();
@@ -440,6 +465,7 @@ void NativeViewportHost::Upload(SceneEntity& entity) {
 }
 
 void NativeViewportHost::Render() {
+  if (device_) Check(device_->GetDeviceRemovedReason(), "D3D device unavailable");
   if(!target_view_)return;++render_calls_;const auto start=std::chrono::steady_clock::now();
   const float background[]{.075f,.095f,.115f,1};context_->ClearRenderTargetView(target_view_.Get(),background);
   context_->ClearDepthStencilView(depth_view_.Get(),D3D11_CLEAR_DEPTH,1,0);
@@ -456,12 +482,18 @@ void NativeViewportHost::Render() {
   context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->VSSetConstantBuffers(0,1,constants_.GetAddressOf());context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->PSSetConstantBuffers(0,1,constants_.GetAddressOf());
   context_->RSSetState(rasterizer_.Get());context_->OMSetDepthStencilState(depth_state_.Get(),0);triangles_=0;
+  constants.color[3] = render_style_ == 3 ? .22f : 1.f;
+  context_->OMSetBlendState(render_style_ == 3 ? cad_edge_blend_.Get() : nullptr, nullptr, UINT_MAX);
+  if (render_style_ == 3) context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(), 0);
   for (auto &[id, e] : entities_) {
     if (!e.visible || !e.vertex_buffer || !e.index_buffer)
       continue;
     if (render_style_ == 2)
       continue;
     std::copy(std::begin(e.root_srgb), std::end(e.root_srgb), constants.color);
+    if (e.selected) {
+      constants.color[0] = .82f; constants.color[1] = .64f; constants.color[2] = .27f;
+    }
     constants.pick[1] = id == hover_.entity_id ? hover_.kind : 0;
     constants.pick[2] = id == hover_.entity_id ? hover_.id : 0;
     context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
@@ -473,7 +505,7 @@ void NativeViewportHost::Render() {
     ++draw_indexed_calls_;
     triangles_ += e.indices.size() / 3;
   }
-  if (render_style_ != 0 && !(render_style_==1&&(operational_selection_index_buffer_||operational_hover_index_buffer_))) {
+  if ((render_style_ == 1 || render_style_ == 2) && !(render_style_==1&&(operational_selection_index_buffer_||operational_hover_index_buffer_))) {
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
     context_->PSSetShader(line_shader_.Get(), nullptr, 0);
     context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(), 0);
@@ -499,6 +531,13 @@ void NativeViewportHost::Render() {
         continue;
       context_->IASetVertexBuffers(0, 1, e.display_edge_buffer.GetAddressOf(),
                                    &stride, &offset);
+      if (render_style_ == 2) {
+        const bool selected = e.selected || id == operational_selection_entity_id_;
+        constants.color[0] = selected ? .92f : .52f;
+        constants.color[1] = selected ? .69f : .85f;
+        constants.color[2] = selected ? .26f : .91f;
+        context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+      }
       for (int pass = 0; pass < offset_count; ++pass) {
         if (pass != 0) {
           D3D11_VIEWPORT edge_viewport{
@@ -514,8 +553,10 @@ void NativeViewportHost::Render() {
     context_->RSSetState(rasterizer_.Get());
     context_->OMSetBlendState(nullptr,nullptr,UINT_MAX);
   }
+  if (render_style_ != 2) {
   if(operational_selection_index_buffer_&&operational_selection_index_count_>0){auto found=entities_.find(operational_selection_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.92f;constants.color[1]=.38f;constants.color[2]=.04f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_selection_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_selection_index_count_,0,0);}}
   if(operational_hover_id_!=operational_selection_id_&&operational_hover_index_buffer_&&operational_hover_index_count_>0){auto found=entities_.find(operational_hover_entity_id_);if(found!=entities_.end()&&found->second.vertex_buffer){constants.color[0]=.08f;constants.color[1]=.78f;constants.color[2]=.92f;constants.pick[1]=0;constants.pick[2]=0;context_->UpdateSubresource(constants_.Get(),0,nullptr,&constants,0,0);context_->OMSetDepthStencilState(pick_overlay_depth_state_.Get(),0);context_->IASetInputLayout(input_layout_.Get());context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context_->IASetVertexBuffers(0,1,found->second.vertex_buffer.GetAddressOf(),&stride,&offset);context_->IASetIndexBuffer(operational_hover_index_buffer_.Get(),DXGI_FORMAT_R32_UINT,0);context_->VSSetShader(vertex_shader_.Get(),nullptr,0);context_->PSSetShader(pixel_shader_.Get(),nullptr,0);context_->DrawIndexed(operational_hover_index_count_,0,0);}}
+  }
   // Selection fills are deliberately drawn over the material. Restore the
   // ordinary CAD contours afterwards so gold selection never hides topology.
   if(render_style_==1&&(operational_selection_index_buffer_||operational_hover_index_buffer_)){
@@ -691,7 +732,7 @@ void NativeViewportHost::SetCamera(const flutter::EncodableMap& arguments) {
   std::scoped_lock lock(mutex_);
   if (const auto *value = Find(arguments, "renderStyle")) {
     const auto style = Number(*value);
-    if (style < 0 || style > 2 || !std::isfinite(style))
+    if (style < 0 || style > 3 || !std::isfinite(style) || std::floor(style) != style)
       throw std::runtime_error("Invalid render style");
     render_style_ = static_cast<uint32_t>(style);
   }
@@ -739,5 +780,84 @@ void NativeViewportHost::SetCamera(const flutter::EncodableMap& arguments) {
 }
 void NativeViewportHost::RemoveEntity(const std::string&id){std::scoped_lock lock(mutex_);entities_.erase(id);Render();}
 flutter::EncodableMap NativeViewportHost::Stats()const{std::string gpu;gpu.reserve(adapter_name_.size());for(const wchar_t character:adapter_name_)gpu.push_back(character<=0x7f?static_cast<char>(character):'?');return{{flutter::EncodableValue("fps"),flutter::EncodableValue(fps_)},{flutter::EncodableValue("drawCalls"),flutter::EncodableValue(static_cast<int64_t>(entities_.size()))},{flutter::EncodableValue("triangles"),flutter::EncodableValue(static_cast<int64_t>(triangles_))},{flutter::EncodableValue("uploadMs"),flutter::EncodableValue(upload_ms_)},{flutter::EncodableValue("renderMs"),flutter::EncodableValue(render_ms_)},{flutter::EncodableValue("pickingMs"),flutter::EncodableValue(picking_ms_)},{flutter::EncodableValue("gpu"),flutter::EncodableValue(gpu)},{flutter::EncodableValue("setCameraCalls"),flutter::EncodableValue(static_cast<int64_t>(set_camera_calls_))},{flutter::EncodableValue("renderCalls"),flutter::EncodableValue(static_cast<int64_t>(render_calls_))},{flutter::EncodableValue("constantBufferUpdates"),flutter::EncodableValue(static_cast<int64_t>(constant_buffer_updates_))},{flutter::EncodableValue("drawIndexedCalls"),flutter::EncodableValue(static_cast<int64_t>(draw_indexed_calls_))},{flutter::EncodableValue("fitCalls"),flutter::EncodableValue(static_cast<int64_t>(fit_calls_))},{flutter::EncodableValue("cameraDistance"),flutter::EncodableValue(static_cast<double>(camera_.Distance()))},{flutter::EncodableValue("cameraRadius"),flutter::EncodableValue(static_cast<double>(camera_.Radius()))},{flutter::EncodableValue("cameraNear"),flutter::EncodableValue(static_cast<double>(camera_.NearPlane()))},{flutter::EncodableValue("cameraFar"),flutter::EncodableValue(static_cast<double>(camera_.FarPlane()))},{flutter::EncodableValue("textureId"),flutter::EncodableValue(texture_id_)},{flutter::EncodableValue("textureRegistered"),flutter::EncodableValue(texture_registered_)},{flutter::EncodableValue("textureCallbacks"),flutter::EncodableValue(static_cast<int64_t>(texture_callbacks_.load()))},{flutter::EncodableValue("textureCallbackHz"),flutter::EncodableValue(texture_callback_hz_)},{flutter::EncodableValue("frameMarks"),flutter::EncodableValue(static_cast<int64_t>(frame_marks_.load()))},{flutter::EncodableValue("successfulFrameMarks"),flutter::EncodableValue(static_cast<int64_t>(successful_frame_marks_.load()))},{flutter::EncodableValue("requestedWidth"),flutter::EncodableValue(static_cast<int64_t>(last_requested_width_))},{flutter::EncodableValue("requestedHeight"),flutter::EncodableValue(static_cast<int64_t>(last_requested_height_))},{flutter::EncodableValue("sampledBgra"),flutter::EncodableValue(static_cast<int64_t>(sampled_bgra_))},{flutter::EncodableValue("sampledClearBgra"),flutter::EncodableValue(static_cast<int64_t>(sampled_clear_bgra_))}};}
-const FlutterDesktopGpuSurfaceDescriptor* NativeViewportHost::SurfaceDescriptor(size_t width,size_t height){std::scoped_lock lock(mutex_);++texture_callbacks_;++callback_window_count_;const auto now=std::chrono::steady_clock::now();const double elapsed=std::chrono::duration<double>(now-callback_metric_start_).count();if(elapsed>=1){texture_callback_hz_=callback_window_count_/elapsed;callback_window_count_=0;callback_metric_start_=now;}last_requested_width_=width;last_requested_height_=height;surface_descriptor_.handle=shared_texture_handle_;surface_descriptor_.release_context=target_texture_.Get();if(target_texture_)target_texture_->AddRef();return &surface_descriptor_;}
-void NativeViewportHost::Shutdown(){std::scoped_lock lock(mutex_);if(texture_id_>=0&&registrar_){registrar_->UnregisterTexture(texture_id_);texture_id_=-1;}flutter_texture_.reset();entities_.clear();target_view_.Reset();target_texture_.Reset();shared_texture_handle_=nullptr;depth_view_.Reset();depth_texture_.Reset();}
+const FlutterDesktopGpuSurfaceDescriptor *
+NativeViewportHost::SurfaceState::Describe(size_t width, size_t height) {
+  std::scoped_lock lock(mutex);
+  if (!texture)
+    return nullptr;
+  if (on_callback)
+    on_callback(width, height);
+  descriptor.release_context = texture.Get();
+  texture->AddRef();
+  return &descriptor;
+}
+const FlutterDesktopGpuSurfaceDescriptor *
+NativeViewportHost::SurfaceDescriptor(size_t width, size_t height) {
+  return surface_state_ ? surface_state_->Describe(width, height) : nullptr;
+}
+void NativeViewportHost::Shutdown(std::function<void()> completed) {
+  std::unique_lock lock(mutex_);
+  const auto retiring_id = texture_id_;
+  auto retiring_texture =
+      std::shared_ptr<flutter::TextureVariant>(std::move(flutter_texture_));
+  texture_id_ = -1;
+  texture_registered_ = false;
+  if (surface_state_) {
+    std::scoped_lock surface_lock(surface_state_->mutex);
+    surface_state_->on_callback = {};
+    surface_state_->texture.Reset();
+  }
+  surface_state_.reset();
+  if (context_) {
+    context_->ClearState();
+    context_->Flush();
+  }
+  entities_.clear();
+  operational_hover_index_buffer_.Reset();
+  operational_selection_index_buffer_.Reset();
+  operational_hover_index_count_ = operational_selection_index_count_ = 0;
+  operational_hover_entity_id_.clear();
+  operational_hover_id_.clear();
+  operational_selection_entity_id_.clear();
+  operational_selection_id_.clear();
+  hover_ = {};
+  target_view_.Reset();
+  target_texture_.Reset();
+  shared_texture_handle_ = nullptr;
+  depth_view_.Reset();
+  depth_texture_.Reset();
+  pick_target_.Reset();
+  pick_readback_.Reset();
+  pick_texture_.Reset();
+  vertex_shader_.Reset();
+  pixel_shader_.Reset();
+  line_shader_.Reset();
+  pick_face_vs_.Reset();
+  pick_subentity_vs_.Reset();
+  pick_face_ps_.Reset();
+  pick_edge_ps_.Reset();
+  pick_vertex_ps_.Reset();
+  hover_ps_.Reset();
+  input_layout_.Reset();
+  pick_input_layout_.Reset();
+  constants_.Reset();
+  rasterizer_.Reset();
+  edge_rasterizer_.Reset();
+  cad_edge_rasterizer_.Reset();
+  cad_edge_blend_.Reset();
+  depth_state_.Reset();
+  pick_overlay_depth_state_.Reset();
+  context_.Reset();
+  device_.Reset();
+  triangles_ = 0;
+  scene_revision_ = 0;
+  lock.unlock();
+  if (retiring_id >= 0 && registrar_) {
+    registrar_->UnregisterTexture(retiring_id, [retiring_texture, completed] {
+      if (completed)
+        completed();
+    });
+  } else if (completed) {
+    completed();
+  }
+}

@@ -77,8 +77,20 @@ class _IntegratedCadViewportWidgetState
   ViewportBackend backend = Platform.isWindows
       ? ViewportBackend.nativeGpu
       : ViewportBackend.flutterCanvas;
+  late ViewportBackend _requestedBackend = backend;
+  String? get _unsupportedReason =>
+      nativeSceneUnsupportedReason(widget.scene, style: native.renderStyle);
+  bool get _nativeSupportsMode => _unsupportedReason == null;
   Size? _nativeSize;
   bool _initializing = false;
+  bool _switching = false;
+  int _backendGeneration = 0;
+  int _cameraRevision = 0;
+  Future<void>? _nativeWork;
+  Future<void> _handoff = Future<void>.value();
+  String? _backendNotice;
+  bool get _nativeActive =>
+      backend == ViewportBackend.nativeGpu && native.available && !_switching;
   Timer? _deltaDebounce;
   NativeViewportPick? _nativeHover;
   OperationalResolution? _operationalHover;
@@ -92,26 +104,23 @@ class _IntegratedCadViewportWidgetState
     _tapGeneration++;
     setState(() {
       _renderStyle = style;
-      final cadEdges = widget.scene.entities
-          .where((e) => e.geometry['nodes'] is List)
-          .every((e) => e.geometry['topologicalEdges'] is List);
       native.renderStyle = style == CadRenderStyle.hiddenLine
           ? 1
           : style == CadRenderStyle.wireframe
           ? 2
+          : style == CadRenderStyle.transparent
+          ? 3
           : 0;
-      backend =
-          Platform.isWindows &&
-              (style == CadRenderStyle.shaded ||
-                  (cadEdges &&
-                      (style == CadRenderStyle.hiddenLine ||
-                          style == CadRenderStyle.wireframe)))
-          ? ViewportBackend.nativeGpu
-          : ViewportBackend.flutterCanvas;
-      if (backend == ViewportBackend.nativeGpu && native.available) {
-        native.setCamera(widget.camera);
-      }
     });
+    final next =
+        _requestedBackend == ViewportBackend.nativeGpu && !_nativeSupportsMode
+        ? ViewportBackend.flutterCanvas
+        : _requestedBackend;
+    if (next != backend) {
+      _switchBackend(next, modeFallback: next != _requestedBackend);
+    } else if (_nativeActive) {
+      native.setCamera(widget.camera);
+    }
   }
 
   bool _canPublishTap(int token, CadSceneGraph scene) =>
@@ -120,6 +129,7 @@ class _IntegratedCadViewportWidgetState
       identical(scene, widget.scene) &&
       backend == ViewportBackend.nativeGpu &&
       native.available &&
+      !_switching &&
       !_nativeNavigating;
 
   Future<void> _pickNativeTap(Offset position) async {
@@ -133,7 +143,13 @@ class _IntegratedCadViewportWidgetState
     // No hit (or an unresolvable hit) leaves selection unchanged, just as
     // Canvas picking does. Never substitute the last hover for this click.
     if (result == null || result.kind == NativePickKind.none) return;
-    final resolved = await operationalResolver.resolve(result, scene);
+    final source = scene.find(result.entityId);
+    if (source == null || !source.visible) return;
+    // Normal entity selection must not segment a STEP display mesh into regions.
+    final resolved =
+        !widget.enableInspectionHover && source.kind == CadSceneEntityKind.mesh
+        ? _entityResolution(source)
+        : await operationalResolver.resolve(result, scene);
     if (!_canPublishTap(token, scene) || resolved == null) return;
     operationalSelection.select(
       resolved.entity.id,
@@ -142,6 +158,7 @@ class _IntegratedCadViewportWidgetState
     );
     final point = result.point;
     if (point.length >= 3 && point.take(3).every((value) => value.isFinite)) {
+      widget.camera.focusOn(Vector3(point[0], point[1], point[2]));
       widget.onPick?.call(
         CadViewportPick(
           entityId: resolved.entity.ownerId,
@@ -155,13 +172,30 @@ class _IntegratedCadViewportWidgetState
     }
   }
 
+  OperationalResolution _entityResolution(CadSceneEntity source) {
+    final entity = OperationalEntity(
+      id: 'operational:${source.id}',
+      type: OperationalEntityType.meshRegion,
+      ownerId: source.id,
+      ownerDomain: 'entity',
+      documentId: source.id,
+      revision: 1,
+      label: source.id,
+      capabilities: const {OperationalCapability.selectable},
+      properties: const {'presentationOnly': true},
+    );
+    operationalEntities.replaceOwner(source.id, [entity]);
+    return OperationalResolution(entity: entity, triangleIndices: const []);
+  }
+
   Future<void> _updateNativeHover(Offset position) async {
     if (!widget.enableInspectionHover) return;
     _lastHoverPosition = position;
     _pendingHover = position;
-    if (_hoverRequestActive || !native.available || _nativeNavigating) return;
+    if (_hoverRequestActive || !_nativeActive || _nativeNavigating) return;
+    final generation = _backendGeneration;
     _hoverRequestActive = true;
-    while (_pendingHover != null && native.available) {
+    while (_pendingHover != null && _nativeActive) {
       final current = _pendingHover!;
       _pendingHover = null;
       final result = await native.pick(current.dx, current.dy);
@@ -169,6 +203,8 @@ class _IntegratedCadViewportWidgetState
           ? null
           : await operationalResolver.resolve(result, widget.scene);
       if (!mounted ||
+          !_nativeActive ||
+          generation != _backendGeneration ||
           !widget.enableInspectionHover ||
           _pendingHover != null ||
           _nativeNavigating) {
@@ -217,7 +253,8 @@ class _IntegratedCadViewportWidgetState
     widget.scene.addListener(_sceneChanged);
     widget.camera.addListener(_cameraChanged);
     operationalSelection.addListener(_operationalSelectionChanged);
-    operationalResolver.prepare(widget.scene);
+    if (widget.enableInspectionHover) operationalResolver.prepare(widget.scene);
+    _requestedBackend = backend;
   }
 
   @override
@@ -231,10 +268,18 @@ class _IntegratedCadViewportWidgetState
     }
     if (oldWidget.scene != widget.scene) {
       _tapGeneration++;
-      operationalResolver.prepare(widget.scene);
+      if (widget.enableInspectionHover) {
+        operationalResolver.prepare(widget.scene);
+      }
       oldWidget.scene.removeListener(_sceneChanged);
       widget.scene.addListener(_sceneChanged);
-      if (native.available) native.sendInitial(widget.scene);
+      if (_nativeActive && !_initializing) {
+        if (_nativeSupportsMode) {
+          native.sendDelta(widget.scene);
+        } else {
+          _switchBackend(ViewportBackend.flutterCanvas, modeFallback: true);
+        }
+      }
     }
     if (oldWidget.camera != widget.camera) {
       _tapGeneration++;
@@ -245,26 +290,42 @@ class _IntegratedCadViewportWidgetState
 
   void _changed() {
     if (!native.available) _tapGeneration++;
+    if (mounted &&
+        !native.available &&
+        !_initializing &&
+        !_switching &&
+        backend == ViewportBackend.nativeGpu) {
+      _switchBackend(ViewportBackend.flutterCanvas, recovery: true);
+      return;
+    }
     if (mounted) setState(() {});
   }
 
   void _sceneChanged() {
     _tapGeneration++;
-    operationalResolver.prepare(widget.scene);
-    if (!native.available) return;
-    _deltaDebounce?.cancel();
-    _deltaDebounce = Timer(const Duration(milliseconds: 16), () {
-      native.sendDelta(widget.scene);
-    });
+    if (widget.enableInspectionHover) operationalResolver.prepare(widget.scene);
+    if (backend == ViewportBackend.flutterCanvas &&
+        _requestedBackend == ViewportBackend.nativeGpu &&
+        _nativeSupportsMode) {
+      _switchBackend(ViewportBackend.nativeGpu);
+      return;
+    }
+    if (backend == ViewportBackend.nativeGpu && !_nativeSupportsMode) {
+      _switchBackend(ViewportBackend.flutterCanvas, modeFallback: true);
+      return;
+    }
+    if (!_nativeActive || _initializing) return;
+    native.sendDelta(widget.scene);
   }
 
   void _cameraChanged() {
+    ++_cameraRevision;
     _tapGeneration++;
     CameraPanAudit.record(
       'Componente IntegratedCadViewportWidget._cameraChanged consome\n'
       '${widget.camera.auditState()}',
     );
-    if (native.available) {
+    if (_nativeActive && !_initializing) {
       CameraPanAudit.record(
         'NativeViewportBridge.setCamera() publica sem modificar\n'
         '${widget.camera.auditState()}',
@@ -279,6 +340,7 @@ class _IntegratedCadViewportWidgetState
   }
 
   void _operationalSelectionChanged() {
+    if (!_nativeActive) return;
     final activeId = operationalSelection.activeId;
     final presentation = activeId == null
         ? null
@@ -295,7 +357,16 @@ class _IntegratedCadViewportWidgetState
   }
 
   Future<void> _ensureNative(Size size) async {
-    if (_initializing || !Platform.isWindows) return;
+    if (!mounted ||
+        backend != ViewportBackend.nativeGpu ||
+        _initializing ||
+        !Platform.isWindows ||
+        !size.width.isFinite ||
+        !size.height.isFinite ||
+        size.width <= 1 ||
+        size.height <= 1) {
+      return;
+    }
     if (native.available) {
       if (_nativeSize != size) {
         _nativeSize = size;
@@ -303,23 +374,100 @@ class _IntegratedCadViewportWidgetState
       }
       return;
     }
+    if (!_nativeSupportsMode) {
+      _switchBackend(ViewportBackend.flutterCanvas, modeFallback: true);
+      return;
+    }
+    _nativeWork = _initializeNative(size);
+    await _nativeWork;
+  }
+
+  Future<void> _initializeNative(Size size) async {
     _initializing = true;
+    final generation = _backendGeneration;
     final ready = await native.initialize(size.width, size.height);
+    if (!mounted ||
+        generation != _backendGeneration ||
+        backend != ViewportBackend.nativeGpu) {
+      _initializing = false;
+      return;
+    }
     _nativeSize = size;
     if (ready) {
       await native.sendInitial(widget.scene);
-      await native.setCamera(widget.camera);
-      _operationalSelectionChanged();
-    } else if (mounted) {
-      _tapGeneration++;
-      setState(() => backend = ViewportBackend.flutterCanvas);
+      if (mounted && generation == _backendGeneration && native.available) {
+        await native.sendDelta(widget.scene);
+        int revision;
+        do {
+          revision = _cameraRevision;
+          await native.setCamera(widget.camera);
+        } while (mounted &&
+            generation == _backendGeneration &&
+            native.available &&
+            revision != _cameraRevision);
+      }
     }
     _initializing = false;
-    if (ready) await _viewportReady();
+    if (mounted && generation == _backendGeneration && !native.available) {
+      // Queue cleanup after this initialization has drained.
+      _switchBackend(ViewportBackend.flutterCanvas, recovery: true);
+    } else if (mounted && !_switching) {
+      _operationalSelectionChanged();
+      setState(() {});
+      await _viewportReady();
+    }
+  }
+
+  void _switchBackend(
+    ViewportBackend next, {
+    bool recovery = false,
+    bool modeFallback = false,
+  }) {
+    if (!mounted) return;
+    final generation = ++_backendGeneration;
+    ++_tapGeneration;
+    _deltaDebounce?.cancel();
+    _pendingHover = null;
+    _nativeHover = null;
+    _operationalHover = null;
+    _nativeNavigating = false;
+    setState(() {
+      if (recovery) _requestedBackend = ViewportBackend.flutterCanvas;
+      backend = next;
+      _switching = true;
+      _backendNotice = recovery
+          ? 'Native GPU indisponível. Recuperando com Flutter Canvas.'
+          : modeFallback
+          ? 'Flutter Canvas para toda a cena: ${_unsupportedReason ?? 'modo não suportado'}'
+          : null;
+    });
+    _handoff = _handoff.then((_) async {
+      await _nativeWork;
+      await native.deactivate();
+      if (!mounted || generation != _backendGeneration) return;
+      // The preceding frame drops Canvas caches before a native snapshot exists.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || generation != _backendGeneration) return;
+      if (next == ViewportBackend.nativeGpu) {
+        await _ensureNative(
+          Size(widget.camera.viewportWidth, widget.camera.viewportHeight),
+        );
+      }
+      if (!mounted || generation != _backendGeneration) return;
+      setState(() {
+        _switching = false;
+        if (recovery) {
+          _backendNotice = 'Native GPU indisponível. Flutter Canvas ativo.';
+        }
+      });
+      _operationalSelectionChanged();
+      await _viewportReady();
+    });
   }
 
   @override
   void dispose() {
+    ++_backendGeneration;
     _tapGeneration++;
     _deltaDebounce?.cancel();
     widget.scene.removeListener(_sceneChanged);
@@ -335,7 +483,10 @@ class _IntegratedCadViewportWidgetState
   }
 
   Future<void> _viewportReady() async {
+    final generation = _backendGeneration;
+    final scene = widget.scene;
     if (!mounted ||
+        _switching ||
         widget.camera.viewportWidth <= 1 ||
         widget.camera.viewportHeight <= 1) {
       return;
@@ -345,20 +496,25 @@ class _IntegratedCadViewportWidgetState
       // Publish the scene delta before delivering Fit to the real camera/host.
       await native.sendDelta(widget.scene);
     }
-    if (mounted) widget.onViewportReady?.call();
+    if (mounted &&
+        identical(scene, widget.scene) &&
+        !_switching &&
+        generation == _backendGeneration &&
+        (backend != ViewportBackend.nativeGpu || native.available)) {
+      widget.onViewportReady?.call();
+    }
   }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
-      if (backend == ViewportBackend.nativeGpu) {
+      if (backend == ViewportBackend.nativeGpu && !_switching) {
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => _ensureNative(size),
         );
       }
-      final useNative =
-          backend == ViewportBackend.nativeGpu && native.available;
+      final useNative = _nativeActive && !_initializing;
       return MouseRegion(
         cursor:
             widget.onSketchTap != null ||
@@ -395,50 +551,58 @@ class _IntegratedCadViewportWidgetState
                   : const SizedBox.shrink(),
             ),
             Positioned.fill(
-              child: ProfessionalCadViewportWidget(
-                onViewportReady: _viewportReady,
-                scene: widget.scene,
-                camera: widget.camera,
-                onPick: widget.onPick,
-                onNormalTap: useNative ? _pickNativeTap : null,
-                onSketchSupportPick: widget.onSketchSupportPick,
-                onSketchEntityPick: widget.onSketchEntityPick,
-                onSketchEntityDoublePick: widget.onSketchEntityDoublePick,
-                onSketchTap: widget.onSketchTap,
-                onSketchSecondaryTap: widget.onSketchSecondaryTap,
-                onSketchHover: widget.onSketchHover,
-                onSketchEntityDragStart: widget.onSketchEntityDragStart,
-                onSketchEntityDragUpdate: widget.onSketchEntityDragUpdate,
-                onSketchEntityDragEnd: widget.onSketchEntityDragEnd,
-                showSketchGrid: widget.showSketchGrid,
-                renderStyle: _renderStyle,
-                onRenderStyleChanged: _setRenderStyle,
-                showRenderControls: false,
-                renderMeshes: !useNative,
-                paintBackground: !useNative,
-                // Picking remains on in the transparent Flutter interaction
-                // layer even when meshes are rendered by the native GPU.
-                // Sketch profiles and construction geometry do not exist in
-                // the native triangle-only pick buffer.
-                enablePicking: true,
-                onNavigationChanged: useNative
-                    ? (navigating) {
-                        _nativeNavigating = navigating;
-                        if (navigating) {
-                          _tapGeneration++;
-                          _pendingHover = null;
-                          native.clearHover();
-                          if (_nativeHover != null) {
-                            setState(() {
-                              _nativeHover = null;
-                              _operationalHover = null;
-                            });
+              child: IgnorePointer(
+                ignoring:
+                    _switching ||
+                    _initializing ||
+                    (backend == ViewportBackend.nativeGpu && !native.available),
+                child: ProfessionalCadViewportWidget(
+                  onViewportReady: _viewportReady,
+                  scene: widget.scene,
+                  camera: widget.camera,
+                  onPick: widget.onPick,
+                  onNormalTap: useNative ? _pickNativeTap : null,
+                  onSketchSupportPick: widget.onSketchSupportPick,
+                  onSketchEntityPick: widget.onSketchEntityPick,
+                  onSketchEntityDoublePick: widget.onSketchEntityDoublePick,
+                  onSketchTap: widget.onSketchTap,
+                  onSketchSecondaryTap: widget.onSketchSecondaryTap,
+                  onSketchHover: widget.onSketchHover,
+                  onSketchEntityDragStart: widget.onSketchEntityDragStart,
+                  onSketchEntityDragUpdate: widget.onSketchEntityDragUpdate,
+                  onSketchEntityDragEnd: widget.onSketchEntityDragEnd,
+                  showSketchGrid: widget.showSketchGrid,
+                  renderStyle: _renderStyle,
+                  onRenderStyleChanged: _setRenderStyle,
+                  showRenderControls: false,
+                  renderMeshes:
+                      backend == ViewportBackend.flutterCanvas && !_switching,
+                  paintBackground: !useNative,
+                  // Picking remains on in the transparent Flutter interaction
+                  // layer even when meshes are rendered by the native GPU.
+                  // Sketch profiles and construction geometry do not exist in
+                  // the native triangle-only pick buffer.
+                  enablePicking: true,
+                  enableEntityHover: !useNative,
+                  onNavigationChanged: useNative
+                      ? (navigating) {
+                          _nativeNavigating = navigating;
+                          if (navigating) {
+                            _tapGeneration++;
+                            _pendingHover = null;
+                            native.clearHover();
+                            if (_nativeHover != null) {
+                              setState(() {
+                                _nativeHover = null;
+                                _operationalHover = null;
+                              });
+                            }
+                          } else if (_lastHoverPosition != null) {
+                            _updateNativeHover(_lastHoverPosition!);
                           }
-                        } else if (_lastHoverPosition != null) {
-                          _updateNativeHover(_lastHoverPosition!);
                         }
-                      }
-                    : null,
+                      : null,
+                ),
               ),
             ),
             Positioned(
@@ -469,34 +633,59 @@ class _IntegratedCadViewportWidgetState
               ),
             ),
             Positioned(
-              top: 10,
+              bottom: 10,
               right: 10,
               child: SegmentedButton<ViewportBackend>(
                 showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(
+                segments: [
+                  const ButtonSegment(
                     value: ViewportBackend.flutterCanvas,
                     label: Text('Flutter Canvas'),
                   ),
                   ButtonSegment(
                     value: ViewportBackend.nativeGpu,
-                    label: Text('Native GPU'),
+                    label: const Text('Native GPU'),
+                    enabled: Platform.isWindows,
                   ),
                 ],
                 selected: {backend},
                 onSelectionChanged: (selection) {
-                  final next = selection.first;
-                  _tapGeneration++;
-                  setState(() {
-                    backend = next;
-                    if (next == ViewportBackend.nativeGpu) {
-                      _renderStyle = CadRenderStyle.shaded;
-                    }
-                  });
-                  if (next == ViewportBackend.nativeGpu) _ensureNative(size);
+                  _requestedBackend = selection.first;
+                  final next =
+                      _requestedBackend == ViewportBackend.nativeGpu &&
+                          !_nativeSupportsMode
+                      ? ViewportBackend.flutterCanvas
+                      : _requestedBackend;
+                  if (next != backend) {
+                    _switchBackend(
+                      next,
+                      modeFallback: next != _requestedBackend,
+                    );
+                  } else if (next != _requestedBackend) {
+                    setState(
+                      () => _backendNotice =
+                          'Flutter Canvas para toda a cena: ${_unsupportedReason ?? 'modo não suportado'}',
+                    );
+                  } else {
+                    setState(() => _backendNotice = null);
+                  }
                 },
               ),
             ),
+            if (_backendNotice != null || _switching || _initializing)
+              Positioned(
+                top: 60,
+                left: 10,
+                child: Material(
+                  color: Theme.of(context).colorScheme.surface,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Text(
+                      _backendNotice ?? 'Preparando backend de visualização…',
+                    ),
+                  ),
+                ),
+              ),
             if (useNative &&
                 !_nativeNavigating &&
                 _operationalHover != null &&

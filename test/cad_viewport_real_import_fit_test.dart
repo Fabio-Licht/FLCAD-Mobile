@@ -85,6 +85,12 @@ void main() {
           project.id,
           await repository.directoryFor(project.id),
         );
+        // Keep the real project's default WCS visible: it is viewport
+        // presentation and must not move a managed STEP scene to Canvas.
+        expect(
+          cad.runtime.scene.entities.where(isNativeViewportOverlay),
+          isNotEmpty,
+        );
       });
       await tester.binding.setSurfaceSize(const Size(1600, 1000));
       const paths = MethodChannel('plugins.flutter.io/path_provider');
@@ -108,10 +114,15 @@ void main() {
       };
       try {
         await tester.pumpWidget(officialWorkspace());
-        for (var i = 0; i < 5; i++) {
+        for (var i = 0; i < 20 && !initialCameraDelivered.isCompleted; i++) {
           await tester.pump();
         }
-        await tester.runAsync(() => initialCameraDelivered.future);
+        expect(
+          initialCameraDelivered.isCompleted,
+          isTrue,
+          reason:
+              'Initial camera command must be delivered; methods=${calls.map((c) => c.method).join(',')}',
+        );
         await tester.runAsync(cad.pickAndImportManagedStep);
         importCommitted = true;
         expect(
@@ -121,10 +132,15 @@ void main() {
               'Managed-only imports deliberately have no legacy activeImport',
         );
         expect(cad.runtime.managedImportPublication, isNotNull);
-        for (var i = 0; i < 10; i++) {
+        for (var i = 0; i < 20 && !fitDelivered.isCompleted; i++) {
           await tester.pump();
         }
-        await tester.runAsync(() => fitDelivered.future);
+        expect(
+          fitDelivered.isCompleted,
+          isTrue,
+          reason:
+              'Fit must reach active host; unsupported=${nativeSceneUnsupportedReason(cad.runtime.scene, style: 0)}',
+        );
         await tester.pump();
         final viewport = tester.widget<ProfessionalCadViewportWidget>(
           find.byType(ProfessionalCadViewportWidget),

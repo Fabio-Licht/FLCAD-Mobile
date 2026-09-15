@@ -70,7 +70,10 @@ class SketchEditorEngine {
         () => _create(operation, created),
       );
       graph.record(operation.id, created.map((e) => e.id));
-      _undoCounts.add(created.length);
+      // `_create` is wrapped by one SketchEngine transaction even when a tool
+      // emits several entities (rectangle, polygon or slot). Undo/Redo must
+      // therefore move one engine snapshot, not one snapshot per entity.
+      _undoCounts.add(1);
       _redoCounts.clear();
       history.record(EditorHistoryAction.commit, operation.id);
       analytics.editCount++;

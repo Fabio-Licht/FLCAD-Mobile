@@ -9,6 +9,7 @@ import '../../engineering_bridge/selection/mesh_bvh.dart';
 import '../../engineering_bridge/selection/professional_picking_pipeline.dart';
 import '../camera/cad_camera_controller.dart';
 import '../scene/cad_scene_graph.dart';
+import '../scene/cad_scene_bounds.dart';
 import '../rendering/stl_display_lod.dart';
 import '../rendering/cad_canvas_normal_pipeline.dart';
 
@@ -272,7 +273,7 @@ class ViewportPickingController {
     CadViewportPick? best;
     var bestPriority = 1 << 30;
     var bestDistance = double.infinity;
-    final worldScale = _worldReferenceScale(scene, camera);
+    final worldScale = cadReferencePresentationScale(scene, camera);
 
     Vector3? vector(Object? value) {
       if (value is! List || value.length < 3) return null;
@@ -432,9 +433,7 @@ class ViewportPickingController {
                 )
                 .normalized;
         final y = normal.cross(x).normalized;
-        final visualSize = isWorld
-            ? worldScale * 1.16
-            : (entity.geometry['visualSize'] as num?)?.toDouble() ?? 60;
+        final visualSize = worldScale * 2;
         final half = visualSize / 2;
         final path = Path()
           ..addPolygon(
@@ -450,9 +449,7 @@ class ViewportPickingController {
       } else if (entity.kind == CadSceneEntityKind.axis) {
         final direction = vector(entity.geometry['direction'])?.normalized;
         if (direction == null) continue;
-        final length = isWorld
-            ? worldScale
-            : (entity.geometry['visualLength'] as num?)?.toDouble() ?? 30;
+        final length = worldScale * 2;
         consider(
           entity,
           priority,
@@ -477,38 +474,6 @@ class ViewportPickingController {
       }
     }
     return best;
-  }
-
-  double _worldReferenceScale(CadSceneGraph scene, CadCameraController camera) {
-    var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
-    var maxX = double.negativeInfinity;
-    var maxY = double.negativeInfinity;
-    var maxZ = double.negativeInfinity;
-    for (final entity in scene.entities.where(
-      (item) => item.visible && !item.id.contains(':world:'),
-    )) {
-      final nodes = entity.geometry['nodes'];
-      if (nodes is! List) continue;
-      for (var i = 0; i + 2 < nodes.length; i += 3) {
-        final x = (nodes[i] as num).toDouble();
-        final y = (nodes[i + 1] as num).toDouble();
-        final z = (nodes[i + 2] as num).toDouble();
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (z < minZ) minZ = z;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-        if (z > maxZ) maxZ = z;
-      }
-    }
-    if (minX.isFinite && maxX.isFinite) {
-      final diagonal = Vector3(maxX - minX, maxY - minY, maxZ - minZ).length;
-      if (diagonal > 1e-9) return diagonal * .12;
-    }
-    final distance = (camera.eye - camera.target).length;
-    // Must match the renderer fallback exactly: a plane that is visible must
-    // expose the same hit area, including in an otherwise empty project.
-    return (distance * .32).clamp(1.0, double.infinity).toDouble();
   }
 
   Vector3? pointOnPlane({

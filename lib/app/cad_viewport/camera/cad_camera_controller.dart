@@ -157,6 +157,15 @@ class CadCameraController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Closes the Sketch camera session while retaining its normal-to-support
+  /// orientation. A following Fit can then frame the profile and part without
+  /// restoring the unrelated pre-Sketch view.
+  void retainSketchView() {
+    if (_preSketchState == null) return;
+    _preSketchState = null;
+    notifyListeners();
+  }
+
   Matrix4 get viewMatrix {
     final effectiveEye = eye;
     final effectiveTarget = target;

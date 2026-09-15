@@ -4,11 +4,14 @@ import 'package:flcad_mobile/app/commands/desktop_command_coordinator.dart';
 import 'package:flcad_mobile/app/desktop/desktop_cad_controller.dart';
 import 'package:flcad_mobile/app/desktop/desktop_application.dart';
 import 'package:flcad_mobile/app/engineering_bridge/operational_reverse_engineering_controller.dart';
+import 'package:flcad_mobile/core/cad_document/cad_document.dart';
+import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/api/geometry_kernel_api.dart';
 import 'package:flcad_mobile/core/cad_kernel/io/kernel_io_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/models/kernel_models.dart';
 import 'package:flcad_mobile/core/professional_recognition/api/professional_recognition_api.dart';
+import 'package:flcad_mobile/core/geometric_kernel/geometry/vectors.dart';
 import 'package:flcad_mobile/core/reference_engine/api/reference_api.dart';
 import 'package:flcad_mobile/core/reference_engine/engine/reference_engine.dart';
 import 'package:flcad_mobile/core/reference_engine/repository/reference_repository.dart';
@@ -147,6 +150,91 @@ void main() {
       expect(controller.selectedSketchEntityIds, {circle.id});
       expect(cad.runtime.scene.find(line.id)!.selected, isFalse);
       expect(cad.runtime.scene.find(circle.id)!.selected, isTrue);
+    },
+  );
+
+  test(
+    'managed BREP reference is recognized as planar and blocks when orphaned',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'managed-reference-sketch-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final kernels = KernelManager()
+        ..register(_HealthySurfaceKernel(), makeDefault: true);
+      final cad = DesktopCadController(
+        kernels: kernels,
+        projects: ProjectManager.instance,
+      );
+      final commands = DesktopCommandCoordinator(
+        cad: cad,
+        projects: ProjectManager.instance,
+      );
+      final projects = ProjectRepository(
+        storage: LocalStorageService(rootDirectory: directory),
+      );
+      final controller = OperationalReverseEngineeringController(
+        recognition: ProfessionalRecognitionApi(),
+        commands: commands,
+        runtime: cad.runtime,
+        referenceApi: ReferenceApi(
+          engine: ReferenceEngine(
+            repository: ReferenceRepository(projects: projects),
+          ),
+        ),
+      );
+      addTearDown(controller.dispose);
+      addTearDown(cad.dispose);
+      await cad.runtime.open('managed-reference-sketch', directory);
+      const hash =
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const sourceId = 'managed-brep:source';
+      const referenceId = 'managed-plane:source-face-3';
+      const reference = ManagedCadReference(
+        kind: ManagedCadReferenceKind.plane,
+        sourceEntityId: sourceId,
+        sourceFormat: 'brep',
+        sourceShapeSha256: hash,
+        faceIndex: 3,
+        origin: Vector3(12, -8, 4),
+        normal: Vector3(0, 1, 0),
+        xDirection: Vector3(1, 0, 0),
+      );
+      await cad.runtime.mutate(
+        command: 'test.managed-reference-support',
+        upsert: [
+          CadDocumentEntity(
+            id: referenceId,
+            kind: CadDocumentEntityKind.reference,
+            data: {
+              'name': 'Plano Source BREP F3',
+              ManagedCadReference.dataKey: reference.toJson(),
+              'sceneKind': 'plane',
+              'sceneGeometry': {
+                'origin': reference.origin.toJson(),
+                'normal': reference.normal.toJson(),
+                'xDirection': reference.xDirection.toJson(),
+              },
+            },
+          ),
+        ],
+      );
+      await controller.configureProject(
+        projectId: 'managed-reference-sketch',
+        projectDirectory: directory,
+      );
+
+      expect(controller.isPlanarSketchSupport(referenceId), isTrue);
+      expect(
+        () => controller.selectSketchSupport(referenceId),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('órfã'),
+          ),
+        ),
+      );
     },
   );
 }

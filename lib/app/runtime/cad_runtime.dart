@@ -1503,6 +1503,44 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     );
   }
 
+  /// Publishes an accepted authoring Feature already in its closed lifecycle
+  /// state. Preview confirmation is one user action and therefore one durable
+  /// Undo/Redo step.
+  Future<void> upsertClosedEntity({
+    required String command,
+    required CadDocumentEntityKind kind,
+    required CadSceneEntity entity,
+    required ShapeHandle shape,
+    Map<String, dynamic> data = const {},
+    bool officialShape = false,
+  }) async {
+    await _persistNativeShape(shape);
+    final requested = CadDocumentEntity(
+      id: entity.id,
+      kind: kind,
+      shape: shape,
+      data: {
+        ...data,
+        'collectionId': data['collectionId'] ?? _defaultCollectionFor(kind),
+        'sceneKind': entity.kind.name,
+        'sceneGeometry': entity.geometry,
+        'sceneVisible': entity.visible,
+        'sceneTransparent': entity.transparent,
+      },
+    );
+    await _enqueue(
+      (tx) => _mutateDocument(
+        tx,
+        command: command,
+        requested: [requested],
+        stateOverrides: {entity.id: FeatureLifecycleState.closed},
+        officialExport: officialShape
+            ? OfficialExportUpdate.set(entity.id)
+            : const OfficialExportUpdate.keep(),
+      ),
+    );
+  }
+
   /// Publishes one Feature and its persistent topology in a single document
   /// transaction, so Undo/Redo can never separate a face from its boundaries.
   Future<void> upsertEntityBatch({
@@ -2077,10 +2115,27 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     CadSceneEntity entity,
     ShapeHandle shape,
   ) async {
-    projection.upsertTransient(entity);
-    final meshes = _displayMeshes;
-    if (meshes == null) return;
-    await meshes.upsert(entityId: entity.id, shape: shape);
+    var meshes = _displayMeshes;
+    final document = _document;
+    final directory = _projectDirectory;
+    if (meshes == null && document != null && directory != null) {
+      meshes = KernelDisplayMeshPipeline(
+        kernel: kernels.active,
+        projectId: document.projectId,
+        projectDirectory: directory,
+        scene: scene,
+      );
+      if (meshes.supported) _displayMeshes = meshes;
+    }
+    if (meshes == null || !meshes.supported) {
+      projection.upsertTransient(entity);
+      return;
+    }
+    await meshes.upsert(
+      entityId: entity.id,
+      shape: shape,
+      presentation: entity,
+    );
     final rendered = scene.find(entity.id);
     if (rendered != null) projection.upsertTransient(rendered);
   }

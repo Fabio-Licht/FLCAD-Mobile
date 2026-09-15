@@ -34,6 +34,7 @@ import '../cad_viewport/camera/cad_camera_controller.dart';
 import '../cad_viewport/camera/cad_managed_import_fit.dart';
 import '../cad_viewport/native/integrated_native_viewport_widget.dart';
 import '../cad_viewport/scene/cad_scene_graph.dart';
+import '../cad_viewport/scene/cad_scene_bounds.dart';
 import '../cad_viewport/selection/viewport_picking_controller.dart';
 import '../commands/desktop_command_coordinator.dart';
 import '../engineering_bridge/operational_reverse_engineering_controller.dart';
@@ -1205,6 +1206,10 @@ class _OfficialEngineeringWorkspaceState
                     value: reference.normal.toJson(),
                   ),
                   _InspectorProperty(
+                    label: 'X Direction',
+                    value: reference.xDirection.toJson(),
+                  ),
+                  _InspectorProperty(
                     label: 'Status',
                     value:
                         widget.cad.runtime.managedCadReferenceIsOrphaned(
@@ -1212,6 +1217,42 @@ class _OfficialEngineeringWorkspaceState
                         )
                         ? 'Órfã / origem indisponível'
                         : 'Válida',
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+        if (entity.data['sketch'] case final Map raw) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final sketch = Sketch.fromJson(Map<String, dynamic>.from(raw));
+              return _InspectorSection(
+                title: 'Sketch Support',
+                children: [
+                  _InspectorProperty(
+                    label: 'Plane',
+                    value:
+                        sketch.metadata['supportEntityId'] ??
+                        sketch.plane.parameters['referenceId'] ??
+                        sketch.plane.type.name,
+                  ),
+                  _InspectorProperty(
+                    label: 'Origin',
+                    value: sketch.coordinates.origin.toJson(),
+                  ),
+                  _InspectorProperty(
+                    label: 'Normal',
+                    value: sketch.coordinates.normal.toJson(),
+                  ),
+                  _InspectorProperty(
+                    label: 'X Axis',
+                    value: sketch.coordinates.xAxis.toJson(),
+                  ),
+                  _InspectorProperty(
+                    label: 'Y Axis',
+                    value: sketch.coordinates.yAxis.toJson(),
                   ),
                 ],
               );
@@ -2236,51 +2277,7 @@ class _OfficialEngineeringWorkspaceState
   }
 
   ({Vector3 minimum, Vector3 maximum})? _visibleSceneBounds() {
-    var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
-    var maxX = double.negativeInfinity;
-    var maxY = double.negativeInfinity;
-    var maxZ = double.negativeInfinity;
-
-    void include(Object? raw) {
-      if (raw is! List || raw.length < 3) return;
-      final x = (raw[0] as num).toDouble();
-      final y = (raw[1] as num).toDouble();
-      final z = (raw[2] as num).toDouble();
-      minX = math.min(minX, x);
-      minY = math.min(minY, y);
-      minZ = math.min(minZ, z);
-      maxX = math.max(maxX, x);
-      maxY = math.max(maxY, y);
-      maxZ = math.max(maxZ, z);
-    }
-
-    for (final entity in scene.entities.where((item) => item.visible)) {
-      final nodes = entity.geometry['nodes'];
-      if (nodes is List) {
-        for (var index = 0; index + 2 < nodes.length; index += 3) {
-          include([nodes[index], nodes[index + 1], nodes[index + 2]]);
-        }
-      }
-      final points = entity.geometry['points'];
-      if (points is List) {
-        for (final point in points) {
-          include(point);
-        }
-      }
-      final segments = entity.geometry['segments'];
-      if (segments is List) {
-        for (final segment in segments.whereType<List>()) {
-          for (final point in segment) {
-            include(point);
-          }
-        }
-      }
-    }
-    if (!minX.isFinite || !maxX.isFinite) return null;
-    return (
-      minimum: Vector3(minX, minY, minZ),
-      maximum: Vector3(maxX, maxY, maxZ),
-    );
+    return cadSceneContentBounds(scene);
   }
 
   void _fitVisibleScene() {
@@ -2332,17 +2329,9 @@ class _OfficialEngineeringWorkspaceState
     final selectedEntity = geometrySelection.selectedIds.isEmpty
         ? null
         : document.entities[geometrySelection.selectedIds.first];
-    final selectedGeometry =
-        selectedEntity?.data['sketchSupport'] ??
-        selectedEntity?.data['sceneGeometry'];
     final selectedIsPlanar =
-        selectedGeometry is Map &&
-        selectedGeometry['type'] == 'plane' &&
-        const {
-          CadDocumentEntityKind.reference,
-          CadDocumentEntityKind.face,
-          CadDocumentEntityKind.surface,
-        }.contains(selectedEntity?.kind);
+        selectedEntity != null &&
+        operational.isPlanarSketchSupport(selectedEntity.id);
     var choice = 'xy';
     final selectedChoice = selectedIsPlanar ? selectedEntity : null;
     final accepted = await showDialog<bool>(
@@ -2417,21 +2406,25 @@ class _OfficialEngineeringWorkspaceState
       ),
     );
     if (accepted != true) return;
-    switch (choice) {
-      case 'xy':
-        operational.selectWorldSketchPlane(SketchPlaneType.xy);
-        break;
-      case 'yz':
-        operational.selectWorldSketchPlane(SketchPlaneType.yz);
-        break;
-      case 'zx':
-        operational.selectWorldSketchPlane(SketchPlaneType.zx);
-        break;
-      default:
-        if (selectedChoice == null) return;
-        operational.selectSketchSupport(selectedChoice.id);
+    try {
+      switch (choice) {
+        case 'xy':
+          operational.selectWorldSketchPlane(SketchPlaneType.xy);
+          break;
+        case 'yz':
+          operational.selectWorldSketchPlane(SketchPlaneType.yz);
+          break;
+        case 'zx':
+          operational.selectWorldSketchPlane(SketchPlaneType.zx);
+          break;
+        default:
+          if (selectedChoice == null) return;
+          operational.selectSketchSupport(selectedChoice.id);
+      }
+      await _activateSelectedSketchSupport();
+    } catch (error) {
+      widget.cad.setStatus(error.toString().replaceFirst('Bad state: ', ''));
     }
-    await _activateSelectedSketchSupport();
   }
 
   Future<void> _selectWorldSketchSupport(SketchPlaneType type) async {
@@ -2484,6 +2477,8 @@ class _OfficialEngineeringWorkspaceState
       case SketchToolType.threePointArc:
       case SketchToolType.tangentArc:
         operational.beginArcCommand(operational.arcMode);
+      case SketchToolType.rectangle:
+        operational.beginRectangleCommand();
       default:
         operational.beginLineCommand();
     }
@@ -2507,56 +2502,25 @@ class _OfficialEngineeringWorkspaceState
       widget.cad.setStatus('Point to an XY, YZ, ZX or planar support.');
       return;
     }
-    final geometry =
-        entity.data['sketchSupport'] ?? entity.data['sceneGeometry'];
-    if (geometry is! Map || geometry['type'] != 'plane') {
+    if (!operational.isPlanarSketchSupport(entity.id)) {
       widget.cad.setStatus('The selected entity is not a planar support.');
       return;
     }
-    operational.selectSketchSupport(entity.id);
-    await _activateSelectedSketchSupport();
+    try {
+      operational.selectSketchSupport(entity.id);
+      await _activateSelectedSketchSupport();
+    } catch (error) {
+      widget.cad.setStatus(error.toString().replaceFirst('Bad state: ', ''));
+    }
   }
 
   Future<void> _finishSketch() async {
     operational.cancelSketchCommand();
     await operational.finishSketch();
-    camera.exitSketch();
+    camera.retainSketchView();
     await operational.refreshSketchSceneAfterExit();
-    final sketch = operational.activeSketch;
-    if (sketch != null) {
-      final points = <Vector3>[];
-      for (final id in sketch.entityIds) {
-        final geometry = widget.cad.runtime.scene.find(id)?.geometry['points'];
-        if (geometry is! List) continue;
-        for (final raw in geometry.whereType<List>()) {
-          if (raw.length >= 3) {
-            points.add(
-              Vector3(
-                (raw[0] as num).toDouble(),
-                (raw[1] as num).toDouble(),
-                (raw[2] as num).toDouble(),
-              ),
-            );
-          }
-        }
-      }
-      if (points.isNotEmpty) {
-        var minimum = points.first, maximum = points.first;
-        for (final point in points.skip(1)) {
-          minimum = Vector3(
-            math.min(minimum.x, point.x),
-            math.min(minimum.y, point.y),
-            math.min(minimum.z, point.z),
-          );
-          maximum = Vector3(
-            math.max(maximum.x, point.x),
-            math.max(maximum.y, point.y),
-            math.max(maximum.z, point.z),
-          );
-        }
-        camera.fit(minimum, maximum);
-      }
-    }
+    final bounds = cadSceneContentBounds(widget.cad.runtime.scene);
+    if (bounds != null) camera.fit(bounds.minimum, bounds.maximum);
   }
 
   void _focusSketchHealthIssue(SketchHealthIssue issue) {
@@ -3092,6 +3056,22 @@ class _OfficialEngineeringWorkspaceState
             _InspectorProperty(
               label: 'References',
               value: supportId == null ? 0 : 1,
+            ),
+            _InspectorProperty(
+              label: 'Origin',
+              value: sketch.coordinates.origin.toJson(),
+            ),
+            _InspectorProperty(
+              label: 'Normal',
+              value: sketch.coordinates.normal.toJson(),
+            ),
+            _InspectorProperty(
+              label: 'X Axis',
+              value: sketch.coordinates.xAxis.toJson(),
+            ),
+            _InspectorProperty(
+              label: 'Y Axis',
+              value: sketch.coordinates.yAxis.toJson(),
             ),
           ],
         ),
@@ -7703,6 +7683,21 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                 ),
               ],
             ),
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: controller.rectangleCommandActive
+                    ? controller.enterSketchSelectionMode
+                    : controller.beginRectangleCommand,
+                icon: const Icon(Icons.rectangle_outlined, size: 17),
+                label: Text(
+                  controller.rectangleCommandActive
+                      ? 'Drawing Rectangle'
+                      : 'Rectangle · Two Corners',
+                ),
+              ),
+            ),
             if (controller.circleCommandActive)
               Padding(
                 padding: const EdgeInsets.only(top: 5),
@@ -9091,9 +9086,13 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           TextButton(
                             onPressed: widget.controller.busy
                                 ? null
-                                : () => setState(
-                                    () => extrudeCommandActive = false,
-                                  ),
+                                : () {
+                                    widget.controller
+                                        .cancelProfessionalExtrude();
+                                    setState(
+                                      () => extrudeCommandActive = false,
+                                    );
+                                  },
                             child: const Text('Cancel'),
                           ),
                         ],
@@ -9261,7 +9260,7 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                             setState(() => extrudeCommandActive = false);
                           }
                         },
-                  child: const Text('Create Extrude'),
+                  child: const Text('Apply'),
                 ),
               ),
               TextButton(

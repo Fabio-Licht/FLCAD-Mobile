@@ -42,6 +42,7 @@ class KernelDisplayMeshPipeline {
   Future<KernelDisplayMesh> upsert({
     required String entityId,
     required ShapeHandle shape,
+    CadSceneEntity? presentation,
     double deflection = 0.1,
   }) async {
     final active = kernel;
@@ -98,7 +99,7 @@ class KernelDisplayMeshPipeline {
         payloadPath: result.payloadPath,
         deflection: deflection,
       );
-      final existing = scene.find(entityId);
+      final existing = presentation ?? scene.find(entityId);
       scene.upsert(
         CadSceneEntity(
           id: entityId,

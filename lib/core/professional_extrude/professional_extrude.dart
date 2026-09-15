@@ -21,6 +21,7 @@ class ProfessionalExtrudeContract {
     required this.sourceRevision,
     required this.sourceShapeId,
     required this.distance,
+    this.profileEntityId,
     this.draftAngleDegrees = 0,
     this.directionSourceId = 'profileNormal',
     this.directionVector = const [0, 0, 1],
@@ -32,6 +33,7 @@ class ProfessionalExtrudeContract {
   final ProfessionalExtrudeSourceKind sourceKind;
   final int sourceRevision;
   final double distance;
+  final String? profileEntityId;
   final double draftAngleDegrees;
   final String directionSourceId;
   final List<double> directionVector;
@@ -45,6 +47,7 @@ class ProfessionalExtrudeContract {
     'sourceRevision': sourceRevision,
     'sourceShapeId': sourceShapeId,
     'distance': distance,
+    if (profileEntityId != null) 'profileEntityId': profileEntityId,
     'draftAngleDegrees': draftAngleDegrees,
     'directionSourceId': directionSourceId,
     'directionVector': directionVector,
@@ -65,6 +68,7 @@ class ProfessionalExtrudeContract {
         sourceRevision: (json['sourceRevision'] as num).toInt(),
         sourceShapeId: json['sourceShapeId'] as String,
         distance: (json['distance'] as num).toDouble(),
+        profileEntityId: json['profileEntityId'] as String?,
         draftAngleDegrees: (json['draftAngleDegrees'] as num?)?.toDouble() ?? 0,
         directionSourceId:
             json['directionSourceId'] as String? ?? 'profileNormal',

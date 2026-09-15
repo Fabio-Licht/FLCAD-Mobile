@@ -70,6 +70,30 @@ void main() {
     expect(adapter.health(restored).ready, isTrue);
   });
 
+  test(
+    'selected Sketch profile persists without breaking legacy contracts',
+    () {
+      final selected = ProfessionalExtrudeContract(
+        sourceEntityId: 'Sketch001',
+        sourceKind: ProfessionalExtrudeSourceKind.sketch,
+        sourceRevision: 2,
+        sourceShapeId: 'profile-shape',
+        profileEntityId: 'ske:circle-1',
+        distance: 10,
+      );
+      expect(
+        ProfessionalExtrudeContract.fromJson(selected.toJson()).profileEntityId,
+        'ske:circle-1',
+      );
+      expect(
+        ProfessionalExtrudeContract.fromJson(
+          _contract().toJson(),
+        ).profileEntityId,
+        isNull,
+      );
+    },
+  );
+
   test('future extents are prepared but cannot execute in G-143', () {
     for (final extent in ProfessionalExtrudeExtent.values.skip(1)) {
       expect(

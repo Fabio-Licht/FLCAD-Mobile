@@ -22,6 +22,11 @@ bool isNativeViewportOverlay(CadSceneEntity entity) => switch (entity.kind) {
   CadSceneEntityKind.coordinateSystem => true,
   CadSceneEntityKind.point =>
     entity.geometry['type'] == 'point' || entity.id.contains(':world:'),
+  CadSceneEntityKind.sketch => true,
+  CadSceneEntityKind.preview =>
+    entity.geometry['nodes'] == null &&
+        (entity.geometry['points'] is List ||
+            entity.geometry['segments'] is List),
   _ => false,
 };
 

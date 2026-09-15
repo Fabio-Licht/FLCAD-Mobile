@@ -16,6 +16,60 @@ void main() {
   const channel = MethodChannel('flcad/native_viewport');
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('Sketch and line previews remain safe overlays over Native CAD', () {
+    final scene = CadSceneGraph()
+      ..upsert(entity())
+      ..upsert(
+        const CadSceneEntity(
+          id: 'Sketch001',
+          kind: CadSceneEntityKind.sketch,
+          geometry: {
+            'points': [
+              [0.0, 0.0, 0.0],
+              [1.0, 0.0, 0.0],
+            ],
+          },
+        ),
+      )
+      ..upsert(
+        const CadSceneEntity(
+          id: 'sketch-rectangle-preview',
+          kind: CadSceneEntityKind.preview,
+          geometry: {
+            'segments': [
+              [
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+              ],
+            ],
+          },
+        ),
+      );
+    expect(nativeSceneUnsupportedReason(scene, style: 0), isNull);
+    expect(
+      CadSceneDisplayAdapter().initial(scene).entities.map((e) => e['id']),
+      ['a'],
+    );
+    scene.dispose();
+  });
+
+  test('invalid solid preview still forces categorized Canvas fallback', () {
+    final scene = CadSceneGraph()
+      ..upsert(entity())
+      ..upsert(
+        const CadSceneEntity(
+          id: 'preview:Extrude001',
+          kind: CadSceneEntityKind.preview,
+          geometry: {'handle': 'transient-without-display-mesh'},
+        ),
+      );
+    expect(
+      nativeSceneUnsupportedReason(scene, style: 0),
+      contains('pré-visualização CAD'),
+    );
+    scene.dispose();
+  });
+
   test(
     'new window bridge waits for retirement and inactive dispose cannot stop its successor',
     () async {

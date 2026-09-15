@@ -18,6 +18,7 @@ import 'rendering/cad_tonal_separation.dart';
 import 'rendering/cad_material_lighting.dart';
 import 'rendering/cad_root_color.dart';
 import 'scene/cad_scene_graph.dart';
+import 'scene/cad_scene_bounds.dart';
 import 'rendering/stl_display_lod.dart';
 import 'selection/viewport_picking_controller.dart';
 
@@ -2002,9 +2003,8 @@ class _CadScenePainter extends CustomPainter {
       );
     }
 
-    final scale = (camera.eye - camera.target).length * .16;
     final isWorld = entity.id.contains(':world:');
-    final worldScale = _worldReferenceScale();
+    final worldScale = cadReferencePresentationScale(scene, camera);
     final isPlanarSupport =
         entity.kind == CadSceneEntityKind.plane ||
         ((entity.kind == CadSceneEntityKind.surface ||
@@ -2042,9 +2042,9 @@ class _CadScenePainter extends CustomPainter {
           .normalized;
       final y = normal.cross(x).normalized;
       final halfWidth =
-          ((parameters['width'] as num?)?.toDouble() ?? scale) / 2;
+          ((parameters['width'] as num?)?.toDouble() ?? worldScale * 2) / 2;
       final halfHeight =
-          ((parameters['height'] as num?)?.toDouble() ?? scale) / 2;
+          ((parameters['height'] as num?)?.toDouble() ?? worldScale * 2) / 2;
       final path = Path()
         ..addPolygon(
           [
@@ -2113,10 +2113,7 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.axis:
         final origin = vector(entity.geometry['origin']);
         final direction = vector(entity.geometry['direction']).normalized;
-        final length = isWorld
-            ? worldScale
-            : (entity.geometry['visualLength'] as num?)?.toDouble() ??
-                  scale * 2;
+        final length = worldScale * 2;
         final axisColor = switch (entity.geometry['axisColor']) {
           'x' => Colors.red,
           'y' => Colors.green,
@@ -2188,11 +2185,7 @@ class _CadScenePainter extends CustomPainter {
                   )
                   .normalized;
         final y = normal.cross(x).normalized;
-        final extent = isWorld
-            ? worldScale * .58
-            : ((entity.geometry['visualSize'] as num?)?.toDouble() ??
-                      scale * 1.4) /
-                  2;
+        final extent = worldScale;
         final planeColor = switch (entity.geometry['planeColor']) {
           'xy' => Colors.blue,
           'xz' => Colors.green,
@@ -2244,17 +2237,17 @@ class _CadScenePainter extends CustomPainter {
         final origin = vector(entity.geometry['origin']);
         line(
           origin,
-          origin + vector(entity.geometry['xAxis']).normalized * scale,
+          origin + vector(entity.geometry['xAxis']).normalized * worldScale,
           Colors.red,
         );
         line(
           origin,
-          origin + vector(entity.geometry['yAxis']).normalized * scale,
+          origin + vector(entity.geometry['yAxis']).normalized * worldScale,
           Colors.green,
         );
         line(
           origin,
-          origin + vector(entity.geometry['zAxis']).normalized * scale,
+          origin + vector(entity.geometry['zAxis']).normalized * worldScale,
           Colors.blue,
         );
       case CadSceneEntityKind.curve:
@@ -2428,37 +2421,6 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.gizmo:
         break;
     }
-  }
-
-  double _worldReferenceScale() {
-    var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
-    var maxX = double.negativeInfinity;
-    var maxY = double.negativeInfinity;
-    var maxZ = double.negativeInfinity;
-    for (final entity in scene.entities.where(
-      (item) => item.visible && !item.id.contains(':world:'),
-    )) {
-      final nodes = entity.geometry['nodes'];
-      if (nodes is! List) continue;
-      for (var i = 0; i + 2 < nodes.length; i += 3) {
-        final x = (nodes[i] as num).toDouble();
-        final y = (nodes[i + 1] as num).toDouble();
-        final z = (nodes[i + 2] as num).toDouble();
-        minX = math.min(minX, x);
-        minY = math.min(minY, y);
-        minZ = math.min(minZ, z);
-        maxX = math.max(maxX, x);
-        maxY = math.max(maxY, y);
-        maxZ = math.max(maxZ, z);
-      }
-    }
-    if (minX.isFinite && maxX.isFinite) {
-      final diagonal = Vector3(maxX - minX, maxY - minY, maxZ - minZ).length;
-      if (diagonal > 1e-9) return diagonal * .12;
-    }
-    // With no model bounds, world planes are the only available Sketch
-    // supports. Keep them large enough to remain visible and selectable.
-    return math.max((camera.eye - camera.target).length * .32, 1.0);
   }
 
   @override

@@ -68,5 +68,24 @@ void main() {
       expect(camera.up.distanceTo(before.up), lessThan(1e-12));
       expect(camera.projectionMode, before.projectionMode);
     });
+
+    test('finish retains support normal while allowing a content Fit', () {
+      final camera = CadCameraController();
+      camera.enterSketch(
+        origin: const Vector3(4, 5, 6),
+        normal: const Vector3(1, 0, 0),
+        xDirection: const Vector3(0, 1, 0),
+      );
+      camera.retainSketchView();
+      camera.fit(const Vector3(-8, 0, 0), const Vector3(10, 20, 30));
+      expect(
+        (camera.eye - camera.target).normalized.distanceTo(
+          const Vector3(1, 0, 0),
+        ),
+        lessThan(1e-12),
+      );
+      expect(camera.up.distanceTo(const Vector3(0, 0, 1)), lessThan(1e-12));
+      expect(camera.projectionMode, CadProjectionMode.orthographic);
+    });
   });
 }

@@ -7,6 +7,7 @@ import 'dart:ui' show Offset;
 import 'package:flutter/foundation.dart';
 
 import '../../core/cad_document/cad_document.dart';
+import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../cad_viewport/rendering/sketch_surface_preview_builder.dart';
 import '../cad_viewport/rendering/recognition_surface_preview_builder.dart';
@@ -192,6 +193,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.read<String>('solid.extrude.sourceId');
   set selectedExtrudeSourceId(String? value) =>
       runtime.write('solid.extrude.sourceId', value);
+  String? get selectedExtrudeProfileEntityId =>
+      runtime.read<String>('solid.extrude.profileEntityId');
+  set selectedExtrudeProfileEntityId(String? value) =>
+      runtime.write('solid.extrude.profileEntityId', value);
   Map<String, dynamic>? get professionalRevolvePreview =>
       runtime.read<Map<String, dynamic>>('solid.revolve.preview');
   set professionalRevolvePreview(Map<String, dynamic>? value) =>
@@ -306,8 +311,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   bool get circleCommandActive =>
       runtime.read<bool>('sketch.circle.active') ?? false;
   bool get arcCommandActive => runtime.read<bool>('sketch.arc.active') ?? false;
+  bool get rectangleCommandActive =>
+      runtime.read<bool>('sketch.rectangle.active') ?? false;
   bool get sketchCreationCommandActive =>
-      lineCommandActive || circleCommandActive || arcCommandActive;
+      lineCommandActive ||
+      circleCommandActive ||
+      arcCommandActive ||
+      rectangleCommandActive;
   bool get sketchEditingCommandActive =>
       runtime.read<bool>('sketch.edit.active') ?? false;
   double get sketchEditingValue =>
@@ -1881,10 +1891,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     selectSketchSupport(entityId);
   }
 
-  /// Selects a geometric Sketch support. No Mesh is consulted or required.
-  /// Planar Faces and Surfaces participate by publishing `sketchSupport` (or
-  /// planar `sceneGeometry`) through their document entity data.
-  void selectSketchSupport(String entityId) {
+  bool isPlanarSketchSupport(String entityId) {
     final entity = runtime.document?.entities[entityId];
     if (entity == null ||
         !{
@@ -1892,14 +1899,67 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           CadDocumentEntityKind.face,
           CadDocumentEntityKind.surface,
         }.contains(entity.kind)) {
-      return;
+      return false;
+    }
+    if (entity.data[ManagedCadReference.dataKey] is Map) return true;
+    final raw = entity.data['sketchSupport'] ?? entity.data['sceneGeometry'];
+    return raw is Map && raw['type'] == 'plane';
+  }
+
+  PlaneGeometry _resolveSketchSupport(String entityId) {
+    final entity = runtime.document?.entities[entityId];
+    if (entity == null ||
+        !{
+          CadDocumentEntityKind.reference,
+          CadDocumentEntityKind.face,
+          CadDocumentEntityKind.surface,
+        }.contains(entity.kind)) {
+      throw StateError('Selecione uma referência ou suporte planar válido.');
+    }
+    final managed = entity.data[ManagedCadReference.dataKey];
+    if (managed is Map) {
+      late final ManagedCadReference reference;
+      try {
+        reference = ManagedCadReference.fromJson(
+          Map<String, dynamic>.from(managed),
+        );
+      } on FormatException {
+        throw StateError(
+          'A referência CAD selecionada é inválida e não pode suportar um Sketch.',
+        );
+      }
+      if (runtime.managedCadReferenceIsOrphaned(reference)) {
+        throw StateError(
+          'A referência CAD selecionada está órfã; restaure a entidade-origem antes de criar o Sketch.',
+        );
+      }
+      return PlaneGeometry(
+        Vec3(reference.origin.x, reference.origin.y, reference.origin.z),
+        Vec3(reference.normal.x, reference.normal.y, reference.normal.z),
+        xDirection: Vec3(
+          reference.xDirection.x,
+          reference.xDirection.y,
+          reference.xDirection.z,
+        ),
+      );
     }
     final raw = entity.data['sketchSupport'] ?? entity.data['sceneGeometry'];
-    if (raw is! Map || raw['type'] != 'plane') return;
-    runtime.write(
-      'sketch.selectedPlane',
-      geometryFromJson(Map<String, dynamic>.from(raw)) as PlaneGeometry,
-    );
+    if (raw is! Map || raw['type'] != 'plane') {
+      throw StateError('A entidade selecionada não é um suporte planar.');
+    }
+    final geometry = geometryFromJson(Map<String, dynamic>.from(raw));
+    if (geometry is! PlaneGeometry) {
+      throw StateError('A entidade selecionada não é um suporte planar.');
+    }
+    return geometry;
+  }
+
+  /// Selects a geometric Sketch support. No Mesh is consulted or required.
+  /// Planar Faces and Surfaces participate by publishing `sketchSupport` (or
+  /// planar `sceneGeometry`) through their document entity data.
+  void selectSketchSupport(String entityId) {
+    final plane = _resolveSketchSupport(entityId);
+    runtime.write('sketch.selectedPlane', plane);
     runtime.write('sketch.selectedPlaneId', entityId);
     stage = SketchSurfaceStage.referenceReady;
     runtime.select({entityId});
@@ -2389,7 +2449,11 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Future<void> createPoint() => _run('reverse.reference.point');
   Future<void> createCoordinateSystem() =>
       _run('reverse.reference.coordinateSystem');
-  Future<void> openSketch() => _run('reverse.sketch.open');
+  Future<void> openSketch() async {
+    await _run('reverse.sketch.open');
+    if (error != null) throw StateError(error!);
+  }
+
   Future<void> drawRectangle(SketchVector first, SketchVector second) => _run(
     'reverse.sketch.rectangle',
     {'first': first.toJson(), 'second': second.toJson()},
@@ -2654,6 +2718,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (sketchEditingCommandActive) finishSketchEditingTool();
     if (circleCommandActive) finishCircleCommand();
     if (arcCommandActive) finishArcCommand();
+    if (rectangleCommandActive) finishRectangleCommand();
     activeTool = SketchToolType.line;
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
@@ -2695,6 +2760,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (sketchEditingCommandActive) finishSketchEditingTool();
     finishLineCommand();
     if (arcCommandActive) finishArcCommand();
+    if (rectangleCommandActive) finishRectangleCommand();
     activeTool = SketchToolType.circle;
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
@@ -2713,6 +2779,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (sketchEditingCommandActive) finishSketchEditingTool();
     finishLineCommand();
     if (circleCommandActive) finishCircleCommand();
+    if (rectangleCommandActive) finishRectangleCommand();
     activeTool = mode == SketchArcMode.threePoints
         ? SketchToolType.threePointArc
         : SketchToolType.arc;
@@ -2725,6 +2792,23 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.arc.snapType', null);
     _configureCreationSnaps();
     runtime.hideTransient('sketch-arc-preview');
+    notifyListeners();
+  }
+
+  void beginRectangleCommand() {
+    if (stage != SketchSurfaceStage.sketchActive) return;
+    if (sketchEditingCommandActive) finishSketchEditingTool();
+    finishLineCommand();
+    if (circleCommandActive) finishCircleCommand();
+    if (arcCommandActive) finishArcCommand();
+    activeTool = SketchToolType.rectangle;
+    selectedSketchEntityIds.clear();
+    runtime.select(const <String>{});
+    previewPoints = const [];
+    runtime.write('sketch.rectangle.active', true);
+    runtime.write('sketch.rectangle.cursor', null);
+    _configureCreationSnaps();
+    runtime.hideTransient('sketch-rectangle-preview');
     notifyListeners();
   }
 
@@ -2773,6 +2857,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.arc.snapType', null);
     runtime.write('sketch.arc.active', false);
     runtime.hideTransient('sketch-arc-preview');
+    runtime.write('sketch.rectangle.cursor', null);
+    runtime.write('sketch.rectangle.active', false);
+    runtime.hideTransient('sketch-rectangle-preview');
     runtime.hideTransient('sketch-endpoint-snap-marker');
     runtime.write('sketch.inference', null);
     _clearSketchAssistant();
@@ -2837,6 +2924,19 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.circle.snapType', null);
     runtime.write('sketch.circle.active', false);
     runtime.hideTransient('sketch-circle-preview');
+    runtime.hideTransient('sketch-endpoint-snap-marker');
+    runtime.write('sketch.inference', null);
+    _clearSketchAssistant();
+    activeTool = SketchToolType.point;
+    notifyListeners();
+  }
+
+  void finishRectangleCommand() {
+    if (!rectangleCommandActive) return;
+    previewPoints = const [];
+    runtime.write('sketch.rectangle.cursor', null);
+    runtime.write('sketch.rectangle.active', false);
+    runtime.hideTransient('sketch-rectangle-preview');
     runtime.hideTransient('sketch-endpoint-snap-marker');
     runtime.write('sketch.inference', null);
     _clearSketchAssistant();
@@ -2931,6 +3031,34 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     _refreshSketchAssistant(point);
     if (previewPoints.isEmpty) {
       runtime.hideTransient('sketch-alignment-guides');
+      notifyListeners();
+      return;
+    }
+    if (rectangleCommandActive) {
+      runtime.write('sketch.rectangle.cursor', point);
+      final first = previewPoints.first;
+      final coordinates = activeSketch!.coordinates;
+      final corners = [
+        first,
+        SketchVector(point.x, first.y),
+        point,
+        SketchVector(first.x, point.y),
+        first,
+      ];
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'sketch-rectangle-preview',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            'points': corners
+                .map((value) => coordinates.localToGlobal(value).toJson())
+                .toList(),
+            'displayColor': 'previewOrange',
+            'strokeWidth': SketchSceneAdapter.technicalStrokeWidth,
+          },
+        ),
+      );
       notifyListeners();
       return;
     }
@@ -3455,6 +3583,25 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       previewPoints = const [];
       runtime.write('sketch.circle.cursor', null);
       runtime.hideTransient('sketch-circle-preview');
+      runtime.write('sketch.inference', null);
+      notifyListeners();
+      return;
+    }
+    if (rectangleCommandActive) {
+      if (previewPoints.isEmpty) {
+        previewPoints = [point];
+        runtime.write('sketch.rectangle.cursor', point);
+        notifyListeners();
+        return;
+      }
+      final first = previewPoints.first;
+      if ((point.x - first.x).abs() > 1e-9 &&
+          (point.y - first.y).abs() > 1e-9) {
+        await drawRectangle(first, point);
+      }
+      previewPoints = const [];
+      runtime.write('sketch.rectangle.cursor', null);
+      runtime.hideTransient('sketch-rectangle-preview');
       runtime.write('sketch.inference', null);
       notifyListeners();
       return;
@@ -4728,6 +4875,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final valid = extrudeSources.any((entity) => entity.id == id);
     if (!valid) throw StateError('Extrude source is unavailable: $id');
     selectedExtrudeSourceId = id;
+    selectedExtrudeProfileEntityId = null;
     notifyListeners();
   }
 
@@ -4736,10 +4884,14 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final entity = document?.entities[entityId];
     if (entity == null) return false;
     String? sourceId;
+    String? profileEntityId;
     if (entity.kind == CadDocumentEntityKind.sketch) {
       sourceId = entity.data['sketch'] is Map
           ? entity.id
           : entity.data['parentSketchId'] as String?;
+      if (sourceId != entity.id && entity.data['sketchEntity'] is Map) {
+        profileEntityId = entity.id;
+      }
     } else if (entity.kind == CadDocumentEntityKind.surface &&
         entity.shape != null) {
       sourceId = entity.id;
@@ -4749,6 +4901,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       return false;
     }
     selectedExtrudeSourceId = sourceId;
+    selectedExtrudeProfileEntityId = profileEntityId;
     notifyListeners();
     return true;
   }
@@ -4884,6 +5037,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       final sourceHandle = sourceKind == ProfessionalExtrudeSourceKind.sketch
           ? await _ensureSketchWire(
               sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+              profileEntityId: selectedExtrudeProfileEntityId,
             )
           : await runtime.loadShape(source.shape!);
       final contract = ProfessionalExtrudeContract(
@@ -4892,6 +5046,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         sourceRevision: _loftSourceRevision(source),
         sourceShapeId: sourceHandle.persistentId,
         distance: distance,
+        profileEntityId: sourceKind == ProfessionalExtrudeSourceKind.sketch
+            ? selectedExtrudeProfileEntityId
+            : null,
         draftAngleDegrees: draftAngleDegrees,
         directionSourceId: directionSourceId,
         directionVector: _extrudeDirectionVector(source, directionSourceId),
@@ -4988,6 +5145,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       Map<String, dynamic>.from(current['contract'] as Map),
     );
     final sourceId = contract.sourceEntityId;
+    selectedExtrudeProfileEntityId = contract.profileEntityId;
     runtime.select({sourceId});
     runtime.hideTransient('preview:${current['id']}');
     await previewProfessionalExtrude(
@@ -5016,7 +5174,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         .whereType<String>()
         .toList();
     runtime.hideTransient('preview:$id');
-    await runtime.upsertEntity(
+    await runtime.upsertClosedEntity(
       command: 'extrude.confirm',
       kind: contract.output == ProfessionalExtrudeOutput.solid
           ? CadDocumentEntityKind.solid
@@ -5056,11 +5214,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'history': [...history, previous == null ? 'create' : 'edit'],
       },
     );
-    await runtime.transitionFeature(
-      id,
-      FeatureLifecycleState.closed,
-      command: 'extrude.lifecycle.commit',
-    );
     runtime.select({id});
     professionalExtrudePreview = null;
     notifyListeners();
@@ -5080,6 +5233,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       Map<String, dynamic>.from(raw['contract'] as Map),
     );
     selectedExtrudeSourceId = contract.sourceEntityId;
+    selectedExtrudeProfileEntityId = contract.profileEntityId;
     runtime.select({contract.sourceEntityId});
     await previewProfessionalExtrude(
       featureId: id,
@@ -6548,8 +6702,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     );
   }
 
-  Future<ShapeHandle> _ensureSketchWire(Sketch sketch) async {
-    final curveId = 'curve:${sketch.id}';
+  Future<ShapeHandle> _ensureSketchWire(
+    Sketch sketch, {
+    String? profileEntityId,
+  }) async {
+    final profileSuffix = profileEntityId == null ? '' : ':$profileEntityId';
+    final sourceId = '${sketch.id}$profileSuffix';
+    final curveId = 'curve:$sourceId';
     final existing = runtime.document?.entities[curveId]?.shape;
     final hasOfficialWire = runtime.document?.entities.values.any(
       (entity) =>
@@ -6559,15 +6718,18 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (existing != null &&
         hasOfficialWire == true &&
         existing.revision == sketch.version &&
-        existing.metadata['sourceEntityId'] == sketch.id) {
+        existing.metadata['sourceEntityId'] == sourceId) {
       return runtime.loadShape(existing);
     }
-    final points = _globalSketchPoints(sketch);
+    final points = _globalSketchProfilePoints(
+      sketch,
+      profileEntityId: profileEntityId,
+    );
     if (points.length < 2) {
       throw StateError('${sketch.name} does not contain a usable curve.');
     }
     return _createWireFromPoints(
-      sourceId: sketch.id,
+      sourceId: sourceId,
       sourceName: sketch.name,
       sourceRevision: sketch.version,
       points: points,
@@ -6576,6 +6738,84 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           : ProfessionalCurveType.composite,
       color: sketch.entityIds.length == 1 ? 'splineMagenta' : 'polylineBlue',
     );
+  }
+
+  List<SketchVector> _globalSketchProfilePoints(
+    Sketch sketch, {
+    String? profileEntityId,
+  }) {
+    final api = sketchApi;
+    if (api == null) throw StateError('Sketch runtime is unavailable.');
+    if (profileEntityId == null) {
+      final closedEntities = sketch.entityIds
+          .map(api.entity)
+          .whereType<SketchEntity>()
+          .where((entity) => entity is SketchCircle || entity is SketchEllipse)
+          .toList(growable: false);
+      if (closedEntities.isNotEmpty && sketch.entityIds.length > 1) {
+        throw StateError('Select one closed Sketch profile before Extrude.');
+      }
+      return _globalSketchPoints(sketch);
+    }
+    if (!sketch.entityIds.contains(profileEntityId)) {
+      throw StateError('The selected Sketch profile is unavailable.');
+    }
+    final selected = api.entity(profileEntityId);
+    if (selected == null || selected.construction || selected.reference) {
+      throw StateError('The selected Sketch profile is unavailable.');
+    }
+    if (selected is SketchCircle || selected is SketchEllipse) {
+      return _surfaceInputPoints(
+        selected,
+      ).map(sketch.coordinates.localToGlobal).toList(growable: false);
+    }
+    if (selected is! SketchLine) {
+      throw StateError('Select a closed rectangle or circle profile.');
+    }
+    return _closedLineProfilePoints(sketch, selected);
+  }
+
+  List<SketchVector> _closedLineProfilePoints(
+    Sketch sketch,
+    SketchLine selected,
+  ) {
+    final remaining = sketch.entityIds
+        .map(sketchApi!.entity)
+        .whereType<SketchLine>()
+        .where((line) => !line.construction && !line.reference)
+        .toList();
+    remaining.removeWhere((line) => line.id == selected.id);
+    final start = SketchVector.fromJson(selected.parameters['start']);
+    var cursor = SketchVector.fromJson(selected.parameters['end']);
+    final localPoints = <SketchVector>[start, cursor];
+    while (_sketchDistance(cursor, start) > 1e-9) {
+      final matches = remaining
+          .where((line) {
+            final a = SketchVector.fromJson(line.parameters['start']);
+            final b = SketchVector.fromJson(line.parameters['end']);
+            return _sketchDistance(a, cursor) <= 1e-9 ||
+                _sketchDistance(b, cursor) <= 1e-9;
+          })
+          .toList(growable: false);
+      if (matches.length != 1) {
+        throw StateError('The selected Sketch profile is not one closed loop.');
+      }
+      final next = matches.single;
+      remaining.remove(next);
+      final a = SketchVector.fromJson(next.parameters['start']);
+      final b = SketchVector.fromJson(next.parameters['end']);
+      cursor = _sketchDistance(a, cursor) <= 1e-9 ? b : a;
+      localPoints.add(cursor);
+      if (localPoints.length > sketch.entityIds.length + 1) {
+        throw StateError('The selected Sketch profile is not one closed loop.');
+      }
+    }
+    if (localPoints.length < 4) {
+      throw StateError('The selected Sketch profile is not one closed loop.');
+    }
+    return localPoints
+        .map(sketch.coordinates.localToGlobal)
+        .toList(growable: false);
   }
 
   /// Resolves both persisted CAD shapes and selectable Surface topology.
@@ -8228,11 +8468,14 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     register(
       id: 'reverse.sketch.open',
       execute: (_) async {
-        final plane = activeSketchPlane;
         final planeId = activeSketchPlaneId;
-        if (plane == null || planeId == null) {
+        if (planeId == null) {
           throw StateError('Select a plane before opening Sketch.');
         }
+        // Resolve the durable support again at execution time. A managed CAD
+        // source may have been removed or replaced after it was selected.
+        final plane = _resolveSketchSupport(planeId);
+        runtime.write('sketch.selectedPlane', plane);
         final supportEntity = runtime.document?.entities[planeId];
         final planeType = switch (supportEntity?.data['name']) {
           'XY Plane' => SketchPlaneType.xy,
@@ -10059,6 +10302,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           continue;
         }
         runtime.select({source.id});
+        selectedExtrudeSourceId = contract.sourceEntityId;
+        selectedExtrudeProfileEntityId = contract.profileEntityId;
         await previewProfessionalExtrude(
           featureId: entity.id,
           distance: contract.distance,

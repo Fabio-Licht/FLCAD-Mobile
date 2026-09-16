@@ -150,6 +150,127 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
     };
   }
 
+  /// Returns the world-space analytic data behind a transient presentation
+  /// triangle. This is read-only capability discovery: the returned value is
+  /// intentionally limited to drawing a transient preview and must never be
+  /// persisted with the presentation triangle id.
+  Future<Map<String, Object?>?> managedCadFaceAnalyticGeometry({
+    required String sourceEntityId,
+    required int presentationTriangleId,
+  }) async {
+    if (presentationTriangleId <= 0) return null;
+    Map<String, Object?>? result;
+    await _enqueue((tx) async {
+      final source = _requireDocument().entities[sourceEntityId];
+      final geometry = _managedGeometry[sourceEntityId];
+      final kernel = kernels.active;
+      final hasManagedBrep =
+          source?.data['managedStepAssets'] is Map ||
+          source?.data['managedBrepAssets'] is Map;
+      if (source == null ||
+          source.data['deleted'] == true ||
+          !hasManagedBrep ||
+          source.data['managedStlAssets'] != null ||
+          geometry is! ManagedBrepEntityGeometry ||
+          kernel is! OpenCascadeKernelAdapter) {
+        return;
+      }
+      final inspected = await geometry.shape.inspectManagedCadFace(
+        kernel,
+        presentationTriangleId,
+      );
+      tx.validate();
+      final surfaceType = inspected['surfaceType'];
+      if (surfaceType is! String) return;
+
+      Vector3? vector(String key) {
+        final raw = inspected[key];
+        if (raw is! List ||
+            raw.length != 3 ||
+            raw.any((value) => value is! num || !value.isFinite)) {
+          return null;
+        }
+        return Vector3(
+          (raw[0] as num).toDouble(),
+          (raw[1] as num).toDouble(),
+          (raw[2] as num).toDouble(),
+        );
+      }
+
+      final faceIndex = inspected['faceIndex'];
+      if (faceIndex is! int || faceIndex <= 0) return;
+      if (surfaceType == 'plane') {
+        var origin = vector('origin');
+        var normal = vector('normal');
+        var xDirection = vector('xDirection');
+        if (origin == null || normal == null || xDirection == null) return;
+        final placement = source.placement;
+        if (placement != null && placement.operations.isNotEmpty) {
+          final matrix = placement.matrix;
+          final transformedZero = matrix.transformPoint(Vector3.zero);
+          origin = matrix.transformPoint(origin);
+          normal = matrix.transformPoint(normal) - transformedZero;
+          xDirection = matrix.transformPoint(xDirection) - transformedZero;
+        }
+        normal = normal.normalized;
+        xDirection = (xDirection - normal * normal.dot(xDirection)).normalized;
+        if (normal.length <= 1e-12 || xDirection.length <= 1e-12) return;
+        result = {
+          'surfaceType': surfaceType,
+          'faceIndex': faceIndex,
+          'origin': origin.toJson(),
+          'normal': normal.toJson(),
+          'xDirection': xDirection.toJson(),
+        };
+        return;
+      }
+      if (surfaceType == 'cylinder') {
+        var origin = vector('origin');
+        var direction = vector('direction');
+        final radius = inspected['radius'];
+        if (origin == null ||
+            direction == null ||
+            radius is! num ||
+            !radius.isFinite ||
+            radius <= 0) {
+          return;
+        }
+        final placement = source.placement;
+        if (placement != null && placement.operations.isNotEmpty) {
+          final matrix = placement.matrix;
+          final transformedZero = matrix.transformPoint(Vector3.zero);
+          origin = matrix.transformPoint(origin);
+          direction = matrix.transformPoint(direction) - transformedZero;
+        }
+        direction = ManagedCadReference.canonicalAxisDirection(direction);
+        if (direction.length <= 1e-12) return;
+        result = {
+          'surfaceType': surfaceType,
+          'faceIndex': faceIndex,
+          'origin': origin.toJson(),
+          'direction': direction.toJson(),
+          'radius': radius.toDouble(),
+        };
+        return;
+      }
+      result = {'surfaceType': surfaceType, 'faceIndex': faceIndex};
+    });
+    return result;
+  }
+
+  /// Reads the OCCT surface category behind a transient presentation face.
+  /// This is capability discovery only: it creates no document entity and
+  /// retains no viewport-local identifier.
+  Future<String?> managedCadFaceSurfaceType({
+    required String sourceEntityId,
+    required int presentationTriangleId,
+  }) async =>
+      (await managedCadFaceAnalyticGeometry(
+            sourceEntityId: sourceEntityId,
+            presentationTriangleId: presentationTriangleId,
+          ))?['surfaceType']
+          as String?;
+
   /// Resolves a transient presentation triangle to its owning OCCT face and
   /// creates a durable world-space plane reference in one document transaction.
   Future<String> createManagedCadPlaneReference({

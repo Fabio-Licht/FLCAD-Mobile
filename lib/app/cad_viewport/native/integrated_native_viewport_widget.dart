@@ -56,6 +56,7 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     this.enableInspectionHover = false,
     this.managedFaceSelectionController,
     this.onManagedFaceSelectionCleared,
+    this.onViewportSelectionCleared,
   });
 
   /// The viewport owns and disposes the bridge returned by this factory.
@@ -81,6 +82,7 @@ class IntegratedCadViewportWidget extends StatefulWidget {
   final bool enableInspectionHover;
   final CadManagedFaceSelectionController? managedFaceSelectionController;
   final VoidCallback? onManagedFaceSelectionCleared;
+  final VoidCallback? onViewportSelectionCleared;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -122,6 +124,7 @@ class _IntegratedCadViewportWidgetState
   Offset? _lastHoverPosition;
   ManagedCadFaceHighlight? _managedFaceHover;
   ManagedCadFaceHighlight? _managedFaceSelection;
+  final ViewportPickingController _overlayPicking = ViewportPickingController();
 
   void _managedFaceControllerChanged() {
     final next = widget.managedFaceSelectionController?.selection;
@@ -205,10 +208,12 @@ class _IntegratedCadViewportWidgetState
     if (!_canPublishTap(token, scene)) return;
     final result = await native.pick(position.dx, position.dy);
     if (!_canPublishTap(token, scene)) return;
-    // Empty space clears only transient B-Rep face state. Entity selection and
-    // durable document state remain owned by their existing controllers.
+    // Native D3D deliberately excludes UI/reference overlays. Resolve those
+    // through the Flutter screen-space picker before treating this as empty.
     if (result == null || result.kind == NativePickKind.none) {
       _selectManagedFace(null);
+      if (_pickReferenceOverlay(position, scene, additive, toggle)) return;
+      widget.onViewportSelectionCleared?.call();
       return;
     }
     final source = scene.find(result.entityId);
@@ -254,6 +259,38 @@ class _IntegratedCadViewportWidgetState
         ),
       );
     }
+  }
+
+  bool _pickReferenceOverlay(
+    Offset position,
+    CadSceneGraph scene,
+    bool additive,
+    bool toggle,
+  ) {
+    final pick = _overlayPicking.pick(
+      position: position,
+      camera: widget.camera,
+      scene: scene,
+    );
+    if (pick == null) return false;
+    final source = scene.find(pick.entityId);
+    if (source == null ||
+        !const {
+          CadSceneEntityKind.plane,
+          CadSceneEntityKind.axis,
+          CadSceneEntityKind.point,
+          CadSceneEntityKind.coordinateSystem,
+        }.contains(source.kind)) {
+      return false;
+    }
+    operationalSelection.select(
+      _entityResolution(source).entity.id,
+      additive: additive,
+      toggle: toggle,
+    );
+    _selectManagedFace(null);
+    widget.onPick?.call(pick);
+    return true;
   }
 
   OperationalResolution _entityResolution(CadSceneEntity source) {
@@ -748,7 +785,10 @@ class _IntegratedCadViewportWidgetState
                   camera: widget.camera,
                   onPick: widget.onPick,
                   onManagedFacePick: useNative ? null : _pickCanvas,
-                  onEmptyNormalTap: () => _selectManagedFace(null),
+                  onEmptyNormalTap: () {
+                    _selectManagedFace(null);
+                    widget.onViewportSelectionCleared?.call();
+                  },
                   onManagedFaceHover: useNative ? null : _hoverCanvas,
                   managedFaceHover: _managedFaceHover,
                   managedFaceSelection: _managedFaceSelection,

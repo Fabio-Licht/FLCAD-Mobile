@@ -231,6 +231,7 @@ class _Fixture {
     ValueChanged<CadViewportPick>? sketchSupport,
     ValueChanged<CadViewportPick>? doublePick,
     void Function(CadViewportPick, Offset)? dragStart,
+    VoidCallback? onViewportSelectionCleared,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     await tester.pumpWidget(
@@ -250,6 +251,7 @@ class _Fixture {
           onSketchSupportPick: sketchSupport,
           onSketchEntityDoublePick: doublePick,
           onSketchEntityDragStart: dragStart,
+          onViewportSelectionCleared: onViewportSelectionCleared,
         ),
       ),
     );
@@ -430,6 +432,48 @@ void main() {
       expect(f.picks, hasLength(1));
     },
   );
+
+  testWidgets(
+    'Native GPU resolves a visible reference overlay through Flutter picking',
+    (tester) async {
+      final f = _Fixture();
+      f.scene.upsert(
+        const CadSceneEntity(
+          id: 'world:xy-plane',
+          kind: CadSceneEntityKind.plane,
+          geometry: {
+            'origin': [0.0, 0.0, 0.0],
+            'normal': [0.0, 0.0, 1.0],
+            'xDirection': [1.0, 0.0, 0.0],
+            'visualSize': 30.0,
+          },
+        ),
+      );
+      f.bridge.answer = (_) async => null;
+      await f.mount(tester);
+
+      await tap(tester);
+
+      expect(f.picks.single.entityId, 'world:xy-plane');
+      expect(f.selection.activeId, 'operational:world:xy-plane');
+      expect(f.bridge.positions, hasLength(1));
+      expect(find.text('Native GPU'), findsOneWidget);
+    },
+  );
+
+  testWidgets('an empty native click publishes a viewport selection clear', (
+    tester,
+  ) async {
+    final f = _Fixture();
+    var clears = 0;
+    f.bridge.answer = (_) async => null;
+    await f.mount(tester, onViewportSelectionCleared: () => clears++);
+
+    await tap(tester, const Offset(1100, 700));
+
+    expect(clears, 1);
+    expect(f.picks, isEmpty);
+  });
 
   testWidgets('Canvas keeps Flutter picking without native pick', (
     tester,

@@ -59,6 +59,8 @@ import 'desktop_asset_manager.dart';
 import 'desktop_cad_controller.dart';
 import 'desktop_settings.dart';
 import 'desktop_theme.dart';
+import 'contextual_reference_actions.dart';
+import 'contextual_reference_preview_session.dart';
 import 'explorer_tree_projection.dart';
 import 'reference_tree_taxonomy.dart';
 
@@ -1015,6 +1017,7 @@ class _OfficialEngineeringWorkspaceState
   CadSceneGraph get scene => widget.cad.runtime.scene;
   final camera = CadCameraController();
   final managedFaceSelection = CadManagedFaceSelectionController();
+  late final ContextualReferencePreviewSession contextualReferencePreview;
   late final NavigationEngine navigation;
   GeometrySelectionManager get geometrySelection =>
       widget.cad.runtime.geometrySelection;
@@ -1134,6 +1137,18 @@ class _OfficialEngineeringWorkspaceState
     final entity = widget.cad.runtime.document?.entities[selected.first];
     if (entity == null) return null;
     final mesh = entity.mesh;
+    final rawReference = entity.data['reference'];
+    final referenceRecipe = rawReference is Map ? rawReference['recipe'] : null;
+    final referenceParameters = referenceRecipe is Map
+        ? referenceRecipe['parameters']
+        : null;
+    final referenceTolerance = referenceParameters is Map
+        ? referenceParameters['tolerance']
+        : null;
+    final referenceDna = rawReference is Map ? rawReference['dna'] : null;
+    final referenceConfidence = referenceDna is Map
+        ? referenceDna['confidence']
+        : null;
     final bounds = mesh?.bounds;
     final managedIdentity = ManagedCadIdentity.fromDocumentData(entity.data);
     final fullName = entity.kind == CadDocumentEntityKind.import
@@ -1187,6 +1202,16 @@ class _OfficialEngineeringWorkspaceState
                 label: 'Origin',
                 value: ReferenceTreeTaxonomy.originLabel(entity),
               ),
+              if (referenceTolerance is num)
+                _InspectorProperty(
+                  label: 'Tolerance',
+                  value: referenceTolerance,
+                ),
+              if (referenceConfidence is num)
+                _InspectorProperty(
+                  label: 'Confidence',
+                  value: '${(referenceConfidence * 100).toStringAsFixed(1)}%',
+                ),
             ],
           ),
         ],
@@ -2180,6 +2205,9 @@ class _OfficialEngineeringWorkspaceState
   @override
   void initState() {
     super.initState();
+    contextualReferencePreview = ContextualReferencePreviewSession(
+      widget.cad.runtime,
+    );
     navigation = NavigationEngine(
       profile: NavigationProfile.flcadReverseEngineering,
       camera: CadCameraNavigationAdapter(camera),
@@ -2198,6 +2226,7 @@ class _OfficialEngineeringWorkspaceState
 
   @override
   void dispose() {
+    contextualReferencePreview.cancel();
     transformX.dispose();
     transformY.dispose();
     transformZ.dispose();
@@ -2220,6 +2249,7 @@ class _OfficialEngineeringWorkspaceState
   void _synchronizeScene() {
     final runtimeDocument = widget.cad.runtime.document;
     if (runtimeDocument == null) {
+      contextualReferencePreview.cancel();
       operational.detachProject();
       fittedDocumentId = null;
       fittedDocumentSession = null;
@@ -2904,6 +2934,7 @@ class _OfficialEngineeringWorkspaceState
   }
 
   Future<void> _closeToolWindow(String workspace) async {
+    if (workspace == 'Reference') contextualReferencePreview.cancel();
     if (workspace == 'Sketch') {
       choosingSketchSupport = false;
       operational.cancelSketchCommand();
@@ -3881,6 +3912,12 @@ class _OfficialEngineeringWorkspaceState
           await _confirmDelete(entity);
         } else if (action == 'properties') {
           geometrySelection.select(entity.id);
+        } else if (action == 'createReference') {
+          geometrySelection.select(entity.id);
+          setState(() {
+            module = 'Reference';
+            openToolWindows.add('Reference');
+          });
         }
       }
 
@@ -3916,6 +3953,11 @@ class _OfficialEngineeringWorkspaceState
                     ),
                     const PopupMenuItem(value: 'delete', child: Text('Delete')),
                     const PopupMenuDivider(),
+                    if (!collection)
+                      const PopupMenuItem(
+                        value: 'createReference',
+                        child: Text('Criar referência'),
+                      ),
                     const PopupMenuItem(
                       value: 'properties',
                       child: Text('Properties'),
@@ -4378,87 +4420,134 @@ class _OfficialEngineeringWorkspaceState
     }
   }
 
-  Widget? _activeToolWindowContent() => switch (module) {
-    'Reverse Engineering' => ReverseEngineeringStudioPanel(
-      state: operational.reverseEngineeringStudioState,
-      reconstruction: operational.reconstructionState,
-      onOpenNext: _openStudioRecommendation,
-      onRegionSelected: (id) {
-        geometrySelection.select(id);
-        operational.openSurfaceAssistant(id);
-        setState(() {
-          module = 'Recognition';
-          openToolWindows.add('Recognition');
-        });
-      },
-      onRegionIgnored: (id, ignored) {
-        operational.setReconstructionRegionIgnored(id, ignored);
-      },
-    ),
-    'AI Engineering' => const _WorkspaceEnvironmentPlaceholder(
-      icon: Icons.psychology_outlined,
-      title: 'Engineering Intelligence',
-      description:
-          'Specialized assistance for engineering decisions and project evidence.',
-      capabilities: ['Evidence', 'Guidance', 'Automation'],
-    ),
-    'Recognition' => RecognitionWorkspacePanel(
-      controller: operational,
-      onApplyAlignment: _applyAlignment,
-    ),
-    'Reference' => _ManagedCadReferencePanel(
-      runtime: widget.cad.runtime,
-      pick: operational.activePick,
-      onStatus: widget.cad.setStatus,
-      onCompleted: () {
-        operational.activePick = null;
-        managedFaceSelection.clear();
-      },
-    ),
-    'Entidades' => _EntitiesHubPanel(
-      key: ValueKey(
-        'entity-tool-$toolbarEntityConstructor-${toolbarPrimitiveType?.name ?? 'default'}',
+  Map<String, Object?>? _recognizedStlPlanePreview() {
+    if (operational.activeContext?.region == null) return null;
+    final plane = operational.hypotheses
+        .where((item) => item.recognition.winner.type.name == 'plane')
+        .firstOrNull;
+    final parameters = plane?.recognition.winner.parameters;
+    final origin = parameters?['origin'];
+    final normal = parameters?['normal'];
+    bool validVector(Object? value) =>
+        value is List &&
+        value.length == 3 &&
+        value.every((component) => component is num && component.isFinite);
+    if (!validVector(origin) || !validVector(normal)) return null;
+    final tolerance = plane!.recognition.winner.statistics.rms;
+    final confidence = plane.recognition.dna.confidence;
+    if (!tolerance.isFinite || !confidence.isFinite) return null;
+    return {
+      'origin': (origin as List).cast<Object?>(),
+      'normal': (normal as List).cast<Object?>(),
+      'tolerance': tolerance,
+      'confidence': confidence,
+    };
+  }
+
+  Widget? _activeToolWindowContent() {
+    final recognizedStlPlanePreview = _recognizedStlPlanePreview();
+    return switch (module) {
+      'Reverse Engineering' => ReverseEngineeringStudioPanel(
+        state: operational.reverseEngineeringStudioState,
+        reconstruction: operational.reconstructionState,
+        onOpenNext: _openStudioRecommendation,
+        onRegionSelected: (id) {
+          geometrySelection.select(id);
+          operational.openSurfaceAssistant(id);
+          setState(() {
+            module = 'Recognition';
+            openToolWindows.add('Recognition');
+          });
+        },
+        onRegionIgnored: (id, ignored) {
+          operational.setReconstructionRegionIgnored(id, ignored);
+        },
       ),
-      runtime: widget.cad.runtime,
-      onStatus: widget.cad.setStatus,
-      initialConstructor: toolbarEntityConstructor,
-      initialPrimitiveType: toolbarPrimitiveType,
-      pickedSourceId: operational.activePick?.entityId,
-      pickedPoint: operational.activePick?.hit.point,
-      pickedTriangleIndex: operational.activePick?.hit.triangleIndex,
-    ),
-    'Sketch'
-        when operational.activeSketch != null &&
-            operational.stage != SketchSurfaceStage.idle &&
-            operational.stage != SketchSurfaceStage.referenceReady =>
-      _SketchWorkspaceFoundation(
+      'AI Engineering' => const _WorkspaceEnvironmentPlaceholder(
+        icon: Icons.psychology_outlined,
+        title: 'Engineering Intelligence',
+        description:
+            'Specialized assistance for engineering decisions and project evidence.',
+        capabilities: ['Evidence', 'Guidance', 'Automation'],
+      ),
+      'Recognition' => RecognitionWorkspacePanel(
         controller: operational,
-        onExitSketch: _finishSketch,
-        onHealthIssue: _focusSketchHealthIssue,
-        onAutoHeal: _offerSketchGapRepair,
+        onApplyAlignment: _applyAlignment,
       ),
-    'Sketch' => _SketchEntryWorkspace(
-      onChooseFromList: _openSketchSupportFallback,
-      onChooseWorldPlane: _selectWorldSketchSupport,
-    ),
-    'Curves' => const _WorkspaceEnvironmentPlaceholder(
-      icon: Icons.gesture,
-      title: 'Curves',
-      description: 'Engineering curve workspace prepared for future tools.',
-      capabilities: ['Splines', 'Projected', 'Extracted', 'Intersection'],
-    ),
-    'Surfaces' => SketchSurfaceWorkspacePanel(
-      key: ValueKey('surface-tool-${toolbarSurfaceTool?.name ?? 'home'}'),
-      controller: operational,
-      initialSurfaceTool: toolbarSurfaceTool,
-      onOpenSketch: () async => _beginDirectSketchSupportSelection(),
-      onFinishSketch: _finishSketch,
-    ),
-    'Solids' => _ProfessionalExtrudePanel(controller: operational),
-    'Sections' => _sectionTools(),
-    'Transform' => _transformTools(),
-    _ => null,
-  };
+      'Reference' => _ManagedCadReferencePanel(
+        runtime: widget.cad.runtime,
+        preview: contextualReferencePreview,
+        pick: operational.activePick,
+        selectedEntity: geometrySelection.selectedIds.firstOrNull == null
+            ? null
+            : widget.cad.runtime.document?.entities[geometrySelection
+                  .selectedIds
+                  .first],
+        recognizedStlPlaneAvailable: recognizedStlPlanePreview != null,
+        recognizedStlPlanePreview: recognizedStlPlanePreview,
+        onCreateRecognizedPlane: () async {
+          final plane = operational.hypotheses.firstWhere(
+            (item) => item.recognition.winner.type.name == 'plane',
+          );
+          operational.decide(
+            plane.recognition.id,
+            RecognitionDecision.accepted,
+          );
+          await operational.createRecognizedPlane();
+        },
+        onOpenInspector: () => setState(() => advancedInspector = true),
+        onStatus: widget.cad.setStatus,
+        onCompleted: () {
+          operational.activePick = null;
+          contextualReferencePreview.cancel();
+          managedFaceSelection.clear();
+        },
+      ),
+      'Entidades' => _EntitiesHubPanel(
+        key: ValueKey(
+          'entity-tool-$toolbarEntityConstructor-${toolbarPrimitiveType?.name ?? 'default'}',
+        ),
+        runtime: widget.cad.runtime,
+        onStatus: widget.cad.setStatus,
+        initialConstructor: toolbarEntityConstructor,
+        initialPrimitiveType: toolbarPrimitiveType,
+        pickedSourceId: operational.activePick?.entityId,
+        pickedPoint: operational.activePick?.hit.point,
+        pickedTriangleIndex: operational.activePick?.hit.triangleIndex,
+      ),
+      'Sketch'
+          when operational.activeSketch != null &&
+              operational.stage != SketchSurfaceStage.idle &&
+              operational.stage != SketchSurfaceStage.referenceReady =>
+        _SketchWorkspaceFoundation(
+          controller: operational,
+          onExitSketch: _finishSketch,
+          onHealthIssue: _focusSketchHealthIssue,
+          onAutoHeal: _offerSketchGapRepair,
+        ),
+      'Sketch' => _SketchEntryWorkspace(
+        onChooseFromList: _openSketchSupportFallback,
+        onChooseWorldPlane: _selectWorldSketchSupport,
+      ),
+      'Curves' => const _WorkspaceEnvironmentPlaceholder(
+        icon: Icons.gesture,
+        title: 'Curves',
+        description: 'Engineering curve workspace prepared for future tools.',
+        capabilities: ['Splines', 'Projected', 'Extracted', 'Intersection'],
+      ),
+      'Surfaces' => SketchSurfaceWorkspacePanel(
+        key: ValueKey('surface-tool-${toolbarSurfaceTool?.name ?? 'home'}'),
+        controller: operational,
+        initialSurfaceTool: toolbarSurfaceTool,
+        onOpenSketch: () async => _beginDirectSketchSupportSelection(),
+        onFinishSketch: _finishSketch,
+      ),
+      'Solids' => _ProfessionalExtrudePanel(controller: operational),
+      'Sections' => _sectionTools(),
+      'Transform' => _transformTools(),
+      _ => null,
+    };
+  }
 
   Widget _surfaceToolbarMenu() => Padding(
     padding: const EdgeInsets.symmetric(horizontal: 3),
@@ -4559,30 +4648,45 @@ class _OfficialEngineeringWorkspaceState
       tooltip: 'Geometria de Referência',
       position: PopupMenuPosition.under,
       onSelected: (value) {
-        if (value is int) _openEntityTool(value);
+        if (value is GeometryCreateAction) {
+          _openEntityTool(value.index);
+        }
         if (value is PrimitiveSurfaceType) {
           _openEntityTool(4, primitive: value);
         }
       },
-      itemBuilder: (context) => const [
-        PopupMenuItem(enabled: false, child: Text('Geometria de Referência')),
-        PopupMenuItem(value: 0, child: Text('📍  Ponto')),
-        PopupMenuItem(value: 1, child: Text('▱  Plano')),
-        PopupMenuItem(value: 2, child: Text('↗  Vetor')),
-        PopupMenuItem(value: 3, child: Text('⌁  Curva')),
-        PopupMenuDivider(),
-        PopupMenuItem(enabled: false, child: Text('Superfícies primitivas')),
-        PopupMenuItem(value: PrimitiveSurfaceType.plane, child: Text('Plano')),
-        PopupMenuItem(
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          enabled: false,
+          child: Text('Geometria de Referência'),
+        ),
+        for (final action in GeometryCreateActions.visible())
+          PopupMenuItem(value: action, child: Text(action.menuLabel)),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          enabled: false,
+          child: Text('Superfícies primitivas'),
+        ),
+        const PopupMenuItem(
+          value: PrimitiveSurfaceType.plane,
+          child: Text('Plano'),
+        ),
+        const PopupMenuItem(
           value: PrimitiveSurfaceType.cylinder,
           child: Text('Cilindro'),
         ),
-        PopupMenuItem(value: PrimitiveSurfaceType.cone, child: Text('Cone')),
-        PopupMenuItem(
+        const PopupMenuItem(
+          value: PrimitiveSurfaceType.cone,
+          child: Text('Cone'),
+        ),
+        const PopupMenuItem(
           value: PrimitiveSurfaceType.sphere,
           child: Text('Esfera'),
         ),
-        PopupMenuItem(value: PrimitiveSurfaceType.torus, child: Text('Toro')),
+        const PopupMenuItem(
+          value: PrimitiveSurfaceType.torus,
+          child: Text('Toro'),
+        ),
       ],
       child: Chip(
         avatar: module == 'Entidades'
@@ -4607,6 +4711,7 @@ class _OfficialEngineeringWorkspaceState
   Widget build(BuildContext context) => CallbackShortcuts(
     bindings: {
       const SingleActivator(LogicalKeyboardKey.escape): () {
+        contextualReferencePreview.cancel();
         operational.activePick = null;
         managedFaceSelection.clear();
         widget.cad.runtime.operationalSelection.clear();
@@ -4795,6 +4900,14 @@ class _OfficialEngineeringWorkspaceState
                                   managedFaceSelectionController:
                                       managedFaceSelection,
                                   onManagedFaceSelectionCleared: () {
+                                    contextualReferencePreview.cancel();
+                                    operational.activePick = null;
+                                    widget.cad.runtime.operationalSelection
+                                        .clear();
+                                    geometrySelection.clear();
+                                  },
+                                  onViewportSelectionCleared: () {
+                                    contextualReferencePreview.cancel();
                                     operational.activePick = null;
                                     widget.cad.runtime.operationalSelection
                                         .clear();
@@ -7302,13 +7415,25 @@ class _EntitiesWorkspacePanelState extends State<_EntitiesWorkspacePanel> {
 class _ManagedCadReferencePanel extends StatefulWidget {
   const _ManagedCadReferencePanel({
     required this.runtime,
+    required this.preview,
     required this.pick,
+    required this.selectedEntity,
+    required this.recognizedStlPlaneAvailable,
+    required this.recognizedStlPlanePreview,
+    required this.onCreateRecognizedPlane,
+    required this.onOpenInspector,
     required this.onStatus,
     required this.onCompleted,
   });
 
   final CadRuntime runtime;
+  final ContextualReferencePreviewSession preview;
   final CadViewportPick? pick;
+  final CadDocumentEntity? selectedEntity;
+  final bool recognizedStlPlaneAvailable;
+  final Map<String, Object?>? recognizedStlPlanePreview;
+  final Future<void> Function() onCreateRecognizedPlane;
+  final VoidCallback onOpenInspector;
   final ValueChanged<String> onStatus;
   final VoidCallback onCompleted;
 
@@ -7319,6 +7444,19 @@ class _ManagedCadReferencePanel extends StatefulWidget {
 
 class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   bool busy = false;
+  String? surfaceType;
+  Map<String, Object?>? faceAnalytic;
+  ContextualReferenceAction? draft;
+  final manualOffset = TextEditingController(text: '10');
+
+  ContextualReferencePreviewSession get preview => widget.preview;
+
+  @override
+  void initState() {
+    super.initState();
+    manualOffset.addListener(_refreshManualPlanePreview);
+    _inspectFace();
+  }
 
   CadDocumentEntity? get source {
     final pick = widget.pick;
@@ -7328,13 +7466,207 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
 
   bool get canCreateFromFace {
     final entity = source;
-    return !busy &&
-        widget.pick?.subentityKind == CadViewportSubentityKind.face &&
+    return widget.pick?.subentityKind == CadViewportSubentityKind.face &&
         (widget.pick?.presentationSubId ?? 0) > 0 &&
         entity?.data['deleted'] != true &&
         entity?.data['managedStlAssets'] == null &&
         (entity?.data['managedStepAssets'] is Map ||
             entity?.data['managedBrepAssets'] is Map);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ManagedCadReferencePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pick != widget.pick ||
+        oldWidget.selectedEntity != widget.selectedEntity) {
+      _cancelPreview();
+      _inspectFace();
+    }
+  }
+
+  @override
+  void dispose() {
+    manualOffset.removeListener(_refreshManualPlanePreview);
+    manualOffset.dispose();
+    super.dispose();
+  }
+
+  void _cancelPreview() {
+    preview.cancel();
+    if (mounted) setState(() => draft = null);
+  }
+
+  void _refreshManualPlanePreview() {
+    if (draft != ContextualReferenceAction.manualPlane || !preview.active) {
+      return;
+    }
+    _preview(
+      ContextualReferenceAction.manualPlane,
+      widget.selectedEntity ?? source,
+    );
+  }
+
+  void _preview(ContextualReferenceAction action, CadDocumentEntity? entity) {
+    final geometry = entity?.data['sceneGeometry'];
+    final source = geometry is Map
+        ? Map<String, dynamic>.from(geometry)
+        : <String, dynamic>{};
+    List<double>? vector(Object? raw) {
+      if (raw is! List ||
+          raw.length != 3 ||
+          raw.any((value) => value is! num || !value.isFinite)) {
+        return null;
+      }
+      return raw.map((value) => (value as num).toDouble()).toList();
+    }
+
+    try {
+      final (kind, previewGeometry) = switch (action) {
+        ContextualReferenceAction.plane => () {
+          final analytic = entity?.data['managedStlAssets'] is Map
+              ? widget.recognizedStlPlanePreview
+              : faceAnalytic;
+          final origin = vector(analytic?['origin']);
+          final normal = vector(analytic?['normal']);
+          if (origin == null || normal == null) {
+            throw StateError(
+              'A geometria analítica do plano não está disponível.',
+            );
+          }
+          final normalVector = Vector3.fromJson(normal).normalized;
+          final xDirection =
+              vector(analytic?['xDirection']) ??
+              normalVector
+                  .cross(
+                    normalVector.z.abs() < .9
+                        ? const Vector3(0, 0, 1)
+                        : const Vector3(0, 1, 0),
+                  )
+                  .normalized
+                  .toJson();
+          return (
+            CadSceneEntityKind.plane,
+            <String, Object>{
+              'origin': origin,
+              'normal': normal,
+              'xDirection': xDirection,
+              'visualSize': source['visualSize'] ?? 60.0,
+              'displayColor': 'constructionPlane',
+              if (analytic?['tolerance'] is num)
+                'tolerance': analytic!['tolerance']!,
+              if (analytic?['confidence'] is num)
+                'confidence': analytic!['confidence']!,
+            },
+          );
+        }(),
+        ContextualReferenceAction.axis => () {
+          final origin = vector(faceAnalytic?['origin']);
+          final direction = vector(faceAnalytic?['direction']);
+          final radius = faceAnalytic?['radius'];
+          if (origin == null ||
+              direction == null ||
+              radius is! num ||
+              !radius.isFinite ||
+              radius <= 0) {
+            throw StateError(
+              'A geometria analítica do cilindro não está disponível.',
+            );
+          }
+          return (
+            CadSceneEntityKind.axis,
+            <String, Object>{
+              'origin': origin,
+              'direction': direction,
+              'radius': radius.toDouble(),
+              'visualLength': source['visualLength'] ?? 40.0,
+              'displayColor': 'constructionVector',
+            },
+          );
+        }(),
+        ContextualReferenceAction.manualPlane => () {
+          final origin = vector(source['origin']) ?? const [0.0, 0.0, 0.0];
+          final normal = vector(source['normal']) ?? const [0.0, 0.0, 1.0];
+          final offset = double.tryParse(
+            manualOffset.text.replaceAll(',', '.'),
+          );
+          if (entity?.data['sceneKind'] == 'plane' && offset == null) {
+            throw const FormatException('Informe um offset numérico válido.');
+          }
+          final previewOrigin = entity?.data['sceneKind'] == 'plane'
+              ? List<double>.generate(
+                  3,
+                  (index) => origin[index] + normal[index] * offset!,
+                )
+              : origin;
+          return (
+            CadSceneEntityKind.plane,
+            <String, Object>{
+              'origin': previewOrigin,
+              'normal': normal,
+              'xDirection':
+                  vector(source['xDirection']) ?? const [1.0, 0.0, 0.0],
+              'visualSize': source['visualSize'] ?? 60.0,
+              'displayColor': 'constructionPlane',
+            },
+          );
+        }(),
+        ContextualReferenceAction.manualAxis => (
+          CadSceneEntityKind.axis,
+          <String, Object>{
+            'origin': vector(source['origin']) ?? const [0.0, 0.0, 0.0],
+            'direction': vector(source['direction']) ?? const [1.0, 0.0, 0.0],
+            'visualLength': source['visualLength'] ?? 40.0,
+            'displayColor': 'constructionVector',
+          },
+        ),
+        ContextualReferenceAction.manualPoint => (
+          CadSceneEntityKind.point,
+          <String, Object>{
+            'position':
+                vector(source['position'] ?? source['origin']) ??
+                const [0.0, 0.0, 0.0],
+            'markerRadius': 5.0,
+            'displayColor': 'constructionPoint',
+          },
+        ),
+      };
+      preview.show(
+        CadSceneEntity(id: 'draft', kind: kind, geometry: previewGeometry),
+      );
+      setState(() => draft = action);
+    } catch (error) {
+      _cancelPreview();
+      widget.onStatus(error.toString().replaceFirst('Bad state: ', ''));
+    }
+  }
+
+  Future<void> _inspectFace() async {
+    final pick = widget.pick;
+    if (pick == null || !canCreateFromFace) {
+      if (mounted) {
+        setState(() {
+          surfaceType = null;
+          faceAnalytic = null;
+        });
+      }
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        surfaceType = null;
+        faceAnalytic = null;
+      });
+    }
+    final result = await widget.runtime.managedCadFaceAnalyticGeometry(
+      sourceEntityId: pick.entityId,
+      presentationTriangleId: pick.presentationSubId!,
+    );
+    if (mounted && widget.pick == pick) {
+      setState(() {
+        faceAnalytic = result;
+        surfaceType = result?['surfaceType'] as String?;
+      });
+    }
   }
 
   Future<void> createPlane() async {
@@ -7381,44 +7713,237 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     }
   }
 
+  Future<void> _applyDraft(CadDocumentEntity? entity) async {
+    final action = draft;
+    if (action == null || !preview.active || busy) return;
+    setState(() => busy = true);
+    try {
+      Vector3 vectorOrZero(Object? raw) {
+        if (raw is List &&
+            raw.length == 3 &&
+            raw.every((value) => value is num && value.isFinite)) {
+          return Vector3(
+            (raw[0] as num).toDouble(),
+            (raw[1] as num).toDouble(),
+            (raw[2] as num).toDouble(),
+          );
+        }
+        return Vector3.zero;
+      }
+
+      final geometry = entity?.data['sceneGeometry'];
+      final source = geometry is Map ? geometry : const <String, Object?>{};
+      switch (action) {
+        case ContextualReferenceAction.plane:
+          if (entity?.data['managedStlAssets'] is Map) {
+            await widget.onCreateRecognizedPlane();
+          } else {
+            await createPlane();
+          }
+        case ContextualReferenceAction.axis:
+          await createAxis();
+        case ContextualReferenceAction.manualPlane:
+          await EntityPlaneService(widget.runtime).create(
+            method: entity?.data['sceneKind'] == 'plane'
+                ? ConstructionPlaneMethod.offset
+                : ConstructionPlaneMethod.xy,
+            sourceEntityIds: entity?.data['sceneKind'] == 'plane'
+                ? [entity!.id]
+                : const [],
+            distance:
+                double.tryParse(manualOffset.text.replaceAll(',', '.')) ?? 10,
+          );
+        case ContextualReferenceAction.manualAxis:
+          await EntityVectorService(widget.runtime).create(
+            method: ConstructionVectorMethod.components,
+            origin: vectorOrZero(source['origin']),
+            components: vectorOrZero(source['direction']).length <= 1e-12
+                ? const Vector3(1, 0, 0)
+                : vectorOrZero(source['direction']),
+          );
+        case ContextualReferenceAction.manualPoint:
+          await EntityPointService(widget.runtime).create(
+            method: ConstructionPointMethod.coordinates,
+            coordinates: vectorOrZero(source['position'] ?? source['origin']),
+          );
+      }
+      widget.onCompleted();
+      preview.cancel();
+      if (mounted) setState(() => draft = null);
+    } catch (error) {
+      preview.cancel();
+      if (mounted) setState(() => draft = null);
+      widget.onStatus(error.toString().replaceFirst('Bad state: ', ''));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final entity = source;
+    final selectedReference =
+        widget.selectedEntity != null &&
+            widget.selectedEntity!.data['systemProtected'] != true &&
+            ReferenceTreeTaxonomy.isProjectedReference(widget.selectedEntity!)
+        ? widget.selectedEntity
+        : null;
+    final entity = widget.selectedEntity ?? source;
     final sourceName = entity?.data['name'] as String?;
+    final plan = ContextualReferenceActions.plan(
+      entity: entity,
+      pick: widget.pick,
+      managedFaceSurfaceType: surfaceType,
+      recognizedStlPlaneAvailable: widget.recognizedStlPlaneAvailable,
+    );
+    final canPlane = plan.actions.contains(ContextualReferenceAction.plane);
+    final canAxis = plan.actions.contains(ContextualReferenceAction.axis);
+    final canManualPoint = plan.actions.contains(
+      ContextualReferenceAction.manualPoint,
+    );
+    final canManualPlane = plan.actions.contains(
+      ContextualReferenceAction.manualPlane,
+    );
+    final canManualAxis = plan.actions.contains(
+      ContextualReferenceAction.manualAxis,
+    );
+    final existingReference = selectedReference != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          'Referências CAD managed',
+        Text(
+          existingReference ? 'Ações da referência' : 'Criar referência',
           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
         Text(
           sourceName == null
-              ? 'Selecione uma face visível de um STEP/BREP managed.'
-              : 'Origem: $sourceName',
+              ? 'Origem: ${plan.origin}'
+              : 'Origem: ${plan.origin} — $sourceName',
           style: TextStyle(
             fontSize: 11,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
         const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: canCreateFromFace ? createPlane : null,
-          icon: busy
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.crop_square_outlined, size: 18),
-          label: const Text('Plano por face planar'),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: canCreateFromFace ? createAxis : null,
-          icon: const Icon(Icons.linear_scale, size: 18),
-          label: const Text('Eixo por face cilíndrica'),
-        ),
+        if (plan.showManualSection) ...[
+          const Text(
+            'Criar manualmente',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (selectedReference case final reference?) ...[
+          FilledButton.icon(
+            onPressed: () async {
+              final visible = reference.data['sceneVisible'] as bool? ?? true;
+              await widget.runtime.setEntityVisibility(reference.id, !visible);
+            },
+            icon: Icon(
+              (reference.data['sceneVisible'] as bool? ?? true)
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+              size: 18,
+            ),
+            label: Text(
+              (reference.data['sceneVisible'] as bool? ?? true)
+                  ? 'Ocultar'
+                  : 'Mostrar',
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: widget.onOpenInspector,
+            icon: const Icon(Icons.info_outline, size: 18),
+            label: const Text('Abrir Inspector'),
+          ),
+        ],
+        if (canManualPlane) ...[
+          if (entity?.data['sceneKind'] == 'plane')
+            TextField(
+              controller: manualOffset,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(labelText: 'Offset (mm)'),
+            ),
+          if (entity?.data['sceneKind'] == 'plane') const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: () =>
+                _preview(ContextualReferenceAction.manualPlane, entity),
+            icon: const Icon(Icons.crop_square_outlined, size: 18),
+            label: const Text('Plano manual'),
+          ),
+        ],
+        if (canManualAxis) ...[
+          OutlinedButton.icon(
+            onPressed: () =>
+                _preview(ContextualReferenceAction.manualAxis, entity),
+            icon: const Icon(Icons.straighten, size: 18),
+            label: const Text('Eixo manual'),
+          ),
+        ],
+        if (canManualPoint) ...[
+          OutlinedButton.icon(
+            onPressed: () =>
+                _preview(ContextualReferenceAction.manualPoint, entity),
+            icon: const Icon(Icons.adjust, size: 18),
+            label: const Text('Ponto manual'),
+          ),
+        ],
+        if (canManualPoint || canManualPlane || canManualAxis)
+          const SizedBox(height: 8),
+        if (canPlane)
+          FilledButton.icon(
+            onPressed: !canPlane || busy
+                ? null
+                : () => _preview(ContextualReferenceAction.plane, entity),
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.crop_square_outlined, size: 18),
+            label: Text(
+              entity?.data['managedStlAssets'] is Map
+                  ? 'Plano por região STL'
+                  : 'Plano por face planar',
+            ),
+          ),
+        if (canAxis) const SizedBox(height: 8),
+        if (canAxis)
+          OutlinedButton.icon(
+            onPressed: canAxis && !busy
+                ? () => _preview(ContextualReferenceAction.axis, entity)
+                : null,
+            icon: const Icon(Icons.linear_scale, size: 18),
+            label: const Text('Eixo por face cilíndrica'),
+          ),
+        if (preview.active) ...[
+          const SizedBox(height: 12),
+          const Text(
+            'Prévia transitória — confirme para gravar uma única ação.',
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton(
+                  onPressed: busy ? null : () => _applyDraft(entity),
+                  child: const Text('Apply'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: busy ? null : _cancelPreview,
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ],
+        if (!existingReference && plan.unavailable != null) ...[
+          const SizedBox(height: 8),
+          Text(plan.unavailable!, style: const TextStyle(fontSize: 10)),
+        ],
         const SizedBox(height: 8),
         const Text(
           'A face é resolvida na topologia OCCT da shape original. Plano e '

@@ -1396,6 +1396,15 @@ void main() {
         1,
       );
       expect(highlighted, isNotNull);
+      final analytic = await runtime.managedCadFaceAnalyticGeometry(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      );
+      expect(analytic?['surfaceType'], 'plane');
+      expect(analytic?['faceIndex'], highlighted!.faceIndex);
+      expect(analytic?['origin'], isA<List>());
+      expect(analytic?['normal'], isA<List>());
+      expect(analytic?['xDirection'], isA<List>());
       final referenceId = await runtime.createManagedCadPlaneReference(
         sourceEntityId: sourceEntity.id,
         presentationTriangleId: 1,
@@ -1410,7 +1419,10 @@ void main() {
 
       expect(referenceEntity().kind, CadDocumentEntityKind.reference);
       expect(reference().sourceFormat, 'step');
-      expect(reference().faceIndex, highlighted!.faceIndex);
+      expect(reference().faceIndex, highlighted.faceIndex);
+      expect(reference().origin.toJson(), analytic!['origin']);
+      expect(reference().normal!.toJson(), analytic['normal']);
+      expect(reference().xDirection!.toJson(), analytic['xDirection']);
       expect(runtime.scene.find(referenceId)?.kind.name, 'plane');
       expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
       expect(runtime.managedCadReferenceIsOrphaned(reference()), isFalse);
@@ -1459,6 +1471,14 @@ void main() {
         p.join(source.path, 'cylinder.step'),
         nativeBridgePath: bridge,
       );
+      final analytic = await runtime.managedCadFaceAnalyticGeometry(
+        sourceEntityId: sourceEntity.id,
+        presentationTriangleId: 1,
+      );
+      expect(analytic?['surfaceType'], 'cylinder');
+      expect(analytic?['origin'], [4.0, 5.0, 6.0]);
+      expect(analytic?['direction'], [0.0, 0.0, 1.0]);
+      expect(analytic?['radius'], closeTo(3, 1e-12));
       final referenceId = await runtime.createManagedCadCylinderAxisReference(
         sourceEntityId: sourceEntity.id,
         presentationTriangleId: 1,
@@ -1476,6 +1496,9 @@ void main() {
       expect(reference().direction!.toJson(), [0.0, 0.0, 1.0]);
       expect(reference().direction!.length, closeTo(1, 1e-12));
       expect(reference().radius, closeTo(3, 1e-12));
+      expect(reference().origin.toJson(), analytic!['origin']);
+      expect(reference().direction!.toJson(), analytic['direction']);
+      expect(reference().radius, analytic['radius']);
       expect(runtime.scene.find(referenceId)?.kind.name, 'axis');
       expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
 

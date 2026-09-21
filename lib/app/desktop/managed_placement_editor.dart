@@ -20,13 +20,69 @@ class _ManagedPlacementEditorState extends State<ManagedPlacementEditor> {
   final fields = List.generate(6, (_) => TextEditingController(text: '0'));
   bool busy = false;
   String? error;
+  String? alignmentSystemId;
+  bool alignmentWorkingCopy = false;
+  bool alignmentPreviewActive = false;
 
   @override
   void dispose() {
+    widget.runtime.clearManagedAlignmentPreview(widget.entityId);
     for (final field in fields) {
       field.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> previewAlignment() async {
+    if (alignmentSystemId == null) {
+      setState(
+        () => error = 'Selecione um Sistema de Coordenadas de Alinhamento.',
+      );
+      return;
+    }
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      await widget.runtime.previewManagedAlignment(
+        entityId: widget.entityId,
+        coordinateSystemId: alignmentSystemId!,
+      );
+      if (mounted) setState(() => alignmentPreviewActive = true);
+    } catch (value) {
+      if (mounted) setState(() => error = '$value');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> applyAlignment() async {
+    final systemId = alignmentSystemId;
+    if (!alignmentPreviewActive || systemId == null) return;
+    setState(() => busy = true);
+    try {
+      await widget.runtime.applyManagedAlignment(
+        entityId: widget.entityId,
+        coordinateSystemId: systemId,
+        createWorkingCopy: alignmentWorkingCopy,
+      );
+      if (mounted) {
+        setState(() {
+          alignmentPreviewActive = false;
+          error = null;
+        });
+      }
+    } catch (value) {
+      if (mounted) setState(() => error = '$value');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  void cancelAlignmentPreview() {
+    widget.runtime.clearManagedAlignmentPreview(widget.entityId);
+    setState(() => alignmentPreviewActive = false);
   }
 
   Future<void> apply({bool reset = false}) async {
@@ -77,6 +133,7 @@ class _ManagedPlacementEditorState extends State<ManagedPlacementEditor> {
   @override
   Widget build(BuildContext context) {
     final entity = widget.runtime.document?.entities[widget.entityId];
+    final systems = widget.runtime.alignmentCoordinateSystemCandidates();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -127,6 +184,86 @@ class _ManagedPlacementEditorState extends State<ManagedPlacementEditor> {
         ),
         const Text(
           'Geometria e assets originais preservados. Exportação transformada não disponível.',
+        ),
+        const Divider(),
+        const Text(
+          'Alinhar por Sistema de Coordenadas',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const Text(
+          'G105A2: origem e eixos locais da peça passam a coincidir com o sistema de destino. Sem escala.',
+        ),
+        DropdownButtonFormField<String>(
+          key: const ValueKey('alignment-coordinate-system'),
+          initialValue: alignmentSystemId,
+          decoration: const InputDecoration(
+            labelText: 'Sistema de Coordenadas de destino',
+          ),
+          items: [
+            for (final system in systems)
+              DropdownMenuItem(
+                value: system.id,
+                child: Text(system.data['name'] as String? ?? system.id),
+              ),
+          ],
+          onChanged: busy
+              ? null
+              : (value) {
+                  cancelAlignmentPreview();
+                  setState(() => alignmentSystemId = value);
+                },
+        ),
+        RadioGroup<bool>(
+          groupValue: alignmentWorkingCopy,
+          onChanged: (value) {
+            if (!busy) setState(() => alignmentWorkingCopy = value ?? false);
+          },
+          child: const Column(
+            children: [
+              RadioListTile<bool>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: false,
+                title: Text('Transformar original'),
+              ),
+              RadioListTile<bool>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: true,
+                title: Text('Criar Working Copy'),
+              ),
+            ],
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.tonalIcon(
+                onPressed: busy || alignmentSystemId == null
+                    ? null
+                    : previewAlignment,
+                icon: const Icon(Icons.visibility_outlined),
+                label: const Text('Preview'),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: busy || !alignmentPreviewActive
+                    ? null
+                    : applyAlignment,
+                icon: const Icon(Icons.check),
+                label: const Text('Apply'),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Cancel preview',
+              onPressed: busy || !alignmentPreviewActive
+                  ? null
+                  : cancelAlignmentPreview,
+              icon: const Icon(Icons.close),
+            ),
+          ],
         ),
       ],
     );

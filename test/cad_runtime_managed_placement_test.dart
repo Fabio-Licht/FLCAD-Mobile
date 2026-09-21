@@ -9,6 +9,7 @@ import 'package:flcad_mobile/app/cad_viewport/native/native_viewport_bridge.dart
 import 'package:flcad_mobile/app/cad_viewport/rendering/cad_root_color.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document_repository.dart';
+import 'package:flcad_mobile/core/cad_document/alignment_coordinate_system.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
@@ -68,6 +69,10 @@ void main() {
             '${file.lengthSync()}:${sha256.convert(file.readAsBytesSync())}',
     };
   }
+
+  String system(String suffix) => runtime.document!.entities.keys.singleWhere(
+    (id) => id.endsWith(':world:$suffix'),
+  );
 
   String visual() =>
       jsonEncode({for (final e in runtime.scene.entities) e.id: e.geometry});
@@ -215,6 +220,71 @@ void main() {
       },
     );
   }
+  test(
+    'G105A2 previews and applies a WCS placement without changing CAF assets',
+    () async {
+      final entity = await import('step');
+      final assets = inventory();
+      final wcs = await runtime.createAlignmentCoordinateSystemReference(
+        planeEntityId: system('xy-plane'),
+        axisEntityId: system('y-axis'),
+        originKind: AlignmentCoordinateSystemOriginKind.manual,
+        manualOrigin: const Vector3(25, -40, 12.5),
+      );
+      final before = runtime.document!.toJson();
+      final preview = await runtime.previewManagedAlignment(
+        entityId: entity.id,
+        coordinateSystemId: wcs,
+      );
+      expect(runtime.document!.toJson(), before);
+      expect(
+        runtime.scene.find('alignment-wcs-preview-${entity.id}'),
+        isNotNull,
+      );
+      expect(preview.placement.matrix.transformPoint(Vector3.zero).toJson(), [
+        25.0,
+        -40.0,
+        12.5,
+      ]);
+      runtime.clearManagedAlignmentPreview();
+      expect(runtime.scene.find('alignment-wcs-preview-${entity.id}'), isNull);
+
+      await runtime.applyManagedAlignment(
+        entityId: entity.id,
+        coordinateSystemId: wcs,
+        createWorkingCopy: false,
+      );
+      final placed = runtime.document!.entities[entity.id]!;
+      expect(placed.placement!.matrix.transformPoint(Vector3.zero).toJson(), [
+        25.0,
+        -40.0,
+        12.5,
+      ]);
+      expect(placed.data['alignmentByCoordinateSystem'], isA<Map>());
+      expect(inventory(), assets);
+      await runtime.undoDocument();
+      expect(runtime.document!.entities[entity.id]!.placement, isNull);
+      await runtime.redoDocument();
+      expect(runtime.document!.entities[entity.id]!.placement, isNotNull);
+
+      final copy = await runtime.applyManagedAlignment(
+        entityId: entity.id,
+        coordinateSystemId: wcs,
+        createWorkingCopy: true,
+      );
+      expect(copy, isNot(entity.id));
+      expect(runtime.document!.entities[entity.id], isNotNull);
+      expect(
+        runtime.document!.entities[copy]!.data['collectionId'],
+        'collection:working-copy',
+      );
+      expect(inventory(), assets);
+      await runtime.save();
+      await runtime.close();
+      await runtime.open('placement-project', project);
+      expect(runtime.document!.entities[copy], isNotNull);
+    },
+  );
   test(
     'mixed legacy/STEP/BREP/STL history transforms only target and restores atomically',
     () async {

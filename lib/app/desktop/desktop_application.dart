@@ -1435,6 +1435,49 @@ class _OfficialEngineeringWorkspaceState
             },
           ),
         ],
+        if (entity.data['alignmentByCoordinateSystem'] case final Map raw) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final translation = (raw['translation'] as List?)
+                  ?.whereType<num>()
+                  .toList(growable: false);
+              final systemId = raw['coordinateSystemId'] as String?;
+              final systemName = systemId == null
+                  ? null
+                  : widget
+                        .cad
+                        .runtime
+                        .document
+                        ?.entities[systemId]
+                        ?.data['name'];
+              return _InspectorSection(
+                title: 'Alinhamento por Sistema de Coordenadas',
+                children: [
+                  _InspectorProperty(
+                    label: 'Sistema de destino',
+                    value: systemName ?? systemId ?? 'Indisponível',
+                  ),
+                  _InspectorProperty(
+                    label: 'Modo',
+                    value: raw['mode'] == 'workingCopy'
+                        ? 'Working Copy'
+                        : 'Original',
+                  ),
+                  if (translation != null && translation.length == 3)
+                    _InspectorProperty(
+                      label: 'Translação',
+                      value: InspectorValueFormatter.coordinateMm(translation),
+                    ),
+                  _InspectorProperty(
+                    label: 'Rotação',
+                    value: 'Base rígida X/Y/Z (sem escala)',
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
         if (entity.data['sketch'] case final Map raw) ...[
           const SizedBox(height: 8),
           Builder(
@@ -5056,6 +5099,7 @@ class _OfficialEngineeringWorkspaceState
     bindings: {
       const SingleActivator(LogicalKeyboardKey.escape): () {
         contextualReferencePreview.cancel();
+        widget.cad.runtime.clearManagedAlignmentPreview();
         intersectionSelection.clear();
         alignmentCoordinateSystemSelection.clear();
         operational.activePick = null;

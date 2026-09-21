@@ -98,6 +98,21 @@ final class AlignmentCoordinateSystemPreview {
   final ReferenceParentIdentity? point;
 }
 
+/// Ephemeral result for G105A2.  [placement] maps the managed entity's local
+/// coordinates directly into the selected alignment coordinate system.
+@immutable
+final class ManagedAlignmentPreview {
+  const ManagedAlignmentPreview({
+    required this.entityId,
+    required this.coordinateSystemId,
+    required this.placement,
+  });
+
+  final String entityId;
+  final String coordinateSystemId;
+  final EntityPlacement placement;
+}
+
 class CadRuntime extends ChangeNotifier with NotificationGate {
   CadRuntime({
     required this.kernels,
@@ -583,6 +598,150 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
   List<CadDocumentEntity> pointReferenceCandidates() =>
       _pointReferenceCandidates();
 
+  /// Systems that can be selected as G105A2 destinations.  Orphan status is
+  /// checked again when previewing/applying so a stale UI list cannot apply a
+  /// transform to an invalid frame.
+  List<CadDocumentEntity> alignmentCoordinateSystemCandidates() {
+    final document = _document;
+    if (document == null) return const [];
+    return document.entities.values
+        .where((entity) {
+          final raw = entity.data[AlignmentCoordinateSystem.dataKey];
+          if (raw is! Map || entity.data['deleted'] == true) return false;
+          try {
+            final system = AlignmentCoordinateSystem.fromJson(
+              Map<String, dynamic>.from(raw),
+            );
+            return !alignmentCoordinateSystemIsOrphaned(system);
+          } catch (_) {
+            return false;
+          }
+        })
+        .toList(growable: false);
+  }
+
+  Future<ManagedAlignmentPreview> previewManagedAlignment({
+    required String entityId,
+    required String coordinateSystemId,
+  }) async {
+    late ManagedAlignmentPreview result;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final entity = _managedAlignmentEntity(document, entityId);
+      final placement = _alignmentPlacement(document, coordinateSystemId);
+      final current =
+          entity.placement ?? EntityPlacement.identity(const [0, 0, 0]);
+      final delta = placement.matrix * current.matrix.inverse();
+      EntityPlacement.validateRigidMatrix(delta);
+      final sourceScene = scene.find(entityId);
+      if (sourceScene == null) {
+        throw StateError(
+          'A apresentação da entidade selecionada não está disponível.',
+        );
+      }
+      projection.upsertTransient(
+        CadSceneEntity(
+          id: 'alignment-wcs-preview-$entityId',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            ...projectManagedPlacement(
+              sourceScene.geometry,
+              EntityPlacement.fromRigidMatrix(delta),
+            ),
+            'displayColor': 'previewOrange',
+          },
+        ),
+      );
+      _state['alignment.wcsPreviewEntityId'] = entityId;
+      result = ManagedAlignmentPreview(
+        entityId: entityId,
+        coordinateSystemId: coordinateSystemId,
+        placement: placement,
+      );
+      tx.validate();
+    });
+    return result;
+  }
+
+  void clearManagedAlignmentPreview([String? entityId]) {
+    final id = entityId ?? _state['alignment.wcsPreviewEntityId'];
+    if (id is String) projection.removeTransient('alignment-wcs-preview-$id');
+    _state.remove('alignment.wcsPreviewEntityId');
+  }
+
+  /// Applies one G105A2 placement transaction.  Assets remain shared CAF
+  /// assets; a Working Copy receives its own document identity and records its
+  /// immutable provenance in [alignmentByCoordinateSystem].
+  Future<String> applyManagedAlignment({
+    required String entityId,
+    required String coordinateSystemId,
+    required bool createWorkingCopy,
+  }) async {
+    late String outputId;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final entity = _managedAlignmentEntity(document, entityId);
+      final placement = _alignmentPlacement(document, coordinateSystemId);
+      final system = document.entities[coordinateSystemId]!;
+      final data = <String, dynamic>{...entity.data};
+      final suffix = createWorkingCopy ? ' (Working Copy)' : '';
+      outputId = createWorkingCopy
+          ? _nextManagedAlignmentCopyId(document, entity.id)
+          : entity.id;
+      data['name'] = '${entity.data['name'] ?? entity.id}$suffix';
+      data['collectionId'] = createWorkingCopy
+          ? 'collection:working-copy'
+          : 'collection:modified';
+      data['alignmentByCoordinateSystem'] = {
+        'schema': 'flcad.alignment-by-coordinate-system',
+        'version': 1,
+        'coordinateSystemId': coordinateSystemId,
+        'sourceEntityId': entity.id,
+        'mode': createWorkingCopy ? 'workingCopy' : 'original',
+        'rotation': [
+          placement.matrix.values[0],
+          placement.matrix.values[1],
+          placement.matrix.values[2],
+          placement.matrix.values[4],
+          placement.matrix.values[5],
+          placement.matrix.values[6],
+          placement.matrix.values[8],
+          placement.matrix.values[9],
+          placement.matrix.values[10],
+        ],
+        'translation': [
+          placement.matrix.values[3],
+          placement.matrix.values[7],
+          placement.matrix.values[11],
+        ],
+      };
+      await _mutateDocument(
+        tx,
+        command: createWorkingCopy
+            ? 'placement.alignmentCoordinateSystem.copy'
+            : 'placement.alignmentCoordinateSystem',
+        requested: [
+          CadDocumentEntity(
+            id: outputId,
+            kind: entity.kind,
+            data: data,
+            placement: placement,
+          ),
+        ],
+      );
+      // Keep the system in scope only through its durable ID; its full frame
+      // is already encoded by placement. This also catches a deleted WCS before
+      // the document mutation is published.
+      if (system.data['deleted'] == true) {
+        throw StateError('O sistema de coordenadas de destino foi removido.');
+      }
+    });
+    clearManagedAlignmentPreview(entityId);
+    geometrySelection.select(outputId);
+    return outputId;
+  }
+
   Future<AlignmentCoordinateSystemPreview> previewAlignmentCoordinateSystem({
     required String planeEntityId,
     required String axisEntityId,
@@ -899,6 +1058,79 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
               identitySha256: point.identity,
             ),
     );
+  }
+
+  CadDocumentEntity _managedAlignmentEntity(CadDocument document, String id) {
+    final entity = document.entities[id];
+    final isManaged =
+        entity?.data['managedStepAssets'] is Map ||
+        entity?.data['managedBrepAssets'] is Map ||
+        entity?.data['managedStlAssets'] is Map;
+    if (entity == null || entity.data['deleted'] == true || !isManaged) {
+      throw StateError(
+        'Selecione uma entidade managed STEP, BREP ou STL ativa.',
+      );
+    }
+    final collection = document.entities[entity.data['collectionId']];
+    if (collection?.data['locked'] == true) {
+      throw StateError('A coleção da entidade está bloqueada.');
+    }
+    return entity;
+  }
+
+  EntityPlacement _alignmentPlacement(
+    CadDocument document,
+    String coordinateSystemId,
+  ) {
+    final entity = document.entities[coordinateSystemId];
+    final raw = entity?.data[AlignmentCoordinateSystem.dataKey];
+    if (entity == null || entity.data['deleted'] == true || raw is! Map) {
+      throw StateError(
+        'Selecione um Sistema de Coordenadas de Alinhamento válido.',
+      );
+    }
+    final system = AlignmentCoordinateSystem.fromJson(
+      Map<String, dynamic>.from(raw),
+    );
+    if (alignmentCoordinateSystemIsOrphaned(system)) {
+      throw StateError('O Sistema de Coordenadas de Alinhamento está órfão.');
+    }
+    // G105A2 convention: the selected entity's local origin maps to WCS
+    // origin and its local X/Y/Z basis maps to the WCS X/Y/Z basis. Matrix
+    // columns are the destination frame directions; no scale is introduced.
+    final x = system.xAxis,
+        y = system.yAxis,
+        z = system.zAxis,
+        o = system.origin;
+    return EntityPlacement.fromRigidMatrix(
+      Matrix4([
+        x.x,
+        y.x,
+        z.x,
+        o.x,
+        x.y,
+        y.y,
+        z.y,
+        o.y,
+        x.z,
+        y.z,
+        z.z,
+        o.z,
+        0,
+        0,
+        0,
+        1,
+      ]),
+    );
+  }
+
+  String _nextManagedAlignmentCopyId(CadDocument document, String sourceId) {
+    var suffix = 1;
+    var id = 'working-copy:$sourceId:$suffix';
+    while (document.entities.containsKey(id)) {
+      id = 'working-copy:$sourceId:${++suffix}';
+    }
+    return id;
   }
 
   PlaneAxisIntersectionPreview _resolvePlaneAxisIntersection(

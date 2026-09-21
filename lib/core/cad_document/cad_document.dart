@@ -111,6 +111,7 @@ class CadDocumentEntity {
               'managedStepAssets',
               'featureLifecycle',
               'sceneVisible',
+              'alignmentByCoordinateSystem',
             }.contains(k),
           )) {
         throw const FormatException('Invalid managed STEP document entity');
@@ -121,6 +122,10 @@ class CadDocumentEntity {
       throw const FormatException(
         'STEP appearance requires managed STEP assets',
       );
+    }
+    final alignmentPlacement = data['alignmentByCoordinateSystem'];
+    if (alignmentPlacement != null) {
+      _validateAlignmentByCoordinateSystem(alignmentPlacement);
     }
     final managedReference = data[ManagedCadReference.dataKey];
     if (managedReference != null) {
@@ -178,6 +183,30 @@ class CadDocumentEntity {
           ? null
           : _meshFromJson(Map<String, dynamic>.from(json['mesh'] as Map)),
     );
+  }
+
+  static void _validateAlignmentByCoordinateSystem(Object raw) {
+    if (raw is! Map ||
+        raw.length != 7 ||
+        raw['schema'] != 'flcad.alignment-by-coordinate-system' ||
+        raw['version'] != 1 ||
+        raw['coordinateSystemId'] is! String ||
+        raw['sourceEntityId'] is! String ||
+        !{'original', 'workingCopy'}.contains(raw['mode']) ||
+        raw['rotation'] is! List ||
+        raw['translation'] is! List) {
+      throw const FormatException('Invalid alignment placement contract');
+    }
+    final rotation = raw['rotation'] as List;
+    final translation = raw['translation'] as List;
+    if (rotation.length != 9 ||
+        translation.length != 3 ||
+        [
+          ...rotation,
+          ...translation,
+        ].any((value) => value is! num || !value.isFinite)) {
+      throw const FormatException('Invalid alignment placement values');
+    }
   }
 
   static bool _hasStepTransientData(Object? value, [int depth = 0]) {

@@ -54,6 +54,26 @@ void main() {
     );
   });
 
+  test(
+    'Draft kernel diagnostics distinguish topology failure from no Draft',
+    () {
+      expect(
+        ProfessionalExtrudeConstraintAdapter.diagnosticForKernelFailure(
+          StateError('Draft angle could not be applied to the side faces'),
+          draftAngleDegrees: 5,
+        ),
+        contains('topologia deste perfil'),
+      );
+      expect(
+        ProfessionalExtrudeConstraintAdapter.diagnosticForKernelFailure(
+          StateError('Extrude builder did not complete'),
+          draftAngleDegrees: 0,
+        ),
+        'Extrude builder did not complete',
+      );
+    },
+  );
+
   test('selected extrusion axis persists as a real direction vector', () {
     final value = ProfessionalExtrudeContract(
       sourceEntityId: 'Source001',

@@ -390,6 +390,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
 
   final SketchHealthAnalyzer _sketchHealthAnalyzer =
       const SketchHealthAnalyzer();
+  // The command coordinator outlives individual project runtime maps. Keep
+  // this guard locally so reopening a project does not register the same
+  // operational commands a second time.
+  var _operationalCommandsRegistered = false;
   final RecognitionResultAdapter _recognitionResults =
       const RecognitionResultAdapter();
   final IntelligentSurfaceAssistant _surfaceAssistant =
@@ -1999,9 +2003,12 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   bool get _commandsRegistered =>
-      runtime.read<bool>('commands.registered') ?? false;
-  set _commandsRegistered(bool value) =>
-      runtime.write('commands.registered', value);
+      _operationalCommandsRegistered ||
+      (runtime.read<bool>('commands.registered') ?? false);
+  set _commandsRegistered(bool value) {
+    _operationalCommandsRegistered = value;
+    runtime.write('commands.registered', value);
+  }
 
   List<SketchEntity> get sketchEntities => sketchApi == null
       ? const []
@@ -5027,6 +5034,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (source == null) {
       throw StateError('Select exactly one Sketch or Surface.');
     }
+    final id =
+        featureId ??
+        ProfessionalExtrudeNaming.nextId(runtime.document!.entities.keys);
     busy = true;
     error = null;
     notifyListeners();
@@ -5062,9 +5072,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       );
       final plan = _extrudeConstraints.solve(contract);
       final health = _extrudeConstraints.health(contract);
-      final id =
-          featureId ??
-          ProfessionalExtrudeNaming.nextId(runtime.document!.entities.keys);
       final kernel = runtime.kernels.active;
       final transaction = KernelTransaction(
         'preview-$id-${DateTime.now().microsecondsSinceEpoch}',
@@ -5129,7 +5136,17 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         handle,
       );
     } catch (value) {
-      error = value.toString().replaceFirst('Bad state: ', '');
+      // A failed native Draft must never leave an old or partially published
+      // preview visible.  The durable document and its logical selection were
+      // not changed by this method.
+      runtime.hideTransient('preview:$id');
+      if (professionalExtrudePreview?['id'] == id) {
+        professionalExtrudePreview = null;
+      }
+      error = ProfessionalExtrudeConstraintAdapter.diagnosticForKernelFailure(
+        value,
+        draftAngleDegrees: draftAngleDegrees,
+      );
       rethrow;
     } finally {
       busy = false;
@@ -5151,7 +5168,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     );
     final sourceId = contract.sourceEntityId;
     selectedExtrudeProfileEntityId = contract.profileEntityId;
-    runtime.select({sourceId});
+    selectedExtrudeSourceId = sourceId;
     runtime.hideTransient('preview:${current['id']}');
     await previewProfessionalExtrude(
       featureId: current['id'] as String,
@@ -10312,6 +10329,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         await previewProfessionalExtrude(
           featureId: entity.id,
           distance: contract.distance,
+          draftAngleDegrees: contract.draftAngleDegrees,
+          directionSourceId: contract.directionSourceId,
           direction: contract.direction,
           output: contract.output,
         );

@@ -178,6 +178,22 @@ class ProfessionalExtrudeConstraintAdapter {
       );
     }
   }
+
+  /// Turns a native Draft failure into a user-facing diagnostic without
+  /// changing the original kernel result.  The OCCT bridge reports topology
+  /// failures as text, while parameter validation remains local to [solve].
+  static String diagnosticForKernelFailure(
+    Object error, {
+    required double draftAngleDegrees,
+  }) {
+    final message = error.toString().replaceFirst('Bad state: ', '');
+    if (draftAngleDegrees.abs() <= 1e-9) return message;
+    final normalized = message.toLowerCase();
+    if (normalized.contains('draft angle')) {
+      return 'Draft falhou para a topologia deste perfil: $message';
+    }
+    return 'Extrude com Draft falhou no kernel: $message';
+  }
 }
 
 abstract final class ProfessionalExtrudeNaming {

@@ -10,6 +10,7 @@ import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
+import 'package:flcad_mobile/core/professional_extrude/professional_extrude.dart';
 import 'package:flcad_mobile/core/professional_recognition/api/professional_recognition_api.dart';
 import 'package:flcad_mobile/core/reference_engine/api/reference_api.dart';
 import 'package:flcad_mobile/core/reference_engine/engine/reference_engine.dart';
@@ -217,6 +218,132 @@ void main() {
         ),
       );
       _expectFrame(reopenedSketch, stepReference, stepReferenceId);
+    },
+  );
+
+  test(
+    'managed Sketch Draft previews, persists, reopens and cancels without residue',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final sketch = controller.activeSketch!;
+      await controller.drawRectangle(
+        const SketchVector(-5, -3),
+        const SketchVector(5, 3),
+      );
+      final profileId = sketch.entityIds.first;
+      await controller.finishSketch();
+      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      final selectionBeforePreview = Set<String>.from(cad.runtime.selection);
+
+      await controller.previewProfessionalExtrude(
+        distance: 8,
+        draftAngleDegrees: 5,
+      );
+      final positivePreview = controller.professionalExtrudePreview!;
+      final positiveId = positivePreview['id'] as String;
+      expect(
+        ((positivePreview['contract'] as Map)['draftAngleDegrees'] as num)
+            .toDouble(),
+        5,
+      );
+      expect(cad.runtime.scene.find('preview:$positiveId'), isNotNull);
+      expect(cad.runtime.document!.entities[positiveId], isNull);
+      expect(cad.runtime.selection, selectionBeforePreview);
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+      controller.cancelProfessionalExtrude();
+      expect(cad.runtime.scene.find('preview:$positiveId'), isNull);
+      expect(controller.professionalExtrudePreview, isNull);
+      expect(cad.runtime.document!.entities[positiveId], isNull);
+
+      await controller.previewProfessionalExtrude(
+        distance: 8,
+        draftAngleDegrees: -4,
+        direction: ProfessionalExtrudeDirection.reverse,
+      );
+      final negativePreview = controller.professionalExtrudePreview!;
+      final extrudeId = negativePreview['id'] as String;
+      expect(
+        ((negativePreview['contract'] as Map)['draftAngleDegrees'] as num)
+            .toDouble(),
+        -4,
+      );
+      expect((negativePreview['contract'] as Map)['direction'], 'reverse');
+      await controller.confirmProfessionalExtrude();
+      final committed = cad.runtime.document!.entities[extrudeId]!;
+      final committedContract = Map<String, dynamic>.from(
+        ((committed.data['extrudeFeature'] as Map)['contract'] as Map),
+      );
+      expect(committedContract['profileEntityId'], profileId);
+      expect(committedContract['draftAngleDegrees'], -4);
+      expect(committedContract['direction'], 'reverse');
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+
+      await cad.runtime.undoDocument();
+      expect(cad.runtime.document!.entities[extrudeId], isNull);
+      await cad.runtime.redoDocument();
+      expect(cad.runtime.document!.entities[extrudeId], isNotNull);
+
+      // A source revision rebuilds the feature through the same Draft
+      // contract; no parameter may silently fall back to its default.
+      sketch.version += 1;
+      final sourceEntity = cad.runtime.document!.entities[sketch.id]!;
+      final revisedData = Map<String, dynamic>.from(sourceEntity.data);
+      revisedData['sketch'] = {
+        ...Map<String, dynamic>.from(sourceEntity.data['sketch'] as Map),
+        'version': sketch.version,
+      };
+      await cad.runtime.mutate(
+        command: 'test.draft-source-revision',
+        upsert: [
+          CadDocumentEntity(
+            id: sourceEntity.id,
+            kind: sourceEntity.kind,
+            shape: sourceEntity.shape,
+            mesh: sourceEntity.mesh,
+            data: revisedData,
+          ),
+        ],
+      );
+      await controller.refreshDependentProfessionalExtrudes();
+      final refreshedContract = Map<String, dynamic>.from(
+        ((cad.runtime.document!.entities[extrudeId]!.data['extrudeFeature']
+                as Map)['contract']
+            as Map),
+      );
+      expect(refreshedContract['draftAngleDegrees'], -4);
+      expect(refreshedContract['direction'], 'reverse');
+
+      await cad.runtime.save();
+      final scratch = await Directory(
+        p.join(root.path, 'draft-scratch'),
+      ).create();
+      controller.detachProject();
+      await cad.runtime.open('draft-scratch', scratch);
+      await cad.runtime.open('managed-reference-sketch', project);
+      await controller.configureProject(
+        projectId: 'managed-reference-sketch',
+        projectDirectory: project,
+      );
+      await controller.reenterProfessionalExtrude(extrudeId);
+      final reentered = controller.professionalExtrudePreview!;
+      final reenteredContract = Map<String, dynamic>.from(
+        reentered['contract'] as Map,
+      );
+      expect(reenteredContract['draftAngleDegrees'], -4);
+      expect(reenteredContract['direction'], 'reverse');
+      expect(reenteredContract['profileEntityId'], profileId);
+      controller.cancelProfessionalExtrude();
+      expect(controller.professionalExtrudePreview, isNull);
+      expect(cad.runtime.scene.find('preview:$extrudeId'), isNull);
     },
   );
 

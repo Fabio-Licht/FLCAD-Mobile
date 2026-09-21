@@ -52,6 +52,7 @@ void main() {
       ContextualReferenceAction.manualPlane,
       ContextualReferenceAction.manualAxis,
       ContextualReferenceAction.planeAxisIntersectionPoint,
+      ContextualReferenceAction.alignmentCoordinateSystem,
     ]);
     expect(result.showManualSection, isTrue);
   });

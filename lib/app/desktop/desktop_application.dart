@@ -11,6 +11,7 @@ import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/cad_document/plane_axis_intersection_point.dart';
+import '../../core/cad_document/alignment_coordinate_system.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
@@ -65,6 +66,7 @@ import 'contextual_reference_preview_session.dart';
 import 'explorer_tree_projection.dart';
 import 'inspector_value_formatter.dart';
 import 'plane_axis_intersection_selection.dart';
+import 'alignment_coordinate_system_selection.dart';
 import 'reference_tree_taxonomy.dart';
 
 class FLCADDesktopApplication extends StatefulWidget {
@@ -1021,6 +1023,8 @@ class _OfficialEngineeringWorkspaceState
   final camera = CadCameraController();
   final managedFaceSelection = CadManagedFaceSelectionController();
   final intersectionSelection = PlaneAxisIntersectionSelectionController();
+  final alignmentCoordinateSystemSelection =
+      AlignmentCoordinateSystemSelectionController();
   late final ContextualReferencePreviewSession contextualReferencePreview;
   late final NavigationEngine navigation;
   GeometrySelectionManager get geometrySelection =>
@@ -1346,6 +1350,81 @@ class _OfficialEngineeringWorkspaceState
                     label: 'Estado',
                     value:
                         widget.cad.runtime.planeAxisIntersectionPointIsOrphaned(
+                          reference,
+                        )
+                        ? 'Órfã / pai indisponível ou alterado'
+                        : 'Válida — snapshot',
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+        if (entity.data[AlignmentCoordinateSystem.dataKey]
+            case final Map raw) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final reference = AlignmentCoordinateSystem.fromJson(
+                Map<String, dynamic>.from(raw),
+              );
+              String parentName(ReferenceParentIdentity parent) =>
+                  widget
+                          .cad
+                          .runtime
+                          .document
+                          ?.entities[parent.entityId]
+                          ?.data['name']
+                      as String? ??
+                  parent.entityId;
+              return _InspectorSection(
+                title: 'Sistema de Coordenadas de Alinhamento',
+                children: [
+                  _InspectorProperty(
+                    label: 'Plano pai',
+                    value: parentName(reference.plane),
+                  ),
+                  _InspectorProperty(
+                    label: 'Eixo/Vetor pai',
+                    value: parentName(reference.axis),
+                  ),
+                  _InspectorProperty(
+                    label: switch (reference.originKind) {
+                      AlignmentCoordinateSystemOriginKind.referencePoint =>
+                        'Ponto de origem',
+                      AlignmentCoordinateSystemOriginKind.manual =>
+                        'Origem manual',
+                      AlignmentCoordinateSystemOriginKind.viewport =>
+                        'Origem capturada na viewport',
+                    },
+                    value: reference.point == null
+                        ? InspectorValueFormatter.coordinateMm(
+                            reference.origin.toJson(),
+                          )
+                        : parentName(reference.point!),
+                  ),
+                  _InspectorProperty(
+                    label: 'X',
+                    value: InspectorValueFormatter.unitDirection(
+                      reference.xAxis.toJson(),
+                    ),
+                  ),
+                  _InspectorProperty(
+                    label: 'Y',
+                    value: InspectorValueFormatter.unitDirection(
+                      reference.yAxis.toJson(),
+                    ),
+                  ),
+                  _InspectorProperty(
+                    label: 'Z',
+                    value: InspectorValueFormatter.unitDirection(
+                      reference.zAxis.toJson(),
+                    ),
+                  ),
+                  _InspectorProperty(
+                    label: 'Estado',
+                    value:
+                        widget.cad.runtime.alignmentCoordinateSystemIsOrphaned(
                           reference,
                         )
                         ? 'Órfã / pai indisponível ou alterado'
@@ -2297,13 +2376,21 @@ class _OfficialEngineeringWorkspaceState
     );
     widget.cad.addListener(_synchronizeScene);
     widget.cad.runtime.addListener(_synchronizeScene);
+    alignmentCoordinateSystemSelection.addListener(
+      _alignmentCaptureStateChanged,
+    );
     _synchronizeScene();
+  }
+
+  void _alignmentCaptureStateChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     contextualReferencePreview.cancel();
     intersectionSelection.dispose();
+    alignmentCoordinateSystemSelection.dispose();
     transformX.dispose();
     transformY.dispose();
     transformZ.dispose();
@@ -2315,6 +2402,9 @@ class _OfficialEngineeringWorkspaceState
     sectionOffset.dispose();
     widget.cad.removeListener(_synchronizeScene);
     widget.cad.runtime.removeListener(_synchronizeScene);
+    alignmentCoordinateSystemSelection.removeListener(
+      _alignmentCaptureStateChanged,
+    );
     operational.dispose();
     navigation.dispose();
     camera.dispose();
@@ -2328,6 +2418,7 @@ class _OfficialEngineeringWorkspaceState
     if (runtimeDocument == null) {
       contextualReferencePreview.cancel();
       intersectionSelection.clear();
+      alignmentCoordinateSystemSelection.clear();
       operational.detachProject();
       fittedDocumentId = null;
       fittedDocumentSession = null;
@@ -2350,6 +2441,7 @@ class _OfficialEngineeringWorkspaceState
         fittedDocumentSession != widget.cad.runtime.sessionIdentity) {
       contextualReferencePreview.cancel();
       intersectionSelection.clear();
+      alignmentCoordinateSystemSelection.clear();
       openToolWindows.clear();
       choosingSketchSupport = false;
       modelingViewport.clearPreview();
@@ -2376,6 +2468,74 @@ class _OfficialEngineeringWorkspaceState
       _handledManagedImportPublication = publication.id;
       _scheduleManagedImportFit(publication);
     }
+  }
+
+  bool _captureContextualReferencePick(CadViewportPick pick) {
+    if (_captureAlignmentCoordinateSystemPick(pick)) return true;
+    return _captureIntersectionPick(pick);
+  }
+
+  bool _captureAlignmentCoordinateSystemPick(CadViewportPick pick) {
+    if (!alignmentCoordinateSystemSelection.active) return false;
+    final slot = alignmentCoordinateSystemSelection.activeSlot!;
+    if (slot == AlignmentCoordinateSystemSlot.viewportOrigin) {
+      final source = scene.find(pick.entityId);
+      if (source == null ||
+          !source.visible ||
+          !const {
+            CadSceneEntityKind.mesh,
+            CadSceneEntityKind.surface,
+            CadSceneEntityKind.solid,
+          }.contains(source.kind) ||
+          ![
+            pick.hit.point.x,
+            pick.hit.point.y,
+            pick.hit.point.z,
+          ].every((value) => value.isFinite)) {
+        widget.cad.setStatus(
+          'Clique incompatível: a captura exige uma face CAD ou malha STL visível.',
+        );
+        return true;
+      }
+      alignmentCoordinateSystemSelection.setManualOrigin(
+        pick.hit.point,
+        kind: AlignmentCoordinateSystemOriginKind.viewport,
+      );
+      widget.cad.setStatus(
+        'Origem capturada na geometria: ${InspectorValueFormatter.coordinateMm(pick.hit.point.toJson())}.',
+      );
+      return true;
+    }
+    final result = alignmentCoordinateSystemSelection.capture(
+      pick.entityId,
+      planeCandidateIds: widget.cad.runtime
+          .planeIntersectionCandidates()
+          .map((entity) => entity.id)
+          .toSet(),
+      axisCandidateIds: widget.cad.runtime
+          .axisIntersectionCandidates()
+          .map((entity) => entity.id)
+          .toSet(),
+      pointCandidateIds: widget.cad.runtime
+          .pointReferenceCandidates()
+          .map((entity) => entity.id)
+          .toSet(),
+    );
+    String label(AlignmentCoordinateSystemSlot value) => switch (value) {
+      AlignmentCoordinateSystemSlot.plane => 'Plano base',
+      AlignmentCoordinateSystemSlot.axis => 'Eixo/Vetor de direção',
+      AlignmentCoordinateSystemSlot.point => 'Ponto de origem',
+      AlignmentCoordinateSystemSlot.viewportOrigin =>
+        'ponto na geometria visível',
+    };
+    if (result == AlignmentCoordinateSystemCaptureResult.incompatible) {
+      widget.cad.setStatus(
+        'Seleção incompatível: clique em ${label(slot)} de References ou WCS.',
+      );
+    } else if (result == AlignmentCoordinateSystemCaptureResult.accepted) {
+      widget.cad.setStatus('Campo ${label(slot)} preenchido pela viewport.');
+    }
+    return true;
   }
 
   bool _captureIntersectionPick(CadViewportPick pick) {
@@ -2407,6 +2567,20 @@ class _OfficialEngineeringWorkspaceState
   }
 
   bool _keepIntersectionCaptureOnEmptyClick() {
+    final alignmentSlot = alignmentCoordinateSystemSelection.activeSlot;
+    if (alignmentSlot != null) {
+      final label = switch (alignmentSlot) {
+        AlignmentCoordinateSystemSlot.plane => 'Plano base',
+        AlignmentCoordinateSystemSlot.axis => 'Eixo/Vetor de direção',
+        AlignmentCoordinateSystemSlot.point => 'Ponto de origem',
+        AlignmentCoordinateSystemSlot.viewportOrigin =>
+          'Ponto de origem na geometria',
+      };
+      widget.cad.setStatus(
+        'Nenhuma referência válida nesse ponto; a captura de $label continua ativa.',
+      );
+      return true;
+    }
     final slot = intersectionSelection.activeSlot;
     if (slot == null) return false;
     widget.cad.setStatus(
@@ -2415,6 +2589,53 @@ class _OfficialEngineeringWorkspaceState
           : 'Nenhum eixo válido nesse ponto; a captura de Eixo continua ativa.',
     );
     return true;
+  }
+
+  Set<String>? get _contextualCaptureCandidateIds {
+    final slot = alignmentCoordinateSystemSelection.activeSlot;
+    if (slot != null) {
+      return switch (slot) {
+        AlignmentCoordinateSystemSlot.plane =>
+          widget.cad.runtime
+              .planeIntersectionCandidates()
+              .map((entity) => entity.id)
+              .toSet(),
+        AlignmentCoordinateSystemSlot.axis =>
+          widget.cad.runtime
+              .axisIntersectionCandidates()
+              .map((entity) => entity.id)
+              .toSet(),
+        AlignmentCoordinateSystemSlot.point =>
+          widget.cad.runtime
+              .pointReferenceCandidates()
+              .map((entity) => entity.id)
+              .toSet(),
+        AlignmentCoordinateSystemSlot.viewportOrigin =>
+          scene.entities
+              .where(
+                (entity) =>
+                    entity.visible &&
+                    const {
+                      CadSceneEntityKind.mesh,
+                      CadSceneEntityKind.surface,
+                      CadSceneEntityKind.solid,
+                    }.contains(entity.kind),
+              )
+              .map((entity) => entity.id)
+              .toSet(),
+      };
+    }
+    final intersectionSlot = intersectionSelection.activeSlot;
+    if (intersectionSlot == null) return null;
+    return intersectionSlot == PlaneAxisIntersectionSlot.plane
+        ? widget.cad.runtime
+              .planeIntersectionCandidates()
+              .map((entity) => entity.id)
+              .toSet()
+        : widget.cad.runtime
+              .axisIntersectionCandidates()
+              .map((entity) => entity.id)
+              .toSet();
   }
 
   void _scheduleManagedImportFit(CadManagedImportPublication publication) {
@@ -4599,6 +4820,7 @@ class _OfficialEngineeringWorkspaceState
         runtime: widget.cad.runtime,
         preview: contextualReferencePreview,
         intersectionSelection: intersectionSelection,
+        alignmentCoordinateSystemSelection: alignmentCoordinateSystemSelection,
         pick: operational.activePick,
         selectedEntity: geometrySelection.selectedIds.firstOrNull == null
             ? null
@@ -4835,6 +5057,7 @@ class _OfficialEngineeringWorkspaceState
       const SingleActivator(LogicalKeyboardKey.escape): () {
         contextualReferencePreview.cancel();
         intersectionSelection.clear();
+        alignmentCoordinateSystemSelection.clear();
         operational.activePick = null;
         managedFaceSelection.clear();
         widget.cad.runtime.operationalSelection.clear();
@@ -5012,7 +5235,10 @@ class _OfficialEngineeringWorkspaceState
                                 child: IntegratedCadViewportWidget(
                                   onViewportReady: () =>
                                       _pendingManagedImportFit?.call(),
-                                  onPickCapture: _captureIntersectionPick,
+                                  onPickCapture:
+                                      _captureContextualReferencePick,
+                                  pickCaptureCandidateIds:
+                                      _contextualCaptureCandidateIds,
                                   scene: scene,
                                   camera: camera,
                                   operationalEntities:
@@ -5209,7 +5435,9 @@ class _OfficialEngineeringWorkspaceState
                                   onPick: widget.cad.runtime.document == null
                                       ? null
                                       : (pick) async {
-                                          if (_captureIntersectionPick(pick)) {
+                                          if (_captureContextualReferencePick(
+                                            pick,
+                                          )) {
                                             return;
                                           }
                                           geometrySelection.select(
@@ -7550,6 +7778,7 @@ class _ManagedCadReferencePanel extends StatefulWidget {
     required this.runtime,
     required this.preview,
     required this.intersectionSelection,
+    required this.alignmentCoordinateSystemSelection,
     required this.pick,
     required this.selectedEntity,
     required this.recognizedStlPlaneAvailable,
@@ -7563,6 +7792,8 @@ class _ManagedCadReferencePanel extends StatefulWidget {
   final CadRuntime runtime;
   final ContextualReferencePreviewSession preview;
   final PlaneAxisIntersectionSelectionController intersectionSelection;
+  final AlignmentCoordinateSystemSelectionController
+  alignmentCoordinateSystemSelection;
   final CadViewportPick? pick;
   final CadDocumentEntity? selectedEntity;
   final bool recognizedStlPlaneAvailable;
@@ -7584,7 +7815,13 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   ContextualReferenceAction? draft;
   bool intersectionEditorOpen = false;
   String? lastIntersectionPreviewKey;
+  bool alignmentCoordinateSystemEditorOpen = false;
+  String? lastAlignmentCoordinateSystemPreviewKey;
   final manualOffset = TextEditingController(text: '10');
+  final alignmentOriginX = TextEditingController();
+  final alignmentOriginY = TextEditingController();
+  final alignmentOriginZ = TextEditingController();
+  bool syncingAlignmentOriginFields = false;
 
   ContextualReferencePreviewSession get preview => widget.preview;
 
@@ -7592,7 +7829,13 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   void initState() {
     super.initState();
     manualOffset.addListener(_refreshManualPlanePreview);
+    alignmentOriginX.addListener(_manualAlignmentOriginChanged);
+    alignmentOriginY.addListener(_manualAlignmentOriginChanged);
+    alignmentOriginZ.addListener(_manualAlignmentOriginChanged);
     widget.intersectionSelection.addListener(_intersectionSelectionChanged);
+    widget.alignmentCoordinateSystemSelection.addListener(
+      _alignmentCoordinateSystemSelectionChanged,
+    );
     _inspectFace();
   }
 
@@ -7618,6 +7861,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     if (oldWidget.pick != widget.pick ||
         oldWidget.selectedEntity != widget.selectedEntity) {
       widget.intersectionSelection.clear();
+      widget.alignmentCoordinateSystemSelection.clear();
       _cancelPreview();
       _inspectFace();
     }
@@ -7627,10 +7871,62 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   void dispose() {
     manualOffset.removeListener(_refreshManualPlanePreview);
     widget.intersectionSelection.removeListener(_intersectionSelectionChanged);
+    widget.alignmentCoordinateSystemSelection.removeListener(
+      _alignmentCoordinateSystemSelectionChanged,
+    );
     widget.intersectionSelection.clear();
+    widget.alignmentCoordinateSystemSelection.clear();
     preview.cancel();
     manualOffset.dispose();
+    alignmentOriginX.dispose();
+    alignmentOriginY.dispose();
+    alignmentOriginZ.dispose();
     super.dispose();
+  }
+
+  void _manualAlignmentOriginChanged() {
+    if (syncingAlignmentOriginFields ||
+        widget.alignmentCoordinateSystemSelection.originKind !=
+            AlignmentCoordinateSystemOriginKind.manual) {
+      return;
+    }
+    final x = parseAlignmentCoordinateMm(alignmentOriginX.text);
+    final y = parseAlignmentCoordinateMm(alignmentOriginY.text);
+    final z = parseAlignmentCoordinateMm(alignmentOriginZ.text);
+    widget.alignmentCoordinateSystemSelection.setManualOrigin(
+      x == null ||
+              y == null ||
+              z == null ||
+              !x.isFinite ||
+              !y.isFinite ||
+              !z.isFinite
+          ? null
+          : Vector3(x, y, z),
+      kind: AlignmentCoordinateSystemOriginKind.manual,
+    );
+  }
+
+  void _synchronizeAlignmentOriginFields(Vector3 value) {
+    syncingAlignmentOriginFields = true;
+    alignmentOriginX.text = value.x.toStringAsFixed(3);
+    alignmentOriginY.text = value.y.toStringAsFixed(3);
+    alignmentOriginZ.text = value.z.toStringAsFixed(3);
+    syncingAlignmentOriginFields = false;
+  }
+
+  void _showCapturedOriginMarker(Vector3 origin) {
+    preview.show(
+      CadSceneEntity(
+        id: 'draft',
+        kind: CadSceneEntityKind.point,
+        geometry: {
+          'type': 'point',
+          'position': origin.toJson(),
+          'markerRadius': 7.0,
+          'displayColor': 'capturedOrigin',
+        },
+      ),
+    );
   }
 
   void _intersectionSelectionChanged() {
@@ -7650,6 +7946,42 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     unawaited(_previewPlaneAxisIntersection());
   }
 
+  void _alignmentCoordinateSystemSelectionChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final planeId = widget.alignmentCoordinateSystemSelection.planeEntityId;
+    final axisId = widget.alignmentCoordinateSystemSelection.axisEntityId;
+    final pointId = widget.alignmentCoordinateSystemSelection.pointEntityId;
+    final originKind = widget.alignmentCoordinateSystemSelection.originKind;
+    final manualOrigin = widget.alignmentCoordinateSystemSelection.manualOrigin;
+    if (originKind == AlignmentCoordinateSystemOriginKind.viewport &&
+        manualOrigin != null) {
+      _synchronizeAlignmentOriginFields(manualOrigin);
+    }
+    final originReady =
+        originKind == AlignmentCoordinateSystemOriginKind.referencePoint
+        ? pointId != null
+        : manualOrigin != null;
+    if (planeId == null || axisId == null || !originReady) {
+      lastAlignmentCoordinateSystemPreviewKey = null;
+      if (draft == ContextualReferenceAction.alignmentCoordinateSystem) {
+        preview.cancel();
+        draft = null;
+      }
+      if (originKind == AlignmentCoordinateSystemOriginKind.viewport &&
+          manualOrigin != null) {
+        _showCapturedOriginMarker(manualOrigin);
+      }
+      return;
+    }
+    final key =
+        '$planeId\u0000$axisId\u0000${originKind.name}\u0000'
+        '${pointId ?? manualOrigin?.toJson().join(',')}';
+    if (lastAlignmentCoordinateSystemPreviewKey == key) return;
+    lastAlignmentCoordinateSystemPreviewKey = key;
+    unawaited(_previewAlignmentCoordinateSystem());
+  }
+
   void _cancelPreview() {
     preview.cancel();
     if (mounted) setState(() => draft = null);
@@ -7662,6 +7994,13 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     if (intersection) {
       widget.intersectionSelection.clear();
       lastIntersectionPreviewKey = null;
+    }
+    final alignment =
+        draft == ContextualReferenceAction.alignmentCoordinateSystem ||
+        widget.alignmentCoordinateSystemSelection.active;
+    if (alignment) {
+      widget.alignmentCoordinateSystemSelection.clear();
+      lastAlignmentCoordinateSystemPreviewKey = null;
     }
     _cancelPreview();
   }
@@ -7803,6 +8142,9 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
           throw StateError(
             'Use os campos de Plano + Eixo para calcular a prévia.',
           ),
+        ContextualReferenceAction.alignmentCoordinateSystem => throw StateError(
+          'Use os campos de Plano, Eixo/Vetor e Ponto para calcular a prévia.',
+        ),
       };
       preview.show(
         CadSceneEntity(id: 'draft', kind: kind, geometry: previewGeometry),
@@ -7839,6 +8181,63 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
       if (mounted) {
         setState(
           () => draft = ContextualReferenceAction.planeAxisIntersectionPoint,
+        );
+      }
+    } catch (error) {
+      _cancelPreview();
+      widget.onStatus(
+        error
+            .toString()
+            .replaceFirst('Bad state: ', '')
+            .replaceFirst('FormatException: ', ''),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _previewAlignmentCoordinateSystem() async {
+    final planeId = widget.alignmentCoordinateSystemSelection.planeEntityId;
+    final axisId = widget.alignmentCoordinateSystemSelection.axisEntityId;
+    final pointId = widget.alignmentCoordinateSystemSelection.pointEntityId;
+    final originKind = widget.alignmentCoordinateSystemSelection.originKind;
+    final manualOrigin = widget.alignmentCoordinateSystemSelection.manualOrigin;
+    if (planeId == null ||
+        axisId == null ||
+        (originKind == AlignmentCoordinateSystemOriginKind.referencePoint
+            ? pointId == null
+            : manualOrigin == null) ||
+        busy) {
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final result = await widget.runtime.previewAlignmentCoordinateSystem(
+        planeEntityId: planeId,
+        axisEntityId: axisId,
+        pointEntityId: pointId,
+        manualOrigin: manualOrigin,
+        originKind: originKind,
+      );
+      preview.show(
+        CadSceneEntity(
+          id: 'draft',
+          kind: CadSceneEntityKind.coordinateSystem,
+          geometry: {
+            'type': 'coordinateSystem',
+            'origin': result.origin.toJson(),
+            'xAxis': result.xAxis.toJson(),
+            'yAxis': result.yAxis.toJson(),
+            'zAxis': result.zAxis.toJson(),
+            'visualLength': 30.0,
+            'capturedOriginMarker':
+                originKind == AlignmentCoordinateSystemOriginKind.viewport,
+          },
+        ),
+      );
+      if (mounted) {
+        setState(
+          () => draft = ContextualReferenceAction.alignmentCoordinateSystem,
         );
       }
     } catch (error) {
@@ -7990,10 +8389,40 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
             planeEntityId: planeId,
             axisEntityId: axisId,
           );
+        case ContextualReferenceAction.alignmentCoordinateSystem:
+          final planeId =
+              widget.alignmentCoordinateSystemSelection.planeEntityId;
+          final axisId = widget.alignmentCoordinateSystemSelection.axisEntityId;
+          final pointId =
+              widget.alignmentCoordinateSystemSelection.pointEntityId;
+          final originKind =
+              widget.alignmentCoordinateSystemSelection.originKind;
+          final manualOrigin =
+              widget.alignmentCoordinateSystemSelection.manualOrigin;
+          if (planeId == null ||
+              axisId == null ||
+              (originKind == AlignmentCoordinateSystemOriginKind.referencePoint
+                  ? pointId == null
+                  : manualOrigin == null)) {
+            throw StateError(
+              'Selecione um plano, eixo/vetor e origem válidos.',
+            );
+          }
+          await widget.runtime.createAlignmentCoordinateSystemReference(
+            planeEntityId: planeId,
+            axisEntityId: axisId,
+            pointEntityId: pointId,
+            manualOrigin: manualOrigin,
+            originKind: originKind,
+          );
       }
       if (draft == ContextualReferenceAction.planeAxisIntersectionPoint) {
         widget.intersectionSelection.clear();
         lastIntersectionPreviewKey = null;
+      }
+      if (draft == ContextualReferenceAction.alignmentCoordinateSystem) {
+        widget.alignmentCoordinateSystemSelection.clear();
+        lastAlignmentCoordinateSystemPreviewKey = null;
       }
       widget.onCompleted();
       preview.cancel();
@@ -8037,11 +8466,34 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     final canIntersectPlaneAxis = plan.actions.contains(
       ContextualReferenceAction.planeAxisIntersectionPoint,
     );
+    final canCreateAlignmentCoordinateSystem = plan.actions.contains(
+      ContextualReferenceAction.alignmentCoordinateSystem,
+    );
     final planeCandidates = widget.runtime.planeIntersectionCandidates();
     final axisCandidates = widget.runtime.axisIntersectionCandidates();
+    final pointCandidates = widget.runtime.pointReferenceCandidates();
     final intersectionPlaneId = widget.intersectionSelection.planeEntityId;
     final intersectionAxisId = widget.intersectionSelection.axisEntityId;
     final activeIntersectionSlot = widget.intersectionSelection.activeSlot;
+    final alignmentPlaneId =
+        widget.alignmentCoordinateSystemSelection.planeEntityId;
+    final alignmentAxisId =
+        widget.alignmentCoordinateSystemSelection.axisEntityId;
+    final alignmentPointId =
+        widget.alignmentCoordinateSystemSelection.pointEntityId;
+    final alignmentOriginKind =
+        widget.alignmentCoordinateSystemSelection.originKind;
+    final alignmentManualOrigin =
+        widget.alignmentCoordinateSystemSelection.manualOrigin;
+    final activeAlignmentSlot =
+        widget.alignmentCoordinateSystemSelection.activeSlot;
+    String alignmentSlotLabel(AlignmentCoordinateSystemSlot slot) =>
+        switch (slot) {
+          AlignmentCoordinateSystemSlot.plane => 'Plano base',
+          AlignmentCoordinateSystemSlot.axis => 'Eixo/Vetor de direção',
+          AlignmentCoordinateSystemSlot.point => 'Ponto de origem',
+          AlignmentCoordinateSystemSlot.viewportOrigin => 'Ponto na geometria',
+        };
     final existingReference = selectedReference != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -8261,10 +8713,303 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
             label: const Text('Atualizar Preview'),
           ),
         ],
+        if (canCreateAlignmentCoordinateSystem) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              _cancelPreview();
+              setState(() => alignmentCoordinateSystemEditorOpen = true);
+            },
+            icon: const Icon(Icons.account_tree_outlined, size: 18),
+            label: const Text('Sistema de Coordenadas de Alinhamento'),
+          ),
+        ],
+        if (canCreateAlignmentCoordinateSystem &&
+            alignmentCoordinateSystemEditorOpen) ...[
+          const SizedBox(height: 10),
+          if (activeAlignmentSlot != null) ...[
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  'Seleção pela viewport ativa: '
+                  '${alignmentSlotLabel(activeAlignmentSlot)}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          DropdownButtonFormField<String>(
+            initialValue: alignmentPlaneId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Plano base (Z)'),
+            hint: const Text('Selecione o plano'),
+            items: [
+              for (final candidate in planeCandidates)
+                DropdownMenuItem(
+                  value: candidate.id,
+                  child: Text(
+                    candidate.data['name'] as String? ?? candidate.id,
+                  ),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) {
+                    _cancelPreview();
+                    lastAlignmentCoordinateSystemPreviewKey = null;
+                    widget.alignmentCoordinateSystemSelection.choose(
+                      AlignmentCoordinateSystemSlot.plane,
+                      value,
+                    );
+                  },
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () {
+                    _cancelPreview();
+                    lastAlignmentCoordinateSystemPreviewKey = null;
+                    widget.alignmentCoordinateSystemSelection.begin(
+                      AlignmentCoordinateSystemSlot.plane,
+                    );
+                    widget.onStatus(
+                      'Clique em um plano de References ou WCS na viewport.',
+                    );
+                  },
+            icon: const Icon(Icons.ads_click_outlined, size: 18),
+            label: Text(
+              activeAlignmentSlot == AlignmentCoordinateSystemSlot.plane
+                  ? 'Selecionando Plano base na viewport…'
+                  : 'Selecionar Plano base na viewport',
+            ),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: alignmentAxisId,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Eixo/Vetor de direção (Y)',
+            ),
+            hint: const Text('Selecione o eixo ou vetor'),
+            items: [
+              for (final candidate in axisCandidates)
+                DropdownMenuItem(
+                  value: candidate.id,
+                  child: Text(
+                    candidate.data['name'] as String? ?? candidate.id,
+                  ),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) {
+                    _cancelPreview();
+                    lastAlignmentCoordinateSystemPreviewKey = null;
+                    widget.alignmentCoordinateSystemSelection.choose(
+                      AlignmentCoordinateSystemSlot.axis,
+                      value,
+                    );
+                  },
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () {
+                    _cancelPreview();
+                    lastAlignmentCoordinateSystemPreviewKey = null;
+                    widget.alignmentCoordinateSystemSelection.begin(
+                      AlignmentCoordinateSystemSlot.axis,
+                    );
+                    widget.onStatus(
+                      'Clique em um eixo/vetor de References ou WCS na viewport.',
+                    );
+                  },
+            icon: const Icon(Icons.ads_click_outlined, size: 18),
+            label: Text(
+              activeAlignmentSlot == AlignmentCoordinateSystemSlot.axis
+                  ? 'Selecionando Eixo/Vetor na viewport…'
+                  : 'Selecionar Eixo/Vetor na viewport',
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Ponto de origem',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          SegmentedButton<AlignmentCoordinateSystemOriginKind>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: AlignmentCoordinateSystemOriginKind.referencePoint,
+                label: Text('Referência'),
+              ),
+              ButtonSegment(
+                value: AlignmentCoordinateSystemOriginKind.manual,
+                label: Text('Coordenadas'),
+              ),
+              ButtonSegment(
+                value: AlignmentCoordinateSystemOriginKind.viewport,
+                label: Text('Viewport'),
+              ),
+            ],
+            selected: {alignmentOriginKind},
+            onSelectionChanged: busy
+                ? null
+                : (values) {
+                    _cancelPreview();
+                    lastAlignmentCoordinateSystemPreviewKey = null;
+                    alignmentOriginX.clear();
+                    alignmentOriginY.clear();
+                    alignmentOriginZ.clear();
+                    widget.alignmentCoordinateSystemSelection.chooseOriginKind(
+                      values.single,
+                    );
+                  },
+          ),
+          const SizedBox(height: 8),
+          if (alignmentOriginKind ==
+              AlignmentCoordinateSystemOriginKind.referencePoint) ...[
+            DropdownButtonFormField<String>(
+              initialValue: alignmentPointId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Ponto de referência',
+              ),
+              hint: const Text('Selecione o ponto'),
+              items: [
+                for (final candidate in pointCandidates)
+                  DropdownMenuItem(
+                    value: candidate.id,
+                    child: Text(
+                      candidate.data['name'] as String? ?? candidate.id,
+                    ),
+                  ),
+              ],
+              onChanged: busy
+                  ? null
+                  : (value) {
+                      _cancelPreview();
+                      lastAlignmentCoordinateSystemPreviewKey = null;
+                      widget.alignmentCoordinateSystemSelection.choose(
+                        AlignmentCoordinateSystemSlot.point,
+                        value,
+                      );
+                    },
+            ),
+            const SizedBox(height: 6),
+            OutlinedButton.icon(
+              onPressed: busy
+                  ? null
+                  : () {
+                      _cancelPreview();
+                      lastAlignmentCoordinateSystemPreviewKey = null;
+                      widget.alignmentCoordinateSystemSelection.begin(
+                        AlignmentCoordinateSystemSlot.point,
+                      );
+                      widget.onStatus(
+                        'Clique em um ponto de References ou WCS na viewport.',
+                      );
+                    },
+              icon: const Icon(Icons.ads_click_outlined, size: 18),
+              label: Text(
+                activeAlignmentSlot == AlignmentCoordinateSystemSlot.point
+                    ? 'Selecionando Ponto na viewport…'
+                    : 'Selecionar Ponto na viewport',
+              ),
+            ),
+          ] else ...[
+            Row(
+              children: [
+                for (final entry in [
+                  ('X', alignmentOriginX),
+                  ('Y', alignmentOriginY),
+                  ('Z', alignmentOriginZ),
+                ]) ...[
+                  Expanded(
+                    child: TextField(
+                      controller: entry.$2,
+                      readOnly:
+                          alignmentOriginKind ==
+                          AlignmentCoordinateSystemOriginKind.viewport,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                        signed: true,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: entry.$1,
+                        suffixText: 'mm',
+                      ),
+                    ),
+                  ),
+                  if (entry.$1 != 'Z') const SizedBox(width: 6),
+                ],
+              ],
+            ),
+            if (alignmentOriginKind ==
+                AlignmentCoordinateSystemOriginKind.viewport) ...[
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                onPressed: busy
+                    ? null
+                    : () {
+                        _cancelPreview();
+                        lastAlignmentCoordinateSystemPreviewKey = null;
+                        widget.alignmentCoordinateSystemSelection.begin(
+                          AlignmentCoordinateSystemSlot.viewportOrigin,
+                        );
+                        widget.onStatus(
+                          'Clique sobre uma face CAD ou malha STL visível.',
+                        );
+                      },
+                icon: const Icon(Icons.my_location_outlined, size: 18),
+                label: Text(
+                  activeAlignmentSlot ==
+                          AlignmentCoordinateSystemSlot.viewportOrigin
+                      ? 'Capturando ponto na viewport…'
+                      : 'Selecionar ponto na viewport',
+                ),
+              ),
+            ],
+            if (alignmentManualOrigin != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                InspectorValueFormatter.coordinateMm(
+                  alignmentManualOrigin.toJson(),
+                ),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed:
+                busy ||
+                    alignmentPlaneId == null ||
+                    alignmentAxisId == null ||
+                    (alignmentOriginKind ==
+                            AlignmentCoordinateSystemOriginKind.referencePoint
+                        ? alignmentPointId == null
+                        : alignmentManualOrigin == null)
+                ? null
+                : _previewAlignmentCoordinateSystem,
+            icon: const Icon(Icons.visibility_outlined, size: 18),
+            label: const Text('Atualizar Preview'),
+          ),
+        ],
         if (canManualPoint ||
             canManualPlane ||
             canManualAxis ||
-            canIntersectPlaneAxis)
+            canIntersectPlaneAxis ||
+            canCreateAlignmentCoordinateSystem)
           const SizedBox(height: 8),
         if (canPlane)
           FilledButton.icon(

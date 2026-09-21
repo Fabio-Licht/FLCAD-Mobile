@@ -536,6 +536,54 @@ void main() {
     expect(curveHit.hit.point.y, closeTo(0, 1e-9));
   });
 
+  test('capture filter selects an axis drawn over a plane', () {
+    final camera = CadCameraController(
+      eye: const Vector3(0, 0, 10),
+      target: Vector3.zero,
+      up: const Vector3(0, 1, 0),
+    )..resize(800, 600);
+    final scene = CadSceneGraph()
+      ..upsert(
+        const CadSceneEntity(
+          id: 'xy-plane',
+          kind: CadSceneEntityKind.plane,
+          geometry: {
+            'origin': [0, 0, 0],
+            'normal': [0, 0, 1],
+          },
+        ),
+      )
+      ..upsert(
+        const CadSceneEntity(
+          id: 'y-axis',
+          kind: CadSceneEntityKind.axis,
+          geometry: {
+            'origin': [0, 0, 0],
+            'direction': [0, 1, 0],
+          },
+        ),
+      );
+    final picking = ViewportPickingController();
+
+    expect(
+      picking
+          .pick(position: const Offset(400, 300), camera: camera, scene: scene)
+          ?.entityId,
+      'xy-plane',
+    );
+    expect(
+      picking
+          .pick(
+            position: const Offset(400, 300),
+            camera: camera,
+            scene: scene,
+            eligibleEntityIds: const {'y-axis'},
+          )
+          ?.entityId,
+      'y-axis',
+    );
+  });
+
   test(
     'empty-project world planes use a discrete camera-relative footprint',
     () {

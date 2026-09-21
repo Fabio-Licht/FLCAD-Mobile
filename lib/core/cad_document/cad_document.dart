@@ -3,6 +3,7 @@ import '../cad_kernel/models/kernel_models.dart';
 import 'managed_step_contract.dart';
 import 'managed_cad_reference.dart';
 import 'plane_axis_intersection_point.dart';
+import 'alignment_coordinate_system.dart';
 import 'entity_placement.dart';
 
 enum CadDocumentEntityKind {
@@ -145,6 +146,19 @@ class CadDocumentEntity {
       PlaneAxisIntersectionPoint.fromJson(
         Map<String, dynamic>.from(intersection),
       );
+    }
+    final alignment = data[AlignmentCoordinateSystem.dataKey];
+    if (alignment != null) {
+      if (json['kind'] != CadDocumentEntityKind.reference.name ||
+          json['shape'] != null ||
+          json['mesh'] != null ||
+          data['sceneKind'] != 'coordinateSystem' ||
+          alignment is! Map) {
+        throw const FormatException(
+          'Invalid alignment coordinate system entity',
+        );
+      }
+      AlignmentCoordinateSystem.fromJson(Map<String, dynamic>.from(alignment));
     }
     return CadDocumentEntity(
       id: json['id'] as String,

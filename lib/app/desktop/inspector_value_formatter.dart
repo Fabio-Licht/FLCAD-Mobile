@@ -3,6 +3,14 @@ abstract final class InspectorValueFormatter {
   static const _zeroThreshold = 0.0005;
 
   static String coordinateMm(Iterable<num> coordinates) {
+    return _triple(coordinates, suffix: ' mm');
+  }
+
+  /// Unit directions are dimensionless, but use the same fixed precision as
+  /// world coordinates in the basic Inspector.
+  static String unitDirection(Iterable<num> direction) => _triple(direction);
+
+  static String _triple(Iterable<num> coordinates, {String suffix = ''}) {
     final values = coordinates.toList(growable: false);
     if (values.length != 3 || values.any((value) => !value.isFinite)) {
       throw const FormatException('Invalid Inspector coordinate');
@@ -14,6 +22,6 @@ abstract final class InspectorValueFormatter {
       return number.toStringAsFixed(basicCoordinatePrecision);
     }
 
-    return '[${values.map(component).join(', ')}] mm';
+    return '[${values.map(component).join(', ')}]$suffix';
   }
 }

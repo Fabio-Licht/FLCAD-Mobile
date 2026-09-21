@@ -187,11 +187,13 @@ class ViewportPickingController {
     required Offset position,
     required CadCameraController camera,
     required CadSceneGraph scene,
+    Set<String>? eligibleEntityIds,
   }) {
     CadViewportPick? nearest;
     for (final entity in scene.entities.where(
       (item) =>
           item.visible &&
+          (eligibleEntityIds == null || eligibleEntityIds.contains(item.id)) &&
           const {
             CadSceneEntityKind.mesh,
             CadSceneEntityKind.surface,
@@ -262,14 +264,21 @@ class ViewportPickingController {
     // Screen-space references intentionally take precedence over the mesh.
     // This makes thin sketches/sections and translucent world planes usable
     // even when they are visually superimposed on an imported STL.
-    return _pickReference(position, camera, scene) ?? nearest;
+    return _pickReference(
+          position,
+          camera,
+          scene,
+          eligibleEntityIds: eligibleEntityIds,
+        ) ??
+        nearest;
   }
 
   CadViewportPick? _pickReference(
     Offset position,
     CadCameraController camera,
-    CadSceneGraph scene,
-  ) {
+    CadSceneGraph scene, {
+    Set<String>? eligibleEntityIds,
+  }) {
     CadViewportPick? best;
     var bestPriority = 1 << 30;
     var bestDistance = double.infinity;
@@ -335,11 +344,17 @@ class ViewportPickingController {
       );
     }
 
-    for (final entity in scene.entities.where((item) => item.visible)) {
+    for (final entity in scene.entities.where(
+      (item) =>
+          item.visible &&
+          (eligibleEntityIds == null || eligibleEntityIds.contains(item.id)),
+    )) {
       final priority = switch (entity.kind) {
         CadSceneEntityKind.sketch || CadSceneEntityKind.curve => 0,
         CadSceneEntityKind.plane => 1,
-        CadSceneEntityKind.axis || CadSceneEntityKind.point => 2,
+        CadSceneEntityKind.axis ||
+        CadSceneEntityKind.point ||
+        CadSceneEntityKind.coordinateSystem => 2,
         _ => 10,
       };
       if (priority == 10) continue;
@@ -464,6 +479,24 @@ class ViewportPickingController {
           ),
           origin,
         );
+      } else if (entity.kind == CadSceneEntityKind.coordinateSystem) {
+        final xAxis = vector(entity.geometry['xAxis'])?.normalized;
+        final yAxis = vector(entity.geometry['yAxis'])?.normalized;
+        final zAxis = vector(entity.geometry['zAxis'])?.normalized;
+        if (xAxis == null || yAxis == null || zAxis == null) continue;
+        final length = worldScale * 2;
+        for (final direction in [xAxis, yAxis, zAxis]) {
+          consider(
+            entity,
+            priority,
+            segmentDistance(
+              position,
+              project(origin),
+              project(origin + direction * length),
+            ),
+            origin,
+          );
+        }
       } else {
         consider(
           entity,

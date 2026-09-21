@@ -233,6 +233,8 @@ class _Fixture {
     void Function(CadViewportPick, Offset)? dragStart,
     VoidCallback? onViewportSelectionCleared,
     bool Function(CadViewportPick)? onPickCapture,
+    Set<String>? pickCaptureCandidateIds,
+    ValueChanged<CadViewportPick?>? onPickCaptureHover,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     await tester.pumpWidget(
@@ -248,6 +250,8 @@ class _Fixture {
           managedFaceSelectionController: managedFaceSelection,
           onPick: picks.add,
           onPickCapture: onPickCapture,
+          pickCaptureCandidateIds: pickCaptureCandidateIds,
+          onPickCaptureHover: onPickCaptureHover,
           onSketchTap: sketchTap,
           onSketchEntityPick: sketchEntity,
           onSketchSupportPick: sketchSupport,
@@ -463,6 +467,59 @@ void main() {
     },
   );
 
+  testWidgets('Native GPU resolves a local coordinate system overlay', (
+    tester,
+  ) async {
+    final f = _Fixture();
+    f.scene.upsert(
+      const CadSceneEntity(
+        id: 'reference:alignment-wcs',
+        kind: CadSceneEntityKind.coordinateSystem,
+        geometry: {
+          'type': 'coordinateSystem',
+          'origin': [0.0, 0.0, 0.0],
+          'xAxis': [1.0, 0.0, 0.0],
+          'yAxis': [0.0, 1.0, 0.0],
+          'zAxis': [0.0, 0.0, 1.0],
+        },
+      ),
+    );
+    f.bridge.answer = (_) async => null;
+    await f.mount(tester);
+
+    await tap(tester);
+
+    expect(f.picks.single.entityId, 'reference:alignment-wcs');
+    expect(f.selection.activeId, 'operational:reference:alignment-wcs');
+  });
+
+  testWidgets('Canvas resolves the same local coordinate system overlay', (
+    tester,
+  ) async {
+    final f = _Fixture();
+    f.scene.upsert(
+      const CadSceneEntity(
+        id: 'reference:alignment-wcs',
+        kind: CadSceneEntityKind.coordinateSystem,
+        geometry: {
+          'type': 'coordinateSystem',
+          'origin': [0.0, 0.0, 0.0],
+          'xAxis': [1.0, 0.0, 0.0],
+          'yAxis': [0.0, 1.0, 0.0],
+          'zAxis': [0.0, 0.0, 1.0],
+        },
+      ),
+    );
+    await f.mount(tester);
+    await tester.tap(find.text('Flutter Canvas'));
+    await tester.pumpAndSettle();
+
+    await tap(tester);
+
+    expect(f.picks.single.entityId, 'reference:alignment-wcs');
+    expect(f.selection.activeId, isNull);
+  });
+
   testWidgets(
     'transient command captures a WCS overlay without global selection',
     (tester) async {
@@ -546,6 +603,79 @@ void main() {
     await tap(tester);
 
     expect(captured.single.entityId, 'world:xy-plane');
+    expect(f.selection.calls, 0);
+    expect(f.picks, isEmpty);
+  });
+
+  testWidgets(
+    'axis capture and hover win over an overlapping plane in Native GPU',
+    (tester) async {
+      final f = _Fixture();
+      f.scene
+        ..upsert(
+          const CadSceneEntity(
+            id: 'world:xy-plane',
+            kind: CadSceneEntityKind.plane,
+            geometry: {
+              'origin': [0.0, 0.0, 0.0],
+              'normal': [0.0, 0.0, 1.0],
+            },
+          ),
+        )
+        ..upsert(
+          const CadSceneEntity(
+            id: 'world:y-axis',
+            kind: CadSceneEntityKind.axis,
+            geometry: {
+              'origin': [0.0, 0.0, 0.0],
+              'direction': [0.0, 1.0, 0.0],
+            },
+          ),
+        );
+      final captured = <CadViewportPick>[];
+      final hovered = <String?>[];
+      await f.mount(
+        tester,
+        pickCaptureCandidateIds: const {'world:y-axis'},
+        onPickCaptureHover: (pick) => hovered.add(pick?.entityId),
+        onPickCapture: (pick) {
+          captured.add(pick);
+          return true;
+        },
+      );
+      final mouse = TestPointer(44, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(const Offset(600, 400)));
+      await tester.pump();
+      expect(hovered.last, 'world:y-axis');
+
+      await tap(tester);
+      expect(captured.single.entityId, 'world:y-axis');
+      expect(f.selection.calls, 0);
+    },
+  );
+
+  testWidgets('Canvas captures the exact geometry hit without selection', (
+    tester,
+  ) async {
+    final f = _Fixture();
+    final captured = <CadViewportPick>[];
+    await f.mount(
+      tester,
+      pickCaptureCandidateIds: const {'a'},
+      onPickCapture: (pick) {
+        captured.add(pick);
+        return true;
+      },
+    );
+    await tester.tap(find.text('Flutter Canvas'));
+    await tester.pumpAndSettle();
+
+    await tap(tester);
+
+    expect(captured.single.entityId, 'a');
+    expect(captured.single.hit.point.x, closeTo(0, 1e-9));
+    expect(captured.single.hit.point.y, closeTo(0, 1e-9));
+    expect(captured.single.hit.point.z, closeTo(0, 1e-9));
     expect(f.selection.calls, 0);
     expect(f.picks, isEmpty);
   });

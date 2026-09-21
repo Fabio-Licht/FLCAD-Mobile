@@ -129,6 +129,7 @@ void main() {
         'project:world:xy-plane',
         'project:world:xz-plane',
         'project:world:yz-plane',
+        'reference:other',
       ]);
       expect(grouped[ReferenceTreeGroup.points]!.map((e) => e.id), [
         'point:manual',
@@ -143,9 +144,7 @@ void main() {
       expect(grouped[ReferenceTreeGroup.curves]!.map((e) => e.id), [
         'curve:reference',
       ]);
-      expect(grouped[ReferenceTreeGroup.other]!.map((e) => e.id), [
-        'reference:other',
-      ]);
+      expect(grouped[ReferenceTreeGroup.other], isEmpty);
       expect(ReferenceTreeTaxonomy.groupFor(primitiveSurface), isNull);
       expect(ReferenceTreeTaxonomy.groupFor(nonReferenceCurve), isNull);
     },

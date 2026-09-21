@@ -1,6 +1,7 @@
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/cad_document/plane_axis_intersection_point.dart';
+import '../../core/cad_document/alignment_coordinate_system.dart';
 import '../runtime/world_coordinate_system.dart';
 
 /// UI-only taxonomy for the Explorer. It deliberately projects existing
@@ -62,6 +63,21 @@ abstract final class ReferenceTreeTaxonomy {
     if (entity.data[PlaneAxisIntersectionPoint.dataKey] is Map) {
       return 'Plano + Eixo — snapshot';
     }
+    if (entity.data[AlignmentCoordinateSystem.dataKey] is Map) {
+      final reference = AlignmentCoordinateSystem.fromJson(
+        Map<String, dynamic>.from(
+          entity.data[AlignmentCoordinateSystem.dataKey] as Map,
+        ),
+      );
+      return switch (reference.originKind) {
+        AlignmentCoordinateSystemOriginKind.referencePoint =>
+          'Plano + Eixo + Ponto — snapshot',
+        AlignmentCoordinateSystemOriginKind.manual =>
+          'Plano + Eixo + Origem manual — snapshot',
+        AlignmentCoordinateSystemOriginKind.viewport =>
+          'Plano + Eixo + Origem da viewport — snapshot',
+      };
+    }
     final construction = entity.data['constructionEntity'];
     if (construction is Map) return 'Manual';
     final reference = entity.data['reference'];
@@ -111,6 +127,7 @@ abstract final class ReferenceTreeTaxonomy {
   };
 
   static ReferenceTreeGroup _sceneType(Object? type) => switch (type) {
+    'coordinateSystem' => ReferenceTreeGroup.coordinateSystem,
     'point' => ReferenceTreeGroup.points,
     'axis' => ReferenceTreeGroup.axes,
     'plane' => ReferenceTreeGroup.planes,

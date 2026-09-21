@@ -14,6 +14,7 @@ import 'package:flcad_mobile/core/cad_document/cad_document_repository.dart';
 import 'package:flcad_mobile/core/cad_document/managed_step_contract.dart';
 import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
 import 'package:flcad_mobile/core/cad_document/plane_axis_intersection_point.dart';
+import 'package:flcad_mobile/core/cad_document/alignment_coordinate_system.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
@@ -1634,6 +1635,40 @@ void main() {
       expect(runtime.planeAxisIntersectionPointIsOrphaned(point), isTrue);
       await runtime.undoDocument();
       expect(runtime.planeAxisIntersectionPointIsOrphaned(point), isFalse);
+    },
+  );
+
+  test(
+    'managed STEP cylindrical axis creates a Native GPU-safe alignment coordinate system',
+    () async {
+      final cylinderSource = await runtime.importManagedStep(
+        p.join(source.path, 'cylinder.step'),
+        nativeBridgePath: bridge,
+      );
+      final axisId = await runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: cylinderSource.id,
+        presentationTriangleId: 1,
+      );
+      String system(String suffix) => runtime.document!.entities.keys
+          .singleWhere((id) => id.endsWith(':world:$suffix'));
+      final id = await runtime.createAlignmentCoordinateSystemReference(
+        planeEntityId: system('xz-plane'),
+        axisEntityId: axisId,
+        pointEntityId: system('origin'),
+      );
+      final definition = AlignmentCoordinateSystem.fromJson(
+        Map<String, dynamic>.from(
+          runtime.document!.entities[id]!.data[AlignmentCoordinateSystem
+                  .dataKey]
+              as Map,
+        ),
+      );
+      expect(
+        definition.xAxis.cross(definition.yAxis).toJson(),
+        definition.zAxis.toJson(),
+      );
+      expect(runtime.alignmentCoordinateSystemIsOrphaned(definition), isFalse);
+      expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
     },
   );
 

@@ -30,6 +30,10 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
     required this.scene,
     required this.camera,
     this.onPick,
+    this.onPickCapture,
+    this.pickCaptureCandidateIds,
+    this.onPickCaptureHover,
+    this.captureHoveredEntityId,
     this.onNormalTap,
     this.onManagedFacePick,
     this.onEmptyNormalTap,
@@ -61,6 +65,10 @@ class ProfessionalCadViewportWidget extends StatefulWidget {
   final CadSceneGraph scene;
   final CadCameraController camera;
   final ValueChanged<CadViewportPick>? onPick;
+  final bool Function(CadViewportPick)? onPickCapture;
+  final Set<String>? pickCaptureCandidateIds;
+  final ValueChanged<CadViewportPick?>? onPickCaptureHover;
+  final String? captureHoveredEntityId;
 
   /// Overrides only normal picking; Sketch gestures retain priority.
   final ValueChanged<Offset>? onNormalTap;
@@ -208,8 +216,10 @@ class _ProfessionalCadViewportWidgetState
       position: event.localPosition,
       camera: widget.camera,
       scene: widget.scene,
+      eligibleEntityIds: widget.pickCaptureCandidateIds,
     );
     if (hit != null) {
+      if (widget.onPickCapture?.call(hit) == true) return;
       navigation.focus(hit.hit.point);
       if (widget.onManagedFacePick != null) {
         widget.onManagedFacePick!(hit);
@@ -298,8 +308,10 @@ class _ProfessionalCadViewportWidgetState
       position: position,
       camera: widget.camera,
       scene: widget.scene,
+      eligibleEntityIds: widget.pickCaptureCandidateIds,
     );
     final next = hit?.entityId;
+    widget.onPickCaptureHover?.call(hit);
     widget.onManagedFaceHover?.call(hit);
     if (next != hoveredEntityId && mounted) {
       setState(() => hoveredEntityId = next);
@@ -374,6 +386,10 @@ class _ProfessionalCadViewportWidgetState
         return MouseRegion(
           cursor: _sketchToolActive
               ? SystemMouseCursors.precise
+              : widget.pickCaptureCandidateIds != null
+              ? hoveredEntityId == null
+                    ? SystemMouseCursors.forbidden
+                    : SystemMouseCursors.click
               : !widget.enablePicking || hoveredEntityId == null
               ? MouseCursor.defer
               : SystemMouseCursors.click,
@@ -388,6 +404,7 @@ class _ProfessionalCadViewportWidgetState
             }
           },
           onExit: (_) {
+            widget.onPickCaptureHover?.call(null);
             widget.onManagedFaceHover?.call(null);
             if (hoveredEntityId != null) {
               setState(() => hoveredEntityId = null);
@@ -504,7 +521,9 @@ class _ProfessionalCadViewportWidgetState
                             colors: colors,
                             showGrid: widget.showSketchGrid,
                             meshRenderCaches: meshRenderCaches,
-                            hoveredEntityId: hoveredEntityId,
+                            hoveredEntityId:
+                                widget.captureHoveredEntityId ??
+                                hoveredEntityId,
                             managedFaceHover: widget.managedFaceHover,
                             managedFaceSelection: widget.managedFaceSelection,
                             rotationCenterMarker: _rotationCenterMarker,
@@ -2106,9 +2125,11 @@ class _CadScenePainter extends CustomPainter {
               ? 7
               : (entity.geometry['markerRadius'] as num?)?.toDouble() ?? 5,
           Paint()
-            ..color = entity.geometry['displayColor'] == 'endpointSnap'
-                ? const Color(0xff62d98b)
-                : colors.tertiary,
+            ..color = switch (entity.geometry['displayColor']) {
+              'endpointSnap' => const Color(0xff62d98b),
+              'capturedOrigin' => const Color(0xffffd54f),
+              _ => colors.tertiary,
+            },
         );
       case CadSceneEntityKind.axis:
         final origin = vector(entity.geometry['origin']);
@@ -2138,13 +2159,49 @@ class _CadScenePainter extends CustomPainter {
                       : .46 * passiveFactor,
                 ),
           width: highlighted
-              ? 1.55
+              ? 3.0
               : isWorld
               ? .82
               : constructionEntity
               ? 1.65
               : .68,
         );
+        if (highlighted) {
+          final tip = project(end);
+          final tail = project(end - direction * (length * .12));
+          final delta = tip - tail;
+          if (delta.distance > 1e-6) {
+            final unit = delta / delta.distance;
+            final perpendicular = Offset(-unit.dy, unit.dx);
+            final arrowPaint = Paint()
+              ..color = const Color(0xffffd54f)
+              ..strokeWidth = 2.2
+              ..strokeCap = StrokeCap.round;
+            canvas.drawLine(
+              tip,
+              tip - unit * 10 + perpendicular * 5,
+              arrowPaint,
+            );
+            canvas.drawLine(
+              tip,
+              tip - unit * 10 - perpendicular * 5,
+              arrowPaint,
+            );
+          }
+          final label = entity.geometry['name'] as String? ?? entity.id;
+          final text = TextPainter(
+            text: TextSpan(
+              text: label,
+              style: const TextStyle(
+                color: Color(0xffffd54f),
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout(maxWidth: 180);
+          text.paint(canvas, tip + const Offset(7, -16));
+        }
         if (isWorld) {
           final label = switch (entity.geometry['axisColor']) {
             'x' => 'X',
@@ -2235,6 +2292,23 @@ class _CadScenePainter extends CustomPainter {
       case CadSceneEntityKind.coordinateSystem:
         if (isWorld) break;
         final origin = vector(entity.geometry['origin']);
+        if (entity.geometry['capturedOriginMarker'] == true) {
+          canvas.drawCircle(
+            project(origin),
+            6,
+            Paint()
+              ..color = const Color(0xffffd54f)
+              ..style = PaintingStyle.fill,
+          );
+          canvas.drawCircle(
+            project(origin),
+            9,
+            Paint()
+              ..color = const Color(0xffffd54f)
+              ..strokeWidth = 1.5
+              ..style = PaintingStyle.stroke,
+          );
+        }
         line(
           origin,
           origin + vector(entity.geometry['xAxis']).normalized * worldScale,

@@ -15,6 +15,7 @@ import '../../core/cad_document/managed_step_contract.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
 import '../../core/cad_document/plane_axis_intersection_point.dart';
+import '../../core/cad_document/alignment_coordinate_system.dart';
 import '../../core/cad_document/dependency_walk.dart';
 import '../../core/cad_document/cad_document_repository.dart';
 import '../../core/cad_kernel/api/geometry_kernel_api.dart';
@@ -72,6 +73,29 @@ final class PlaneAxisIntersectionPreview {
   final Vector3 point;
   final ReferenceParentIdentity plane;
   final ReferenceParentIdentity axis;
+}
+
+@immutable
+final class AlignmentCoordinateSystemPreview {
+  const AlignmentCoordinateSystemPreview({
+    required this.origin,
+    required this.xAxis,
+    required this.yAxis,
+    required this.zAxis,
+    required this.plane,
+    required this.axis,
+    required this.originKind,
+    this.point,
+  });
+
+  final Vector3 origin;
+  final Vector3 xAxis;
+  final Vector3 yAxis;
+  final Vector3 zAxis;
+  final ReferenceParentIdentity plane;
+  final ReferenceParentIdentity axis;
+  final AlignmentCoordinateSystemOriginKind originKind;
+  final ReferenceParentIdentity? point;
 }
 
 class CadRuntime extends ChangeNotifier with NotificationGate {
@@ -556,6 +580,129 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
   List<CadDocumentEntity> axisIntersectionCandidates() =>
       _referenceCandidates('axis');
 
+  List<CadDocumentEntity> pointReferenceCandidates() =>
+      _pointReferenceCandidates();
+
+  Future<AlignmentCoordinateSystemPreview> previewAlignmentCoordinateSystem({
+    required String planeEntityId,
+    required String axisEntityId,
+    String? pointEntityId,
+    Vector3? manualOrigin,
+    AlignmentCoordinateSystemOriginKind originKind =
+        AlignmentCoordinateSystemOriginKind.referencePoint,
+  }) async {
+    late AlignmentCoordinateSystemPreview result;
+    await _enqueue((tx) async {
+      result = _resolveAlignmentCoordinateSystem(
+        _requireDocument(),
+        planeEntityId,
+        axisEntityId,
+        pointEntityId,
+        manualOrigin,
+        originKind,
+      );
+      tx.validate();
+    });
+    return result;
+  }
+
+  Future<String> createAlignmentCoordinateSystemReference({
+    required String planeEntityId,
+    required String axisEntityId,
+    String? pointEntityId,
+    Vector3? manualOrigin,
+    AlignmentCoordinateSystemOriginKind originKind =
+        AlignmentCoordinateSystemOriginKind.referencePoint,
+  }) async {
+    late String referenceId;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final result = _resolveAlignmentCoordinateSystem(
+        document,
+        planeEntityId,
+        axisEntityId,
+        pointEntityId,
+        manualOrigin,
+        originKind,
+      );
+      final definition = AlignmentCoordinateSystem(
+        origin: result.origin,
+        xAxis: result.xAxis,
+        yAxis: result.yAxis,
+        zAxis: result.zAxis,
+        plane: result.plane,
+        axis: result.axis,
+        originKind: result.originKind,
+        point: result.point,
+      );
+      const baseName = 'Sistema de Coordenadas de Alinhamento';
+      final names = document.entities.values
+          .map((entity) => entity.data['name'])
+          .whereType<String>()
+          .toSet();
+      var name = baseName;
+      for (var suffix = 2; names.contains(name); suffix++) {
+        name = '$baseName ($suffix)';
+      }
+      referenceId =
+          'alignment-coordinate-system:${DateTime.now().microsecondsSinceEpoch}';
+      await _mutateDocument(
+        tx,
+        command: 'references.coordinateSystem.alignment',
+        requested: [
+          CadDocumentEntity(
+            id: referenceId,
+            kind: CadDocumentEntityKind.reference,
+            data: {
+              'name': name,
+              'collectionId': 'collection:references',
+              'sceneKind': CadSceneEntityKind.coordinateSystem.name,
+              'sceneGeometry': {
+                'type': 'coordinateSystem',
+                'origin': result.origin.toJson(),
+                'xAxis': result.xAxis.toJson(),
+                'yAxis': result.yAxis.toJson(),
+                'zAxis': result.zAxis.toJson(),
+                'visualLength': 30.0,
+              },
+              'sceneVisible': true,
+              'sceneTransparent': true,
+              'sourceEntityIds': [planeEntityId, axisEntityId, ?pointEntityId],
+              AlignmentCoordinateSystem.dataKey: definition.toJson(),
+            },
+          ),
+        ],
+      );
+    });
+    geometrySelection.select(referenceId);
+    return referenceId;
+  }
+
+  bool alignmentCoordinateSystemIsOrphaned(
+    AlignmentCoordinateSystem reference,
+  ) {
+    final document = _document;
+    if (document == null) return true;
+    try {
+      final plane = _referenceGeometry(
+        document.entities[reference.plane.entityId],
+        'plane',
+      );
+      final axis = _referenceGeometry(
+        document.entities[reference.axis.entityId],
+        'axis',
+      );
+      final point = reference.point == null
+          ? null
+          : _referencePoint(document.entities[reference.point!.entityId]);
+      return plane.identity != reference.plane.identitySha256 ||
+          axis.identity != reference.axis.identitySha256 ||
+          (point != null && point.identity != reference.point!.identitySha256);
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<PlaneAxisIntersectionPreview> previewPlaneAxisIntersectionPoint({
     required String planeEntityId,
     required String axisEntityId,
@@ -664,6 +811,96 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         .toList(growable: false);
   }
 
+  List<CadDocumentEntity> _pointReferenceCandidates() {
+    final document = _document;
+    if (document == null) return const [];
+    return document.entities.values
+        .where((entity) {
+          try {
+            _referencePoint(entity);
+            return true;
+          } catch (_) {
+            return false;
+          }
+        })
+        .toList(growable: false);
+  }
+
+  AlignmentCoordinateSystemPreview _resolveAlignmentCoordinateSystem(
+    CadDocument document,
+    String planeEntityId,
+    String axisEntityId,
+    String? pointEntityId,
+    Vector3? manualOrigin,
+    AlignmentCoordinateSystemOriginKind originKind,
+  ) {
+    final plane = _referenceGeometry(document.entities[planeEntityId], 'plane');
+    final axis = _referenceGeometry(document.entities[axisEntityId], 'axis');
+    if (originKind == AlignmentCoordinateSystemOriginKind.referencePoint &&
+        pointEntityId == null) {
+      throw StateError('Selecione um ponto de origem válido.');
+    }
+    if (originKind != AlignmentCoordinateSystemOriginKind.referencePoint &&
+        manualOrigin == null) {
+      throw StateError('Informe coordenadas de origem válidas.');
+    }
+    final point =
+        originKind == AlignmentCoordinateSystemOriginKind.referencePoint
+        ? _referencePoint(document.entities[pointEntityId!])
+        : null;
+    final origin = point?.position ?? manualOrigin!;
+    final zAxis = plane.direction;
+    final projectedY = axis.direction - zAxis * zAxis.dot(axis.direction);
+    if (projectedY.length <=
+        AlignmentCoordinateSystem.angularToleranceDefault) {
+      throw StateError(
+        'O eixo/vetor é paralelo à normal do plano; não define Y no plano.',
+      );
+    }
+    // Right-handed convention: X = Y × Z, then Y = Z × X. Therefore
+    // X × Y = Z while the supplied axis direction remains the Y orientation.
+    final suppliedY = projectedY.normalized;
+    final xAxis = suppliedY.cross(zAxis).normalized;
+    final yAxis = zAxis.cross(xAxis).normalized;
+    if ([
+      xAxis.x,
+      xAxis.y,
+      xAxis.z,
+      yAxis.x,
+      yAxis.y,
+      yAxis.z,
+      zAxis.x,
+      zAxis.y,
+      zAxis.z,
+      origin.x,
+      origin.y,
+      origin.z,
+    ].any((value) => !value.isFinite)) {
+      throw const FormatException('O sistema de coordenadas não é finito.');
+    }
+    return AlignmentCoordinateSystemPreview(
+      origin: origin,
+      xAxis: xAxis,
+      yAxis: yAxis,
+      zAxis: zAxis,
+      plane: ReferenceParentIdentity(
+        entityId: planeEntityId,
+        identitySha256: plane.identity,
+      ),
+      axis: ReferenceParentIdentity(
+        entityId: axisEntityId,
+        identitySha256: axis.identity,
+      ),
+      originKind: originKind,
+      point: point == null
+          ? null
+          : ReferenceParentIdentity(
+              entityId: pointEntityId!,
+              identitySha256: point.identity,
+            ),
+    );
+  }
+
   PlaneAxisIntersectionPreview _resolvePlaneAxisIntersection(
     CadDocument document,
     String planeEntityId,
@@ -766,6 +1003,54 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         .convert(utf8.encode(jsonEncode(_orderedJson(identityPayload))))
         .toString();
     return (origin: origin, direction: normalized, identity: identity);
+  }
+
+  ({Vector3 position, String identity}) _referencePoint(
+    CadDocumentEntity? entity,
+  ) {
+    if (entity == null ||
+        entity.data['deleted'] == true ||
+        (entity.kind != CadDocumentEntityKind.reference &&
+            entity.kind != CadDocumentEntityKind.vertex) ||
+        entity.data['sceneKind'] != CadSceneEntityKind.point.name ||
+        (entity.data['systemProtected'] != true &&
+            entity.data['collectionId'] != 'collection:references')) {
+      throw StateError('Referência ponto inválida ou removida.');
+    }
+    final intersection = entity.data[PlaneAxisIntersectionPoint.dataKey];
+    if (intersection is Map &&
+        planeAxisIntersectionPointIsOrphaned(
+          PlaneAxisIntersectionPoint.fromJson(
+            Map<String, dynamic>.from(intersection),
+          ),
+        )) {
+      throw StateError('Referência ponto órfã ou inválida.');
+    }
+    final geometry = entity.data['sceneGeometry'];
+    final rawPosition = geometry is Map ? geometry['position'] : null;
+    if (rawPosition is! List ||
+        rawPosition.length != 3 ||
+        rawPosition.any((value) => value is! num || !value.isFinite)) {
+      throw StateError('Referência ponto sem geometria finita.');
+    }
+    final position = Vector3(
+      (rawPosition[0] as num).toDouble(),
+      (rawPosition[1] as num).toDouble(),
+      (rawPosition[2] as num).toDouble(),
+    );
+    final identityPayload = {
+      'entityId': entity.id,
+      'sceneKind': CadSceneEntityKind.point.name,
+      'position': position.toJson(),
+      if (entity.data['systemProtected'] == true) 'systemProtected': true,
+      if (intersection is Map) PlaneAxisIntersectionPoint.dataKey: intersection,
+      if (entity.data['constructionEntity'] case final Map construction)
+        'constructionEntity': construction,
+    };
+    final identity = sha256
+        .convert(utf8.encode(jsonEncode(_orderedJson(identityPayload))))
+        .toString();
+    return (position: position, identity: identity);
   }
 
   /// Managed imports install this only after their documentary commit. It is

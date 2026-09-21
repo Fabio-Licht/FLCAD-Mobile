@@ -58,6 +58,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     this.onManagedFaceSelectionCleared,
     this.onViewportSelectionCleared,
     this.onPickCapture,
+    this.pickCaptureCandidateIds,
+    this.onPickCaptureHover,
   });
 
   /// The viewport owns and disposes the bridge returned by this factory.
@@ -88,6 +90,8 @@ class IntegratedCadViewportWidget extends StatefulWidget {
   /// Gives a transient command first refusal without changing global
   /// operational or managed-face selection.
   final bool Function(CadViewportPick pick)? onPickCapture;
+  final Set<String>? pickCaptureCandidateIds;
+  final ValueChanged<CadViewportPick?>? onPickCaptureHover;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -130,6 +134,7 @@ class _IntegratedCadViewportWidgetState
   ManagedCadFaceHighlight? _managedFaceHover;
   ManagedCadFaceHighlight? _managedFaceSelection;
   final ViewportPickingController _overlayPicking = ViewportPickingController();
+  CadViewportPick? _captureHover;
 
   void _managedFaceControllerChanged() {
     final next = widget.managedFaceSelectionController?.selection;
@@ -211,6 +216,10 @@ class _IntegratedCadViewportWidgetState
     final additive = HardwareKeyboard.instance.isShiftPressed;
     final toggle = HardwareKeyboard.instance.isControlPressed;
     if (!_canPublishTap(token, scene)) return;
+    if (widget.pickCaptureCandidateIds != null &&
+        _pickReferenceOverlay(position, scene, additive, toggle)) {
+      return;
+    }
     final result = await native.pick(position.dx, position.dy);
     if (!_canPublishTap(token, scene)) return;
     // Native D3D deliberately excludes UI/reference overlays. Resolve those
@@ -282,6 +291,7 @@ class _IntegratedCadViewportWidgetState
       position: position,
       camera: widget.camera,
       scene: scene,
+      eligibleEntityIds: widget.pickCaptureCandidateIds,
     );
     if (pick == null) return false;
     final source = scene.find(pick.entityId);
@@ -354,6 +364,33 @@ class _IntegratedCadViewportWidgetState
 
   Future<void> _updateNativeHover(Offset position) async {
     _lastHoverPosition = position;
+    final captureHover = widget.pickCaptureCandidateIds == null
+        ? null
+        : _overlayPicking.pick(
+            position: position,
+            camera: widget.camera,
+            scene: widget.scene,
+            eligibleEntityIds: widget.pickCaptureCandidateIds,
+          );
+    if (_captureHover?.entityId != captureHover?.entityId) {
+      setState(() => _captureHover = captureHover);
+      widget.onPickCaptureHover?.call(captureHover);
+    }
+    if (captureHover != null) {
+      _pendingHover = null;
+      await native.clearHover();
+      if (mounted &&
+          (_nativeHover != null ||
+              _operationalHover != null ||
+              _managedFaceHover != null)) {
+        setState(() {
+          _nativeHover = null;
+          _operationalHover = null;
+          _managedFaceHover = null;
+        });
+      }
+      return;
+    }
     _pendingHover = position;
     if (_hoverRequestActive || !_nativeActive || _nativeNavigating) return;
     final generation = _backendGeneration;
@@ -403,12 +440,21 @@ class _IntegratedCadViewportWidgetState
     _hoverRequestActive = false;
   }
 
-  MouseCursor get _nativeCursor => switch (_nativeHover?.kind) {
-    NativePickKind.vertex => SystemMouseCursors.precise,
-    NativePickKind.edge => SystemMouseCursors.click,
-    NativePickKind.face => SystemMouseCursors.click,
-    _ => MouseCursor.defer,
-  };
+  MouseCursor get _nativeCursor {
+    final candidates = widget.pickCaptureCandidateIds;
+    if (candidates != null) {
+      final candidateId = _captureHover?.entityId ?? _nativeHover?.entityId;
+      return candidateId != null && candidates.contains(candidateId)
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.forbidden;
+    }
+    return switch (_nativeHover?.kind) {
+      NativePickKind.vertex => SystemMouseCursors.precise,
+      NativePickKind.edge => SystemMouseCursors.click,
+      NativePickKind.face => SystemMouseCursors.click,
+      _ => MouseCursor.defer,
+    };
+  }
 
   void _pickCanvas(CadViewportPick pick) {
     if (widget.onPickCapture?.call(pick) == true) {
@@ -470,6 +516,13 @@ class _IntegratedCadViewportWidgetState
   @override
   void didUpdateWidget(covariant IntegratedCadViewportWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final captureHoverId = _captureHover?.entityId;
+    if (captureHoverId != null &&
+        (widget.pickCaptureCandidateIds == null ||
+            !widget.pickCaptureCandidateIds!.contains(captureHoverId))) {
+      _captureHover = null;
+      widget.onPickCaptureHover?.call(null);
+    }
     if (oldWidget.managedFaceSelectionController !=
         widget.managedFaceSelectionController) {
       oldWidget.managedFaceSelectionController?.removeListener(
@@ -776,10 +829,12 @@ class _IntegratedCadViewportWidgetState
                 _pendingHover = null;
                 native.clearHover();
                 setState(() {
+                  _captureHover = null;
                   _nativeHover = null;
                   _operationalHover = null;
                   _managedFaceHover = null;
                 });
+                widget.onPickCaptureHover?.call(null);
               }
             : null,
         child: Stack(
@@ -803,6 +858,12 @@ class _IntegratedCadViewportWidgetState
                   scene: widget.scene,
                   camera: widget.camera,
                   onPick: widget.onPick,
+                  onPickCapture: useNative ? null : widget.onPickCapture,
+                  pickCaptureCandidateIds: widget.pickCaptureCandidateIds,
+                  onPickCaptureHover: useNative
+                      ? null
+                      : widget.onPickCaptureHover,
+                  captureHoveredEntityId: _captureHover?.entityId,
                   onManagedFacePick: useNative ? null : _pickCanvas,
                   onEmptyNormalTap: () {
                     _selectManagedFace(null);

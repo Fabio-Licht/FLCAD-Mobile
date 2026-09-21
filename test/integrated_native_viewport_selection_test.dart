@@ -232,6 +232,7 @@ class _Fixture {
     ValueChanged<CadViewportPick>? doublePick,
     void Function(CadViewportPick, Offset)? dragStart,
     VoidCallback? onViewportSelectionCleared,
+    bool Function(CadViewportPick)? onPickCapture,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     await tester.pumpWidget(
@@ -246,6 +247,7 @@ class _Fixture {
           operationalResolver: resolver,
           managedFaceSelectionController: managedFaceSelection,
           onPick: picks.add,
+          onPickCapture: onPickCapture,
           onSketchTap: sketchTap,
           onSketchEntityPick: sketchEntity,
           onSketchSupportPick: sketchSupport,
@@ -460,6 +462,93 @@ void main() {
       expect(find.text('Native GPU'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'transient command captures a WCS overlay without global selection',
+    (tester) async {
+      final f = _Fixture();
+      f.scene.upsert(
+        const CadSceneEntity(
+          id: 'world:xy-plane',
+          kind: CadSceneEntityKind.plane,
+          geometry: {
+            'origin': [0.0, 0.0, 0.0],
+            'normal': [0.0, 0.0, 1.0],
+            'xDirection': [1.0, 0.0, 0.0],
+            'visualSize': 30.0,
+          },
+        ),
+      );
+      final captured = <CadViewportPick>[];
+      f.bridge.answer = (_) async => null;
+      await f.mount(
+        tester,
+        onPickCapture: (pick) {
+          captured.add(pick);
+          return true;
+        },
+      );
+
+      await tap(tester);
+
+      expect(captured.single.entityId, 'world:xy-plane');
+      expect(f.selection.calls, 0);
+      expect(f.selection.activeId, isNull);
+      expect(f.picks, isEmpty);
+    },
+  );
+
+  testWidgets('transient command consumes an incompatible native CAD click', (
+    tester,
+  ) async {
+    final f = _Fixture();
+    final captured = <CadViewportPick>[];
+    await f.mount(
+      tester,
+      onPickCapture: (pick) {
+        captured.add(pick);
+        return true;
+      },
+    );
+
+    await tap(tester);
+
+    expect(captured.single.entityId, 'a');
+    expect(f.selection.calls, 0);
+    expect(f.picks, isEmpty);
+  });
+
+  testWidgets('Canvas uses the same transient overlay capture', (tester) async {
+    final f = _Fixture();
+    f.scene.upsert(
+      const CadSceneEntity(
+        id: 'world:xy-plane',
+        kind: CadSceneEntityKind.plane,
+        geometry: {
+          'origin': [0.0, 0.0, 0.0],
+          'normal': [0.0, 0.0, 1.0],
+          'xDirection': [1.0, 0.0, 0.0],
+          'visualSize': 30.0,
+        },
+      ),
+    );
+    final captured = <CadViewportPick>[];
+    await f.mount(
+      tester,
+      onPickCapture: (pick) {
+        captured.add(pick);
+        return true;
+      },
+    );
+    await tester.tap(find.text('Flutter Canvas'));
+    await tester.pumpAndSettle();
+
+    await tap(tester);
+
+    expect(captured.single.entityId, 'world:xy-plane');
+    expect(f.selection.calls, 0);
+    expect(f.picks, isEmpty);
+  });
 
   testWidgets('an empty native click publishes a viewport selection clear', (
     tester,

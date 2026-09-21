@@ -57,6 +57,7 @@ class IntegratedCadViewportWidget extends StatefulWidget {
     this.managedFaceSelectionController,
     this.onManagedFaceSelectionCleared,
     this.onViewportSelectionCleared,
+    this.onPickCapture,
   });
 
   /// The viewport owns and disposes the bridge returned by this factory.
@@ -83,6 +84,10 @@ class IntegratedCadViewportWidget extends StatefulWidget {
   final CadManagedFaceSelectionController? managedFaceSelectionController;
   final VoidCallback? onManagedFaceSelectionCleared;
   final VoidCallback? onViewportSelectionCleared;
+
+  /// Gives a transient command first refusal without changing global
+  /// operational or managed-face selection.
+  final bool Function(CadViewportPick pick)? onPickCapture;
 
   @override
   State<IntegratedCadViewportWidget> createState() =>
@@ -232,32 +237,38 @@ class _IntegratedCadViewportWidgetState
         ? _entityResolution(source)
         : await operationalResolver.resolve(result, scene);
     if (!_canPublishTap(token, scene) || resolved == null) return;
+    final point = result.point;
+    CadViewportPick? pick;
+    if (point.length >= 3 && point.take(3).every((value) => value.isFinite)) {
+      pick = CadViewportPick(
+        entityId: resolved.entity.ownerId,
+        subentityKind: switch (result.kind) {
+          NativePickKind.face => CadViewportSubentityKind.face,
+          NativePickKind.edge => CadViewportSubentityKind.edge,
+          NativePickKind.vertex => CadViewportSubentityKind.vertex,
+          NativePickKind.none => null,
+        },
+        presentationSubId: managedFace?.presentationSubId ?? result.subId,
+        hit: MeshHit(
+          triangleIndex: -1,
+          point: Vector3(point[0], point[1], point[2]),
+          distance: 0,
+        ),
+      );
+      if (widget.onPickCapture?.call(pick) == true) {
+        _selectManagedFace(null);
+        return;
+      }
+    }
     operationalSelection.select(
       resolved.entity.id,
       additive: additive,
       toggle: toggle,
     );
     _selectManagedFace(managedFace);
-    final point = result.point;
-    if (point.length >= 3 && point.take(3).every((value) => value.isFinite)) {
+    if (pick != null) {
       widget.camera.focusOn(Vector3(point[0], point[1], point[2]));
-      widget.onPick?.call(
-        CadViewportPick(
-          entityId: resolved.entity.ownerId,
-          subentityKind: switch (result.kind) {
-            NativePickKind.face => CadViewportSubentityKind.face,
-            NativePickKind.edge => CadViewportSubentityKind.edge,
-            NativePickKind.vertex => CadViewportSubentityKind.vertex,
-            NativePickKind.none => null,
-          },
-          presentationSubId: managedFace?.presentationSubId ?? result.subId,
-          hit: MeshHit(
-            triangleIndex: -1,
-            point: Vector3(point[0], point[1], point[2]),
-            distance: 0,
-          ),
-        ),
-      );
+      widget.onPick?.call(pick);
     }
   }
 
@@ -282,6 +293,10 @@ class _IntegratedCadViewportWidgetState
           CadSceneEntityKind.coordinateSystem,
         }.contains(source.kind)) {
       return false;
+    }
+    if (widget.onPickCapture?.call(pick) == true) {
+      _selectManagedFace(null);
+      return true;
     }
     operationalSelection.select(
       _entityResolution(source).entity.id,
@@ -396,6 +411,10 @@ class _IntegratedCadViewportWidgetState
   };
 
   void _pickCanvas(CadViewportPick pick) {
+    if (widget.onPickCapture?.call(pick) == true) {
+      _selectManagedFace(null);
+      return;
+    }
     final source = widget.scene.find(pick.entityId);
     final face = source == null || pick.hit.triangleIndex < 0
         ? null

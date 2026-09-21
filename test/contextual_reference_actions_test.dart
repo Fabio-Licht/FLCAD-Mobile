@@ -51,6 +51,7 @@ void main() {
       ContextualReferenceAction.manualPoint,
       ContextualReferenceAction.manualPlane,
       ContextualReferenceAction.manualAxis,
+      ContextualReferenceAction.planeAxisIntersectionPoint,
     ]);
     expect(result.showManualSection, isTrue);
   });

@@ -14,6 +14,7 @@ import '../../core/cad_document/entity_placement.dart';
 import '../../core/cad_document/managed_step_contract.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
+import '../../core/cad_document/plane_axis_intersection_point.dart';
 import '../../core/cad_document/dependency_walk.dart';
 import '../../core/cad_document/cad_document_repository.dart';
 import '../../core/cad_kernel/api/geometry_kernel_api.dart';
@@ -58,6 +59,19 @@ final class CadManagedImportPublication {
 
   final int id, session, revision;
   final KernelBounds bounds;
+}
+
+@immutable
+final class PlaneAxisIntersectionPreview {
+  const PlaneAxisIntersectionPreview({
+    required this.point,
+    required this.plane,
+    required this.axis,
+  });
+
+  final Vector3 point;
+  final ReferenceParentIdentity plane;
+  final ReferenceParentIdentity axis;
 }
 
 class CadRuntime extends ChangeNotifier with NotificationGate {
@@ -534,6 +548,224 @@ class CadRuntime extends ChangeNotifier with NotificationGate {
         source.data['managedStepAssets'] ?? source.data['managedBrepAssets'];
     return assets is! Map ||
         assets['shapeSha256'] != reference.sourceShapeSha256;
+  }
+
+  List<CadDocumentEntity> planeIntersectionCandidates() =>
+      _referenceCandidates('plane');
+
+  List<CadDocumentEntity> axisIntersectionCandidates() =>
+      _referenceCandidates('axis');
+
+  Future<PlaneAxisIntersectionPreview> previewPlaneAxisIntersectionPoint({
+    required String planeEntityId,
+    required String axisEntityId,
+  }) async {
+    late PlaneAxisIntersectionPreview result;
+    await _enqueue((tx) async {
+      result = _resolvePlaneAxisIntersection(
+        _requireDocument(),
+        planeEntityId,
+        axisEntityId,
+      );
+      tx.validate();
+    });
+    return result;
+  }
+
+  Future<String> createPlaneAxisIntersectionPointReference({
+    required String planeEntityId,
+    required String axisEntityId,
+  }) async {
+    late String referenceId;
+    await _enqueue((tx) async {
+      final document = _requireDocument();
+      final result = _resolvePlaneAxisIntersection(
+        document,
+        planeEntityId,
+        axisEntityId,
+      );
+      final definition = PlaneAxisIntersectionPoint(
+        point: result.point,
+        plane: result.plane,
+        axis: result.axis,
+      );
+      const baseName = 'Ponto Plano + Eixo';
+      final names = document.entities.values
+          .map((entity) => entity.data['name'])
+          .whereType<String>()
+          .toSet();
+      var name = baseName;
+      for (var suffix = 2; names.contains(name); suffix++) {
+        name = '$baseName ($suffix)';
+      }
+      referenceId = 'plane-axis-point:${DateTime.now().microsecondsSinceEpoch}';
+      await _mutateDocument(
+        tx,
+        command: 'references.point.planeAxisIntersection',
+        requested: [
+          CadDocumentEntity(
+            id: referenceId,
+            kind: CadDocumentEntityKind.reference,
+            data: {
+              'name': name,
+              'collectionId': 'collection:references',
+              'sceneKind': CadSceneEntityKind.point.name,
+              'sceneGeometry': {
+                'type': 'point',
+                'position': result.point.toJson(),
+                'markerRadius': 5.0,
+                'displayColor': 'constructionPoint',
+              },
+              'sceneVisible': true,
+              'sourceEntityIds': [planeEntityId, axisEntityId],
+              PlaneAxisIntersectionPoint.dataKey: definition.toJson(),
+            },
+          ),
+        ],
+      );
+    });
+    geometrySelection.select(referenceId);
+    return referenceId;
+  }
+
+  bool planeAxisIntersectionPointIsOrphaned(
+    PlaneAxisIntersectionPoint reference,
+  ) {
+    final document = _document;
+    if (document == null) return true;
+    try {
+      final plane = _referenceGeometry(
+        document.entities[reference.plane.entityId],
+        'plane',
+      );
+      final axis = _referenceGeometry(
+        document.entities[reference.axis.entityId],
+        'axis',
+      );
+      return plane.identity != reference.plane.identitySha256 ||
+          axis.identity != reference.axis.identitySha256;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  List<CadDocumentEntity> _referenceCandidates(String sceneKind) {
+    final document = _document;
+    if (document == null) return const [];
+    return document.entities.values
+        .where((entity) {
+          try {
+            _referenceGeometry(entity, sceneKind);
+            return true;
+          } catch (_) {
+            return false;
+          }
+        })
+        .toList(growable: false);
+  }
+
+  PlaneAxisIntersectionPreview _resolvePlaneAxisIntersection(
+    CadDocument document,
+    String planeEntityId,
+    String axisEntityId,
+  ) {
+    final plane = _referenceGeometry(document.entities[planeEntityId], 'plane');
+    final axis = _referenceGeometry(document.entities[axisEntityId], 'axis');
+    final normal = plane.direction;
+    final direction = axis.direction;
+    final denominator = normal.dot(direction);
+    final signedDistance = normal.dot(plane.origin - axis.origin);
+    if (denominator.abs() <=
+        PlaneAxisIntersectionPoint.angularToleranceDefault) {
+      if (signedDistance.abs() <=
+          PlaneAxisIntersectionPoint.linearToleranceDefault) {
+        throw StateError(
+          'O eixo está contido no plano; a interseção não é única.',
+        );
+      }
+      throw StateError('O eixo é paralelo ao plano; não há interseção única.');
+    }
+    final parameter = signedDistance / denominator;
+    final point = axis.origin + direction * parameter;
+    if (![
+      point.x,
+      point.y,
+      point.z,
+      parameter,
+    ].every((value) => value.isFinite)) {
+      throw const FormatException('A interseção Plano + Eixo não é finita.');
+    }
+    return PlaneAxisIntersectionPreview(
+      point: point,
+      plane: ReferenceParentIdentity(
+        entityId: planeEntityId,
+        identitySha256: plane.identity,
+      ),
+      axis: ReferenceParentIdentity(
+        entityId: axisEntityId,
+        identitySha256: axis.identity,
+      ),
+    );
+  }
+
+  ({Vector3 origin, Vector3 direction, String identity}) _referenceGeometry(
+    CadDocumentEntity? entity,
+    String sceneKind,
+  ) {
+    if (entity == null ||
+        entity.data['deleted'] == true ||
+        entity.kind != CadDocumentEntityKind.reference ||
+        entity.data['sceneKind'] != sceneKind ||
+        (entity.data['systemProtected'] != true &&
+            entity.data['collectionId'] != 'collection:references')) {
+      throw StateError('Referência $sceneKind inválida ou removida.');
+    }
+    final managed = entity.data[ManagedCadReference.dataKey];
+    if (managed is Map &&
+        managedCadReferenceIsOrphaned(
+          ManagedCadReference.fromJson(Map<String, dynamic>.from(managed)),
+        )) {
+      throw StateError('Referência $sceneKind órfã ou inválida.');
+    }
+    final geometry = entity.data['sceneGeometry'];
+    if (geometry is! Map) {
+      throw StateError('Referência $sceneKind sem geometria válida.');
+    }
+    Vector3 vector(String key) {
+      final raw = geometry[key];
+      if (raw is! List ||
+          raw.length != 3 ||
+          raw.any((value) => value is! num || !value.isFinite)) {
+        throw StateError('Referência $sceneKind sem geometria finita.');
+      }
+      return Vector3(
+        (raw[0] as num).toDouble(),
+        (raw[1] as num).toDouble(),
+        (raw[2] as num).toDouble(),
+      );
+    }
+
+    final origin = vector('origin');
+    final direction = vector(sceneKind == 'plane' ? 'normal' : 'direction');
+    if (direction.length <= 1e-12) {
+      throw StateError('Referência $sceneKind com direção degenerada.');
+    }
+    final normalized = direction.normalized;
+    final identityPayload = {
+      'entityId': entity.id,
+      'sceneKind': sceneKind,
+      'origin': origin.toJson(),
+      sceneKind == 'plane' ? 'normal' : 'direction': normalized.toJson(),
+      if (entity.data['systemProtected'] == true) 'systemProtected': true,
+      if (entity.data[ManagedCadReference.dataKey] case final Map managed)
+        ManagedCadReference.dataKey: managed,
+      if (entity.data['constructionEntity'] case final Map construction)
+        'constructionEntity': construction,
+    };
+    final identity = sha256
+        .convert(utf8.encode(jsonEncode(_orderedJson(identityPayload))))
+        .toString();
+    return (origin: origin, direction: normalized, identity: identity);
   }
 
   /// Managed imports install this only after their documentary commit. It is

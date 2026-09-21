@@ -1,5 +1,6 @@
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
+import '../../core/cad_document/plane_axis_intersection_point.dart';
 import '../runtime/world_coordinate_system.dart';
 
 /// UI-only taxonomy for the Explorer. It deliberately projects existing
@@ -57,6 +58,9 @@ abstract final class ReferenceTreeTaxonomy {
     if (WorldCoordinateSystem.isProtected(entity)) return 'Sistema padrão';
     if (entity.data[ManagedCadReference.dataKey] is Map) {
       return 'Face STEP/BREP — topologia exata';
+    }
+    if (entity.data[PlaneAxisIntersectionPoint.dataKey] is Map) {
+      return 'Plano + Eixo — snapshot';
     }
     final construction = entity.data['constructionEntity'];
     if (construction is Map) return 'Manual';

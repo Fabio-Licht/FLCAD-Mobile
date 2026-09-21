@@ -10,6 +10,7 @@ import '../../core/cad_kernel/manager/kernel_manager.dart';
 import '../../core/cad_document/cad_document.dart';
 import '../../core/cad_document/managed_cad_identity.dart';
 import '../../core/cad_document/managed_cad_reference.dart';
+import '../../core/cad_document/plane_axis_intersection_point.dart';
 import '../../core/feature_lifecycle/feature_lifecycle.dart';
 import '../../core/geometric_kernel/geometry/vectors.dart';
 import '../../core/professional_recognition/api/professional_recognition_api.dart';
@@ -62,6 +63,8 @@ import 'desktop_theme.dart';
 import 'contextual_reference_actions.dart';
 import 'contextual_reference_preview_session.dart';
 import 'explorer_tree_projection.dart';
+import 'inspector_value_formatter.dart';
+import 'plane_axis_intersection_selection.dart';
 import 'reference_tree_taxonomy.dart';
 
 class FLCADDesktopApplication extends StatefulWidget {
@@ -1017,6 +1020,7 @@ class _OfficialEngineeringWorkspaceState
   CadSceneGraph get scene => widget.cad.runtime.scene;
   final camera = CadCameraController();
   final managedFaceSelection = CadManagedFaceSelectionController();
+  final intersectionSelection = PlaneAxisIntersectionSelectionController();
   late final ContextualReferencePreviewSession contextualReferencePreview;
   late final NavigationEngine navigation;
   GeometrySelectionManager get geometrySelection =>
@@ -1151,6 +1155,18 @@ class _OfficialEngineeringWorkspaceState
         : null;
     final bounds = mesh?.bounds;
     final managedIdentity = ManagedCadIdentity.fromDocumentData(entity.data);
+    final sceneGeometry = entity.data['sceneGeometry'];
+    final sceneCoordinate = sceneGeometry is Map
+        ? (entity.data['sceneKind'] == CadSceneEntityKind.point.name
+              ? sceneGeometry['position']
+              : sceneGeometry['origin'])
+        : null;
+    final inspectorCoordinate =
+        sceneCoordinate is List &&
+            sceneCoordinate.length == 3 &&
+            sceneCoordinate.every((value) => value is num && value.isFinite)
+        ? InspectorValueFormatter.coordinateMm(sceneCoordinate.cast<num>())
+        : null;
     final fullName = entity.kind == CadDocumentEntityKind.import
         ? entity.data['name'] as String? ??
               (entity.data['sourcePath'] as String?)
@@ -1212,6 +1228,14 @@ class _OfficialEngineeringWorkspaceState
                   label: 'Confidence',
                   value: '${(referenceConfidence * 100).toStringAsFixed(1)}%',
                 ),
+              if (inspectorCoordinate != null &&
+                  entity.data[PlaneAxisIntersectionPoint.dataKey] == null)
+                _InspectorProperty(
+                  label: entity.data['sceneKind'] == 'point'
+                      ? 'Coordenada'
+                      : 'Origem',
+                  value: inspectorCoordinate,
+                ),
             ],
           ),
         ],
@@ -1247,7 +1271,9 @@ class _OfficialEngineeringWorkspaceState
                   ),
                   _InspectorProperty(
                     label: 'Origin',
-                    value: reference.origin.toJson(),
+                    value: InspectorValueFormatter.coordinateMm(
+                      reference.origin.toJson(),
+                    ),
                   ),
                   if (reference.kind == ManagedCadReferenceKind.plane) ...[
                     _InspectorProperty(
@@ -1282,6 +1308,54 @@ class _OfficialEngineeringWorkspaceState
             },
           ),
         ],
+        if (entity.data[PlaneAxisIntersectionPoint.dataKey]
+            case final Map raw) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final reference = PlaneAxisIntersectionPoint.fromJson(
+                Map<String, dynamic>.from(raw),
+              );
+              String parentName(ReferenceParentIdentity parent) =>
+                  widget
+                          .cad
+                          .runtime
+                          .document
+                          ?.entities[parent.entityId]
+                          ?.data['name']
+                      as String? ??
+                  parent.entityId;
+              return _InspectorSection(
+                title: 'Ponto por interseção Plano + Eixo',
+                children: [
+                  _InspectorProperty(
+                    label: 'Plano pai',
+                    value: parentName(reference.plane),
+                  ),
+                  _InspectorProperty(
+                    label: 'Eixo pai',
+                    value: parentName(reference.axis),
+                  ),
+                  _InspectorProperty(
+                    label: 'Coordenada mundial',
+                    value: InspectorValueFormatter.coordinateMm(
+                      reference.point.toJson(),
+                    ),
+                  ),
+                  _InspectorProperty(
+                    label: 'Estado',
+                    value:
+                        widget.cad.runtime.planeAxisIntersectionPointIsOrphaned(
+                          reference,
+                        )
+                        ? 'Órfã / pai indisponível ou alterado'
+                        : 'Válida — snapshot',
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
         if (entity.data['sketch'] case final Map raw) ...[
           const SizedBox(height: 8),
           Builder(
@@ -1299,7 +1373,9 @@ class _OfficialEngineeringWorkspaceState
                   ),
                   _InspectorProperty(
                     label: 'Origin',
-                    value: sketch.coordinates.origin.toJson(),
+                    value: InspectorValueFormatter.coordinateMm(
+                      sketch.coordinates.origin.toJson(),
+                    ),
                   ),
                   _InspectorProperty(
                     label: 'Normal',
@@ -2227,6 +2303,7 @@ class _OfficialEngineeringWorkspaceState
   @override
   void dispose() {
     contextualReferencePreview.cancel();
+    intersectionSelection.dispose();
     transformX.dispose();
     transformY.dispose();
     transformZ.dispose();
@@ -2250,6 +2327,7 @@ class _OfficialEngineeringWorkspaceState
     final runtimeDocument = widget.cad.runtime.document;
     if (runtimeDocument == null) {
       contextualReferencePreview.cancel();
+      intersectionSelection.clear();
       operational.detachProject();
       fittedDocumentId = null;
       fittedDocumentSession = null;
@@ -2270,6 +2348,8 @@ class _OfficialEngineeringWorkspaceState
     );
     if (fittedDocumentId != runtimeDocument.projectId ||
         fittedDocumentSession != widget.cad.runtime.sessionIdentity) {
+      contextualReferencePreview.cancel();
+      intersectionSelection.clear();
       openToolWindows.clear();
       choosingSketchSupport = false;
       modelingViewport.clearPreview();
@@ -2296,6 +2376,45 @@ class _OfficialEngineeringWorkspaceState
       _handledManagedImportPublication = publication.id;
       _scheduleManagedImportFit(publication);
     }
+  }
+
+  bool _captureIntersectionPick(CadViewportPick pick) {
+    if (!intersectionSelection.active) return false;
+    final slot = intersectionSelection.activeSlot!;
+    final result = intersectionSelection.capture(
+      pick.entityId,
+      planeCandidateIds: widget.cad.runtime
+          .planeIntersectionCandidates()
+          .map((entity) => entity.id)
+          .toSet(),
+      axisCandidateIds: widget.cad.runtime
+          .axisIntersectionCandidates()
+          .map((entity) => entity.id)
+          .toSet(),
+    );
+    if (result == PlaneAxisIntersectionCaptureResult.incompatible) {
+      widget.cad.setStatus(
+        slot == PlaneAxisIntersectionSlot.plane
+            ? 'Seleção incompatível: clique em um plano de References ou WCS.'
+            : 'Seleção incompatível: clique em um eixo de References ou WCS.',
+      );
+    } else if (result == PlaneAxisIntersectionCaptureResult.accepted) {
+      widget.cad.setStatus(
+        'Campo ${slot == PlaneAxisIntersectionSlot.plane ? 'Plano' : 'Eixo'} preenchido pela viewport.',
+      );
+    }
+    return true;
+  }
+
+  bool _keepIntersectionCaptureOnEmptyClick() {
+    final slot = intersectionSelection.activeSlot;
+    if (slot == null) return false;
+    widget.cad.setStatus(
+      slot == PlaneAxisIntersectionSlot.plane
+          ? 'Nenhum plano válido nesse ponto; a captura de Plano continua ativa.'
+          : 'Nenhum eixo válido nesse ponto; a captura de Eixo continua ativa.',
+    );
+    return true;
   }
 
   void _scheduleManagedImportFit(CadManagedImportPublication publication) {
@@ -3171,7 +3290,9 @@ class _OfficialEngineeringWorkspaceState
             ),
             _InspectorProperty(
               label: 'Origin',
-              value: sketch.coordinates.origin.toJson(),
+              value: InspectorValueFormatter.coordinateMm(
+                sketch.coordinates.origin.toJson(),
+              ),
             ),
             _InspectorProperty(
               label: 'Normal',
@@ -4477,6 +4598,7 @@ class _OfficialEngineeringWorkspaceState
       'Reference' => _ManagedCadReferencePanel(
         runtime: widget.cad.runtime,
         preview: contextualReferencePreview,
+        intersectionSelection: intersectionSelection,
         pick: operational.activePick,
         selectedEntity: geometrySelection.selectedIds.firstOrNull == null
             ? null
@@ -4712,6 +4834,7 @@ class _OfficialEngineeringWorkspaceState
     bindings: {
       const SingleActivator(LogicalKeyboardKey.escape): () {
         contextualReferencePreview.cancel();
+        intersectionSelection.clear();
         operational.activePick = null;
         managedFaceSelection.clear();
         widget.cad.runtime.operationalSelection.clear();
@@ -4889,6 +5012,7 @@ class _OfficialEngineeringWorkspaceState
                                 child: IntegratedCadViewportWidget(
                                   onViewportReady: () =>
                                       _pendingManagedImportFit?.call(),
+                                  onPickCapture: _captureIntersectionPick,
                                   scene: scene,
                                   camera: camera,
                                   operationalEntities:
@@ -4900,6 +5024,9 @@ class _OfficialEngineeringWorkspaceState
                                   managedFaceSelectionController:
                                       managedFaceSelection,
                                   onManagedFaceSelectionCleared: () {
+                                    if (_keepIntersectionCaptureOnEmptyClick()) {
+                                      return;
+                                    }
                                     contextualReferencePreview.cancel();
                                     operational.activePick = null;
                                     widget.cad.runtime.operationalSelection
@@ -4907,6 +5034,9 @@ class _OfficialEngineeringWorkspaceState
                                     geometrySelection.clear();
                                   },
                                   onViewportSelectionCleared: () {
+                                    if (_keepIntersectionCaptureOnEmptyClick()) {
+                                      return;
+                                    }
                                     contextualReferencePreview.cancel();
                                     operational.activePick = null;
                                     widget.cad.runtime.operationalSelection
@@ -5079,6 +5209,9 @@ class _OfficialEngineeringWorkspaceState
                                   onPick: widget.cad.runtime.document == null
                                       ? null
                                       : (pick) async {
+                                          if (_captureIntersectionPick(pick)) {
+                                            return;
+                                          }
                                           geometrySelection.select(
                                             pick.entityId,
                                             toggle: HardwareKeyboard
@@ -7416,6 +7549,7 @@ class _ManagedCadReferencePanel extends StatefulWidget {
   const _ManagedCadReferencePanel({
     required this.runtime,
     required this.preview,
+    required this.intersectionSelection,
     required this.pick,
     required this.selectedEntity,
     required this.recognizedStlPlaneAvailable,
@@ -7428,6 +7562,7 @@ class _ManagedCadReferencePanel extends StatefulWidget {
 
   final CadRuntime runtime;
   final ContextualReferencePreviewSession preview;
+  final PlaneAxisIntersectionSelectionController intersectionSelection;
   final CadViewportPick? pick;
   final CadDocumentEntity? selectedEntity;
   final bool recognizedStlPlaneAvailable;
@@ -7447,6 +7582,8 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   String? surfaceType;
   Map<String, Object?>? faceAnalytic;
   ContextualReferenceAction? draft;
+  bool intersectionEditorOpen = false;
+  String? lastIntersectionPreviewKey;
   final manualOffset = TextEditingController(text: '10');
 
   ContextualReferencePreviewSession get preview => widget.preview;
@@ -7455,6 +7592,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   void initState() {
     super.initState();
     manualOffset.addListener(_refreshManualPlanePreview);
+    widget.intersectionSelection.addListener(_intersectionSelectionChanged);
     _inspectFace();
   }
 
@@ -7479,6 +7617,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.pick != widget.pick ||
         oldWidget.selectedEntity != widget.selectedEntity) {
+      widget.intersectionSelection.clear();
       _cancelPreview();
       _inspectFace();
     }
@@ -7487,13 +7626,44 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
   @override
   void dispose() {
     manualOffset.removeListener(_refreshManualPlanePreview);
+    widget.intersectionSelection.removeListener(_intersectionSelectionChanged);
+    widget.intersectionSelection.clear();
+    preview.cancel();
     manualOffset.dispose();
     super.dispose();
+  }
+
+  void _intersectionSelectionChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final planeId = widget.intersectionSelection.planeEntityId;
+    final axisId = widget.intersectionSelection.axisEntityId;
+    if (planeId == null || axisId == null) {
+      lastIntersectionPreviewKey = null;
+      preview.cancel();
+      draft = null;
+      return;
+    }
+    final key = '$planeId\u0000$axisId';
+    if (lastIntersectionPreviewKey == key) return;
+    lastIntersectionPreviewKey = key;
+    unawaited(_previewPlaneAxisIntersection());
   }
 
   void _cancelPreview() {
     preview.cancel();
     if (mounted) setState(() => draft = null);
+  }
+
+  void _cancelCurrentPreview() {
+    final intersection =
+        draft == ContextualReferenceAction.planeAxisIntersectionPoint ||
+        widget.intersectionSelection.active;
+    if (intersection) {
+      widget.intersectionSelection.clear();
+      lastIntersectionPreviewKey = null;
+    }
+    _cancelPreview();
   }
 
   void _refreshManualPlanePreview() {
@@ -7629,6 +7799,10 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
             'displayColor': 'constructionPoint',
           },
         ),
+        ContextualReferenceAction.planeAxisIntersectionPoint =>
+          throw StateError(
+            'Use os campos de Plano + Eixo para calcular a prévia.',
+          ),
       };
       preview.show(
         CadSceneEntity(id: 'draft', kind: kind, geometry: previewGeometry),
@@ -7637,6 +7811,46 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     } catch (error) {
       _cancelPreview();
       widget.onStatus(error.toString().replaceFirst('Bad state: ', ''));
+    }
+  }
+
+  Future<void> _previewPlaneAxisIntersection() async {
+    final planeId = widget.intersectionSelection.planeEntityId;
+    final axisId = widget.intersectionSelection.axisEntityId;
+    if (planeId == null || axisId == null || busy) return;
+    setState(() => busy = true);
+    try {
+      final result = await widget.runtime.previewPlaneAxisIntersectionPoint(
+        planeEntityId: planeId,
+        axisEntityId: axisId,
+      );
+      preview.show(
+        CadSceneEntity(
+          id: 'draft',
+          kind: CadSceneEntityKind.point,
+          geometry: {
+            'type': 'point',
+            'position': result.point.toJson(),
+            'markerRadius': 5.0,
+            'displayColor': 'constructionPoint',
+          },
+        ),
+      );
+      if (mounted) {
+        setState(
+          () => draft = ContextualReferenceAction.planeAxisIntersectionPoint,
+        );
+      }
+    } catch (error) {
+      _cancelPreview();
+      widget.onStatus(
+        error
+            .toString()
+            .replaceFirst('Bad state: ', '')
+            .replaceFirst('FormatException: ', ''),
+      );
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -7766,6 +7980,20 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
             method: ConstructionPointMethod.coordinates,
             coordinates: vectorOrZero(source['position'] ?? source['origin']),
           );
+        case ContextualReferenceAction.planeAxisIntersectionPoint:
+          final planeId = widget.intersectionSelection.planeEntityId;
+          final axisId = widget.intersectionSelection.axisEntityId;
+          if (planeId == null || axisId == null) {
+            throw StateError('Selecione um plano e um eixo válidos.');
+          }
+          await widget.runtime.createPlaneAxisIntersectionPointReference(
+            planeEntityId: planeId,
+            axisEntityId: axisId,
+          );
+      }
+      if (draft == ContextualReferenceAction.planeAxisIntersectionPoint) {
+        widget.intersectionSelection.clear();
+        lastIntersectionPreviewKey = null;
       }
       widget.onCompleted();
       preview.cancel();
@@ -7806,6 +8034,14 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
     final canManualAxis = plan.actions.contains(
       ContextualReferenceAction.manualAxis,
     );
+    final canIntersectPlaneAxis = plan.actions.contains(
+      ContextualReferenceAction.planeAxisIntersectionPoint,
+    );
+    final planeCandidates = widget.runtime.planeIntersectionCandidates();
+    final axisCandidates = widget.runtime.axisIntersectionCandidates();
+    final intersectionPlaneId = widget.intersectionSelection.planeEntityId;
+    final intersectionAxisId = widget.intersectionSelection.axisEntityId;
+    final activeIntersectionSlot = widget.intersectionSelection.activeSlot;
     final existingReference = selectedReference != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -7890,7 +8126,145 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
             label: const Text('Ponto manual'),
           ),
         ],
-        if (canManualPoint || canManualPlane || canManualAxis)
+        if (canIntersectPlaneAxis) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              _cancelPreview();
+              setState(() => intersectionEditorOpen = true);
+            },
+            icon: const Icon(Icons.control_point_duplicate_outlined, size: 18),
+            label: const Text('Ponto por interseção Plano + Eixo'),
+          ),
+        ],
+        if (canIntersectPlaneAxis && intersectionEditorOpen) ...[
+          const SizedBox(height: 10),
+          if (activeIntersectionSlot != null) ...[
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  'Seleção pela viewport ativa: '
+                  '${activeIntersectionSlot == PlaneAxisIntersectionSlot.plane ? 'Plano' : 'Eixo'}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          DropdownButtonFormField<String>(
+            initialValue: intersectionPlaneId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Plano'),
+            hint: const Text('Selecione o plano'),
+            items: [
+              for (final candidate in planeCandidates)
+                DropdownMenuItem(
+                  value: candidate.id,
+                  child: Text(
+                    candidate.data['name'] as String? ?? candidate.id,
+                  ),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) {
+                    _cancelPreview();
+                    lastIntersectionPreviewKey = null;
+                    widget.intersectionSelection.choose(
+                      PlaneAxisIntersectionSlot.plane,
+                      value,
+                    );
+                  },
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () {
+                    _cancelPreview();
+                    lastIntersectionPreviewKey = null;
+                    widget.intersectionSelection.begin(
+                      PlaneAxisIntersectionSlot.plane,
+                    );
+                    widget.onStatus(
+                      'Clique em um plano de References ou WCS na viewport.',
+                    );
+                  },
+            icon: const Icon(Icons.ads_click_outlined, size: 18),
+            label: Text(
+              activeIntersectionSlot == PlaneAxisIntersectionSlot.plane
+                  ? 'Selecionando Plano na viewport…'
+                  : 'Selecionar Plano na viewport',
+            ),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: intersectionAxisId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Eixo'),
+            hint: const Text('Selecione o eixo'),
+            items: [
+              for (final candidate in axisCandidates)
+                DropdownMenuItem(
+                  value: candidate.id,
+                  child: Text(
+                    candidate.data['name'] as String? ?? candidate.id,
+                  ),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) {
+                    _cancelPreview();
+                    lastIntersectionPreviewKey = null;
+                    widget.intersectionSelection.choose(
+                      PlaneAxisIntersectionSlot.axis,
+                      value,
+                    );
+                  },
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () {
+                    _cancelPreview();
+                    lastIntersectionPreviewKey = null;
+                    widget.intersectionSelection.begin(
+                      PlaneAxisIntersectionSlot.axis,
+                    );
+                    widget.onStatus(
+                      'Clique em um eixo de References ou WCS na viewport.',
+                    );
+                  },
+            icon: const Icon(Icons.ads_click_outlined, size: 18),
+            label: Text(
+              activeIntersectionSlot == PlaneAxisIntersectionSlot.axis
+                  ? 'Selecionando Eixo na viewport…'
+                  : 'Selecionar Eixo na viewport',
+            ),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed:
+                busy ||
+                    intersectionPlaneId == null ||
+                    intersectionAxisId == null
+                ? null
+                : _previewPlaneAxisIntersection,
+            icon: const Icon(Icons.visibility_outlined, size: 18),
+            label: const Text('Atualizar Preview'),
+          ),
+        ],
+        if (canManualPoint ||
+            canManualPlane ||
+            canManualAxis ||
+            canIntersectPlaneAxis)
           const SizedBox(height: 8),
         if (canPlane)
           FilledButton.icon(
@@ -7934,7 +8308,7 @@ class _ManagedCadReferencePanelState extends State<_ManagedCadReferencePanel> {
               ),
               const SizedBox(width: 8),
               OutlinedButton(
-                onPressed: busy ? null : _cancelPreview,
+                onPressed: busy ? null : _cancelCurrentPreview,
                 child: const Text('Cancel'),
               ),
             ],

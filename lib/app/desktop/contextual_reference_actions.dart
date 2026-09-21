@@ -6,6 +6,7 @@ enum ContextualReferenceAction {
   manualPoint,
   manualPlane,
   manualAxis,
+  planeAxisIntersectionPoint,
   plane,
   axis,
 }
@@ -97,6 +98,7 @@ abstract final class ContextualReferenceActions {
           ContextualReferenceAction.manualPoint,
           ContextualReferenceAction.manualPlane,
           ContextualReferenceAction.manualAxis,
+          ContextualReferenceAction.planeAxisIntersectionPoint,
         ],
         showManualSection: true,
       );

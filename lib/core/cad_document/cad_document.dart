@@ -2,6 +2,7 @@ import '../cad_kernel/io/kernel_io_models.dart';
 import '../cad_kernel/models/kernel_models.dart';
 import 'managed_step_contract.dart';
 import 'managed_cad_reference.dart';
+import 'plane_axis_intersection_point.dart';
 import 'entity_placement.dart';
 
 enum CadDocumentEntityKind {
@@ -129,6 +130,21 @@ class CadDocumentEntity {
         throw const FormatException('Invalid managed CAD reference entity');
       }
       ManagedCadReference.fromJson(Map<String, dynamic>.from(managedReference));
+    }
+    final intersection = data[PlaneAxisIntersectionPoint.dataKey];
+    if (intersection != null) {
+      if (json['kind'] != CadDocumentEntityKind.reference.name ||
+          json['shape'] != null ||
+          json['mesh'] != null ||
+          data['sceneKind'] != 'point' ||
+          intersection is! Map) {
+        throw const FormatException(
+          'Invalid plane-axis intersection point entity',
+        );
+      }
+      PlaneAxisIntersectionPoint.fromJson(
+        Map<String, dynamic>.from(intersection),
+      );
     }
     return CadDocumentEntity(
       id: json['id'] as String,

@@ -13,6 +13,7 @@ import 'package:flcad_mobile/core/cad_document/cad_document.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document_repository.dart';
 import 'package:flcad_mobile/core/cad_document/managed_step_contract.dart';
 import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
+import 'package:flcad_mobile/core/cad_document/plane_axis_intersection_point.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
@@ -1556,6 +1557,85 @@ void main() {
     expect(reference.direction!.toJson(), [0.0, 0.0, 1.0]);
     expect(reference.radius, closeTo(3, 1e-12));
   });
+
+  test(
+    'managed STEP plane and cylinder axis create a snapshot point',
+    () async {
+      final cylinderSource = await runtime.importManagedStep(
+        p.join(source.path, 'cylinder.step'),
+        nativeBridgePath: bridge,
+      );
+      final axisId = await runtime.createManagedCadCylinderAxisReference(
+        sourceEntityId: cylinderSource.id,
+        presentationTriangleId: 1,
+      );
+      final presentation = Map<String, dynamic>.from(
+        runtime.scene.find(cylinderSource.id)!.geometry['brepPresentation']
+            as Map,
+      );
+      final ranges = presentation['faceTriangleRanges'] as List;
+      int? capTriangleId;
+      for (final range in ranges) {
+        final firstTriangleId = (range as List).first as int;
+        final analytic = await runtime.managedCadFaceAnalyticGeometry(
+          sourceEntityId: cylinderSource.id,
+          presentationTriangleId: firstTriangleId,
+        );
+        if (analytic?['surfaceType'] != 'plane') continue;
+        final normal = (analytic!['normal'] as List).cast<num>();
+        if (normal[2].abs() > 0.9) {
+          capTriangleId = firstTriangleId;
+          break;
+        }
+      }
+      expect(
+        capTriangleId,
+        isNotNull,
+        reason: 'The real OCCT cylinder fixture must expose a planar cap.',
+      );
+      final planeId = await runtime.createManagedCadPlaneReference(
+        sourceEntityId: cylinderSource.id,
+        presentationTriangleId: capTriangleId!,
+      );
+
+      final preview = await runtime.previewPlaneAxisIntersectionPoint(
+        planeEntityId: planeId,
+        axisEntityId: axisId,
+      );
+      expect(
+        [
+          preview.point.x,
+          preview.point.y,
+          preview.point.z,
+        ].every((value) => value.isFinite),
+        isTrue,
+      );
+      final pointId = await runtime.createPlaneAxisIntersectionPointReference(
+        planeEntityId: planeId,
+        axisEntityId: axisId,
+      );
+      final point = PlaneAxisIntersectionPoint.fromJson(
+        Map<String, dynamic>.from(
+          runtime.document!.entities[pointId]!.data[PlaneAxisIntersectionPoint
+                  .dataKey]
+              as Map,
+        ),
+      );
+      expect(point.point.toJson(), preview.point.toJson());
+      expect(point.plane.entityId, planeId);
+      expect(point.axis.entityId, axisId);
+      expect(runtime.planeAxisIntersectionPointIsOrphaned(point), isFalse);
+      expect(nativeSceneUnsupportedReason(runtime.scene, style: 0), isNull);
+
+      await runtime.removeEntity(
+        cylinderSource.id,
+        command: 'test.remove-intersection-source',
+      );
+      expect(runtime.planeAxisIntersectionPointIsOrphaned(point), isTrue);
+      await runtime.undoDocument();
+      expect(runtime.planeAxisIntersectionPointIsOrphaned(point), isFalse);
+    },
+  );
 
   test('planar managed face is rejected by cylindrical axis command', () async {
     final sourceEntity = await import(0);

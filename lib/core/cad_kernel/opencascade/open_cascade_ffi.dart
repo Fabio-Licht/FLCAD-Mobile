@@ -690,7 +690,9 @@ class OpenCascadeFFI
               .toNativeUtf8();
           final vector = _nativeVector(_vector(p['direction'], 'direction'));
           final fn = library.lookupFunction<_ExtrudeNative, _ExtrudeDart>(
-            'flcad_occ_extrude',
+            p['symmetric'] == true
+                ? 'flcad_occ_extrude_symmetric'
+                : 'flcad_occ_extrude',
           );
           try {
             ok = fn(

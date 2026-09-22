@@ -4891,6 +4891,15 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Clears only the transient Extrude input. Document selection is cleared
+  /// only when the user explicitly asks for it from the Solids launcher.
+  void clearExtrudeSource({bool clearDocumentSelection = false}) {
+    selectedExtrudeSourceId = null;
+    selectedExtrudeProfileEntityId = null;
+    if (clearDocumentSelection) runtime.select({});
+    notifyListeners();
+  }
+
   bool selectExtrudeSourceFromViewport(String entityId) {
     final document = runtime.document;
     final entity = document?.entities[entityId];
@@ -5028,6 +5037,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     ProfessionalExtrudeDirection direction =
         ProfessionalExtrudeDirection.normal,
     ProfessionalExtrudeOutput output = ProfessionalExtrudeOutput.solid,
+    ProfessionalExtrudeExtent extent = ProfessionalExtrudeExtent.distance,
     String? featureId,
   }) async {
     final source = selectedExtrudeSource;
@@ -5069,6 +5079,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         directionVector: _extrudeDirectionVector(source, directionSourceId),
         direction: direction,
         output: output,
+        extent: extent,
       );
       final plan = _extrudeConstraints.solve(contract);
       final health = _extrudeConstraints.health(contract);
@@ -5082,6 +5093,12 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         const [],
       );
       await kernel.begin(transaction);
+      final extrusionVector = [
+        for (final component in contract.directionVector)
+          component *
+              (contract.reverse ? -distance : distance) *
+              (contract.extent == ProfessionalExtrudeExtent.symmetric ? 2 : 1),
+      ];
       final handle = await kernel.create(
         'EXTRUDE',
         {
@@ -5089,11 +5106,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           'distance': distance,
           'draftAngleDegrees': draftAngleDegrees,
           'reverse': contract.reverse,
-          'direction': [
-            for (final component in contract.directionVector)
-              component * (contract.reverse ? -distance : distance),
-          ],
+          'direction': extrusionVector,
           'output': output.name,
+          'symmetric': contract.extent == ProfessionalExtrudeExtent.symmetric,
         },
         persistentId: '$id:shape',
         expectedType: output == ProfessionalExtrudeOutput.solid
@@ -5102,6 +5117,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         transaction: transaction,
       );
       await kernel.commit(transaction);
+      final symmetricOffset =
+          contract.extent == ProfessionalExtrudeExtent.symmetric
+          ? extrusionVector.map((component) => -component / 2).toList()
+          : const <double>[0, 0, 0];
       final value = <String, dynamic>{
         'id': id,
         'name': id,
@@ -5118,6 +5137,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
                       1) +
                   1,
         'displayMode': 'shadedWithEdges',
+        'symmetricOffset': symmetricOffset,
         'status': 'preview',
       };
       professionalExtrudePreview = value;
@@ -5160,6 +5180,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     String? directionSourceId,
     ProfessionalExtrudeDirection? direction,
     ProfessionalExtrudeOutput? output,
+    ProfessionalExtrudeExtent? extent,
   }) async {
     final current = professionalExtrudePreview;
     if (current == null) return;
@@ -5177,6 +5198,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       directionSourceId: directionSourceId ?? contract.directionSourceId,
       direction: direction ?? contract.direction,
       output: output ?? contract.output,
+      extent: extent ?? contract.extent,
     );
   }
 
@@ -5264,6 +5286,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       directionSourceId: contract.directionSourceId,
       direction: contract.direction,
       output: contract.output,
+      extent: contract.extent,
     );
     await runtime.transitionFeature(
       id,
@@ -10333,6 +10356,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           directionSourceId: contract.directionSourceId,
           direction: contract.direction,
           output: contract.output,
+          extent: contract.extent,
         );
         await confirmProfessionalExtrude();
       }

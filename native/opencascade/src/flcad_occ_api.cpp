@@ -4,6 +4,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -331,6 +332,53 @@ const char *shape_type(const TopoDS_Shape &s) {
     return "compound";
   }
 }
+
+TopoDS_Shape make_extrude(const TopoDS_Shape &input, const gp_Vec &extrusion,
+                          bool solid_output, double draft_angle_degrees) {
+  TopoDS_Shape source = input;
+  if (solid_output && source.ShapeType() == TopAbs_WIRE) {
+    BRepBuilderAPI_MakeFace face(TopoDS::Wire(source), true);
+    if (!face.IsDone())
+      throw Standard_Failure("Extrude solid requires a closed planar profile");
+    source = face.Face();
+  } else if (!solid_output && source.ShapeType() == TopAbs_FACE) {
+    source = BRepTools::OuterWire(TopoDS::Face(source));
+  }
+  if (extrusion.Magnitude() <= gp::Resolution())
+    throw Standard_Failure("Extrude direction must not be zero");
+  BRepPrimAPI_MakePrism prism(source, extrusion, false, true);
+  prism.Build();
+  if (!prism.IsDone())
+    throw Standard_Failure("Extrude builder did not complete");
+  TopoDS_Shape result = prism.Shape();
+  if (std::abs(draft_angle_degrees) <= 1.0e-9)
+    return result;
+  TopExp_Explorer vertices(source, TopAbs_VERTEX);
+  if (!vertices.More())
+    throw Standard_Failure("Draft angle requires a profile with vertices");
+  const gp_Pnt neutral_origin = BRep_Tool::Pnt(TopoDS::Vertex(vertices.Current()));
+  const gp_Dir pull_direction(extrusion);
+  const gp_Pln neutral_plane(neutral_origin, pull_direction);
+  BRepOffsetAPI_DraftAngle drafted(result);
+  int lateral_faces = 0;
+  for (TopExp_Explorer edges(source, TopAbs_EDGE); edges.More(); edges.Next()) {
+    const TopTools_ListOfShape &generated = prism.Generated(edges.Current());
+    for (TopTools_ListOfShape::Iterator item(generated); item.More(); item.Next()) {
+      if (item.Value().ShapeType() != TopAbs_FACE)
+        continue;
+      drafted.Add(TopoDS::Face(item.Value()), pull_direction,
+                  draft_angle_degrees * 3.14159265358979323846 / 180.0,
+                  neutral_plane);
+      ++lateral_faces;
+    }
+  }
+  if (lateral_faces == 0)
+    throw Standard_Failure("Draft angle found no lateral extrusion faces");
+  drafted.Build();
+  if (!drafted.IsDone())
+    throw Standard_Failure("Draft angle could not be applied to the side faces");
+  return drafted.Shape();
+}
 } // namespace
 
 extern "C" {
@@ -473,59 +521,59 @@ int flcad_occ_extrude(const char *id, const double *d, int solid_output,
   try {
     if (!d)
       return fail("Extrude requires a direction vector", e, es);
-    TopoDS_Shape source = get(id);
-    if (solid_output && source.ShapeType() == TopAbs_WIRE) {
-      BRepBuilderAPI_MakeFace face(TopoDS::Wire(source), true);
-      if (!face.IsDone())
-        return fail("Extrude solid requires a closed planar profile", e, es);
-      source = face.Face();
-    } else if (!solid_output && source.ShapeType() == TopAbs_FACE) {
-      source = BRepTools::OuterWire(TopoDS::Face(source));
-    }
     const gp_Vec extrusion(d[0], d[1], d[2]);
-    if (extrusion.Magnitude() <= gp::Resolution())
-      return fail("Extrude direction must not be zero", e, es);
     if (!std::isfinite(draft_angle_degrees) ||
         std::abs(draft_angle_degrees) >= 89.0)
       return fail("Extrude draft angle must be between -89 and 89 degrees", e,
                   es);
-    BRepPrimAPI_MakePrism prism(source, extrusion, false, true);
-    prism.Build();
-    if (!prism.IsDone())
-      return fail("Extrude builder did not complete", e, es);
-    TopoDS_Shape result = prism.Shape();
-    if (std::abs(draft_angle_degrees) > 1.0e-9) {
-      TopExp_Explorer vertices(source, TopAbs_VERTEX);
-      if (!vertices.More())
-        return fail("Draft angle requires a profile with vertices", e, es);
-      const gp_Pnt neutral_origin =
-          BRep_Tool::Pnt(TopoDS::Vertex(vertices.Current()));
-      const gp_Dir pull_direction(extrusion);
-      const gp_Pln neutral_plane(neutral_origin, pull_direction);
-      BRepOffsetAPI_DraftAngle drafted(result);
-      int lateral_faces = 0;
-      for (TopExp_Explorer edges(source, TopAbs_EDGE); edges.More();
-           edges.Next()) {
-        const TopTools_ListOfShape &generated = prism.Generated(edges.Current());
-        for (TopTools_ListOfShape::Iterator item(generated); item.More();
-             item.Next()) {
-          if (item.Value().ShapeType() != TopAbs_FACE)
-            continue;
-          drafted.Add(TopoDS::Face(item.Value()), pull_direction,
-                      draft_angle_degrees * 3.14159265358979323846 / 180.0,
-                      neutral_plane);
-          ++lateral_faces;
-        }
-      }
-      if (lateral_faces == 0)
-        return fail("Draft angle found no lateral extrusion faces", e, es);
-      drafted.Build();
-      if (!drafted.IsDone())
-        return fail("Draft angle could not be applied to the side faces", e,
-                    es);
-      result = drafted.Shape();
+    return output(make_extrude(get(id), extrusion, solid_output != 0,
+                               draft_angle_degrees), t, ts, f, fs, e, es);
+  } catch (const Standard_Failure &x) {
+    return fail(x.GetMessageString(), e, es);
+  } catch (const std::exception &x) {
+    return fail(x.what(), e, es);
+  } catch (...) {
+    return fail("Unknown native exception", e, es);
+  }
+}
+int flcad_occ_extrude_symmetric(const char *id, const double *d,
+                                int solid_output, double draft_angle_degrees,
+                                char *t, size_t ts, char *f, size_t fs,
+                                char *e, size_t es) {
+  try {
+    if (!d)
+      return fail("Symmetric Extrude requires a direction vector", e, es);
+    if (!std::isfinite(draft_angle_degrees) ||
+        std::abs(draft_angle_degrees) >= 89.0)
+      return fail("Extrude draft angle must be between -89 and 89 degrees", e,
+                  es);
+    const gp_Vec half(d[0] / 2.0, d[1] / 2.0, d[2] / 2.0);
+    const TopoDS_Shape source = get(id);
+    const TopoDS_Shape positive =
+        make_extrude(source, half, solid_output != 0, draft_angle_degrees);
+    // A shell has two independent branches, so its opposite travel direction
+    // needs the opposite Draft sign to mirror the lateral slope. A solid is
+    // fused through the central profile: keeping its Draft convention stable
+    // on both branches is required for OCCT to retain the drafted fused body.
+    const double negative_draft =
+        solid_output ? draft_angle_degrees : -draft_angle_degrees;
+    const TopoDS_Shape negative =
+        make_extrude(source, -half, solid_output != 0, negative_draft);
+    if (solid_output) {
+      BRepAlgoAPI_Fuse fused(positive, negative);
+      fused.Build();
+      if (!fused.IsDone())
+        return fail("Symmetric Extrude could not fuse both sides", e, es);
+      return output(fused.Shape(), t, ts, f, fs, e, es);
     }
-    return output(result, t, ts, f, fs, e, es);
+    TopoDS_Shell walls;
+    BRep_Builder builder;
+    builder.MakeShell(walls);
+    for (const TopoDS_Shape &side : {positive, negative}) {
+      for (TopExp_Explorer faces(side, TopAbs_FACE); faces.More(); faces.Next())
+        builder.Add(walls, TopoDS::Face(faces.Current()));
+    }
+    return output(walls, t, ts, f, fs, e, es);
   } catch (const Standard_Failure &x) {
     return fail(x.GetMessageString(), e, es);
   } catch (const std::exception &x) {

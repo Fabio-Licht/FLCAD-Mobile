@@ -66,6 +66,13 @@ void main() {
       );
       expect(
         ProfessionalExtrudeConstraintAdapter.diagnosticForKernelFailure(
+          ArgumentError('Extrude draft angle must be finite'),
+          draftAngleDegrees: 90,
+        ),
+        contains('Valor de Draft inválido'),
+      );
+      expect(
+        ProfessionalExtrudeConstraintAdapter.diagnosticForKernelFailure(
           StateError('Extrude builder did not complete'),
           draftAngleDegrees: 0,
         ),
@@ -114,8 +121,18 @@ void main() {
     },
   );
 
-  test('future extents are prepared but cannot execute in G-143', () {
-    for (final extent in ProfessionalExtrudeExtent.values.skip(1)) {
+  test('symmetric extent persists and future extents remain blocked', () {
+    final symmetric = _contract(extent: ProfessionalExtrudeExtent.symmetric);
+    expect(adapter.health(symmetric).ready, isTrue);
+    expect(
+      ProfessionalExtrudeContract.fromJson(symmetric.toJson()).extent,
+      ProfessionalExtrudeExtent.symmetric,
+    );
+    expect(symmetric.toJson()['symmetricSupported'], isTrue);
+    for (final extent in [
+      ProfessionalExtrudeExtent.throughAllPrepared,
+      ProfessionalExtrudeExtent.upToSurfacePrepared,
+    ]) {
       expect(
         () => adapter.solve(_contract(extent: extent)),
         throwsUnsupportedError,

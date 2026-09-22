@@ -8,6 +8,7 @@ import 'package:flcad_mobile/app/runtime/cad_runtime.dart';
 import 'package:flcad_mobile/core/cad_document/cad_document.dart';
 import 'package:flcad_mobile/core/cad_document/managed_cad_reference.dart';
 import 'package:flcad_mobile/core/cad_kernel/manager/kernel_manager.dart';
+import 'package:flcad_mobile/core/cad_kernel/models/kernel_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
 import 'package:flcad_mobile/core/professional_extrude/professional_extrude.dart';
@@ -344,6 +345,140 @@ void main() {
       controller.cancelProfessionalExtrude();
       expect(controller.professionalExtrudePreview, isNull);
       expect(cad.runtime.scene.find('preview:$extrudeId'), isNull);
+    },
+  );
+
+  test(
+    'managed Sketch symmetric Extrude keeps total distance, Draft and direction',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final sketch = controller.activeSketch!;
+      await controller.drawRectangle(
+        const SketchVector(-5, -3),
+        const SketchVector(5, 3),
+      );
+      final profileId = sketch.entityIds.first;
+      await controller.finishSketch();
+      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      cad.runtime.select({sketch.id});
+      controller.clearExtrudeSource(clearDocumentSelection: true);
+      expect(controller.selectedExtrudeSource, isNull);
+      expect(cad.runtime.selection, isEmpty);
+      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+
+      await controller.previewProfessionalExtrude(
+        distance: 10,
+        extent: ProfessionalExtrudeExtent.symmetric,
+      );
+      final normalPreview = controller.professionalExtrudePreview!;
+      final normalContract = Map<String, dynamic>.from(
+        normalPreview['contract'] as Map,
+      );
+      expect(normalContract['extent'], 'symmetric');
+      expect(normalContract['distance'], 10);
+      expect(
+        normalPreview['symmetricOffset'],
+        (normalContract['directionVector'] as List)
+            .cast<num>()
+            .map((value) => -value * 10)
+            .toList(),
+      );
+      final normalId = normalPreview['id'] as String;
+      expect(cad.runtime.scene.find('preview:$normalId'), isNotNull);
+      expect(cad.runtime.document!.entities[normalId], isNull);
+      controller.cancelProfessionalExtrude();
+      expect(cad.runtime.scene.find('preview:$normalId'), isNull);
+
+      await controller.previewProfessionalExtrude(
+        distance: 10,
+        draftAngleDegrees: 3,
+        direction: ProfessionalExtrudeDirection.reverse,
+        extent: ProfessionalExtrudeExtent.symmetric,
+      );
+      final reversePreview = controller.professionalExtrudePreview!;
+      final extrudeId = reversePreview['id'] as String;
+      final reverseContract = Map<String, dynamic>.from(
+        reversePreview['contract'] as Map,
+      );
+      expect(reverseContract['extent'], 'symmetric');
+      expect(reverseContract['draftAngleDegrees'], 3);
+      expect(reverseContract['direction'], 'reverse');
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+      await controller.confirmProfessionalExtrude();
+      final persisted = Map<String, dynamic>.from(
+        ((cad.runtime.document!.entities[extrudeId]!.data['extrudeFeature']
+                as Map)['contract']
+            as Map),
+      );
+      expect(persisted['extent'], 'symmetric');
+      expect(persisted['distance'], 10);
+      expect(persisted['draftAngleDegrees'], 3);
+      expect(persisted['direction'], 'reverse');
+
+      await cad.runtime.undoDocument();
+      expect(cad.runtime.document!.entities[extrudeId], isNull);
+      await cad.runtime.redoDocument();
+      expect(cad.runtime.document!.entities[extrudeId], isNotNull);
+
+      await cad.runtime.save();
+      final scratch = await Directory(
+        p.join(root.path, 'symmetric-scratch'),
+      ).create();
+      controller.detachProject();
+      await cad.runtime.open('symmetric-scratch', scratch);
+      await cad.runtime.open('managed-reference-sketch', project);
+      await controller.configureProject(
+        projectId: 'managed-reference-sketch',
+        projectDirectory: project,
+      );
+      await controller.reenterProfessionalExtrude(extrudeId);
+      final reentered = Map<String, dynamic>.from(
+        controller.professionalExtrudePreview!['contract'] as Map,
+      );
+      expect(reentered['extent'], 'symmetric');
+      expect(reentered['draftAngleDegrees'], 3);
+      expect(reentered['direction'], 'reverse');
+      controller.cancelProfessionalExtrude();
+
+      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      await controller.previewProfessionalExtrude(
+        distance: 10,
+        output: ProfessionalExtrudeOutput.surface,
+        extent: ProfessionalExtrudeExtent.symmetric,
+        draftAngleDegrees: 5,
+      );
+      final wallsPreview = controller.professionalExtrudePreview!;
+      expect((wallsPreview['handle'] as Map)['type'], 'shell');
+      final wallsId = wallsPreview['id'] as String;
+      final wallsScene = cad.runtime.scene.find('preview:$wallsId');
+      expect(wallsScene, isNotNull);
+      expect(wallsScene!.geometry['nodes'], isNotEmpty);
+      expect(wallsScene.geometry['triangles'], isNotEmpty);
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+      await controller.confirmProfessionalExtrude();
+      final walls = cad.runtime.document!.entities[wallsId]!;
+      expect(walls.kind, CadDocumentEntityKind.surface);
+      expect(walls.shape!.type, CADShapeType.shell);
+
+      await expectLater(
+        controller.previewProfessionalExtrude(
+          distance: 10,
+          draftAngleDegrees: 89,
+          extent: ProfessionalExtrudeExtent.symmetric,
+        ),
+        throwsArgumentError,
+      );
+      expect(controller.professionalExtrudePreview, isNull);
+      expect(controller.error, contains('Valor de Draft inválido'));
     },
   );
 

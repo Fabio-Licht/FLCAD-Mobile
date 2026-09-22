@@ -10614,7 +10614,23 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
   String directionSourceId = 'profileNormal';
   ProfessionalExtrudeDirection direction = ProfessionalExtrudeDirection.normal;
   ProfessionalExtrudeOutput output = ProfessionalExtrudeOutput.solid;
+  ProfessionalExtrudeExtent extent = ProfessionalExtrudeExtent.distance;
   bool extrudeCommandActive = false;
+  Timer? _previewUpdateDebounce;
+
+  void _schedulePreviewUpdate(Future<void> Function() update) {
+    _previewUpdateDebounce?.cancel();
+    _previewUpdateDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (mounted && !widget.controller.busy) unawaited(update());
+    });
+  }
+
+  @override
+  void dispose() {
+    _previewUpdateDebounce?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.controller,
@@ -10828,6 +10844,21 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           }
                         },
                       ),
+                      const SizedBox(height: 6),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: widget.controller.busy
+                              ? null
+                              : () {
+                                  widget.controller.clearExtrudeSource(
+                                    clearDocumentSelection: true,
+                                  );
+                                },
+                          icon: const Icon(Icons.clear, size: 16),
+                          label: const Text('Limpar seleção'),
+                        ),
+                      ),
                       const SizedBox(height: 16),
                       DropdownButtonFormField<String>(
                         initialValue: directionSourceId,
@@ -10871,6 +10902,24 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                         },
                       ),
                       const SizedBox(height: 14),
+                      DropdownButtonFormField<ProfessionalExtrudeExtent>(
+                        initialValue: extent,
+                        decoration: const InputDecoration(labelText: 'Modo'),
+                        items: const [
+                          DropdownMenuItem(
+                            value: ProfessionalExtrudeExtent.distance,
+                            child: Text('Distância'),
+                          ),
+                          DropdownMenuItem(
+                            value: ProfessionalExtrudeExtent.symmetric,
+                            child: Text('Simétrico (distância por lado)'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) setState(() => extent = value);
+                        },
+                      ),
+                      const SizedBox(height: 14),
                       DropdownButtonFormField<ProfessionalExtrudeOutput>(
                         initialValue: output,
                         decoration: const InputDecoration(
@@ -10906,6 +10955,7 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                                           directionSourceId: directionSourceId,
                                           direction: direction,
                                           output: output,
+                                          extent: extent,
                                         ),
                               child: const Text('Preview'),
                             ),
@@ -10963,11 +11013,13 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
               suffixText: 'mm',
             ),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            onFieldSubmitted: (value) {
+            onChanged: (value) {
               final parsed = double.tryParse(value.replaceAll(',', '.'));
               if (parsed != null && parsed > 0) {
-                widget.controller.updateProfessionalExtrudePreview(
-                  distance: parsed,
+                _schedulePreviewUpdate(
+                  () => widget.controller.updateProfessionalExtrudePreview(
+                    distance: parsed,
+                  ),
                 );
               }
             },
@@ -10986,11 +11038,13 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
               decimal: true,
               signed: true,
             ),
-            onFieldSubmitted: (value) {
+            onChanged: (value) {
               final parsed = double.tryParse(value.replaceAll(',', '.'));
               if (parsed != null && parsed.abs() < 89) {
-                widget.controller.updateProfessionalExtrudePreview(
-                  draftAngleDegrees: parsed,
+                _schedulePreviewUpdate(
+                  () => widget.controller.updateProfessionalExtrudePreview(
+                    draftAngleDegrees: parsed,
+                  ),
                 );
               }
             },
@@ -11047,6 +11101,30 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                   },
           ),
           const SizedBox(height: 14),
+          DropdownButtonFormField<ProfessionalExtrudeExtent>(
+            initialValue: contract.extent,
+            decoration: const InputDecoration(labelText: 'Modo'),
+            items: const [
+              DropdownMenuItem(
+                value: ProfessionalExtrudeExtent.distance,
+                child: Text('Distância'),
+              ),
+              DropdownMenuItem(
+                value: ProfessionalExtrudeExtent.symmetric,
+                child: Text('Simétrico (distância por lado)'),
+              ),
+            ],
+            onChanged: widget.controller.busy
+                ? null
+                : (value) {
+                    if (value != null) {
+                      widget.controller.updateProfessionalExtrudePreview(
+                        extent: value,
+                      );
+                    }
+                  },
+          ),
+          const SizedBox(height: 14),
           DropdownButtonFormField<ProfessionalExtrudeOutput>(
             initialValue: contract.output,
             decoration: const InputDecoration(labelText: 'Resultado'),
@@ -11071,7 +11149,7 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                   },
           ),
           const Text(
-            'Symmetric · Through All · Up To Surface: architecture prepared',
+            'Through All · Up To Surface: architecture prepared',
             style: TextStyle(fontSize: 11),
           ),
           const SizedBox(height: 8),

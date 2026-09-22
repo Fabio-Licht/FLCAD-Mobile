@@ -9,7 +9,7 @@ enum ProfessionalExtrudeOutput { solid, surface }
 
 enum ProfessionalExtrudeExtent {
   distance,
-  symmetricPrepared,
+  symmetric,
   throughAllPrepared,
   upToSurfacePrepared,
 }
@@ -54,7 +54,7 @@ class ProfessionalExtrudeContract {
     'direction': direction.name,
     'output': output.name,
     'extent': extent.name,
-    'symmetricSupported': false,
+    'symmetricSupported': true,
     'throughAllSupported': false,
     'upToSurfaceSupported': false,
     'arbitraryVectorPrepared': true,
@@ -132,7 +132,10 @@ class ProfessionalExtrudeConstraintAdapter {
         'Extrude direction vector must be finite and non-zero.',
       );
     }
-    if (value.extent != ProfessionalExtrudeExtent.distance) {
+    if (!{
+      ProfessionalExtrudeExtent.distance,
+      ProfessionalExtrudeExtent.symmetric,
+    }.contains(value.extent)) {
       throw UnsupportedError(
         'This Extrude extent is prepared but not implemented.',
       );
@@ -189,7 +192,12 @@ class ProfessionalExtrudeConstraintAdapter {
     final message = error.toString().replaceFirst('Bad state: ', '');
     if (draftAngleDegrees.abs() <= 1e-9) return message;
     final normalized = message.toLowerCase();
-    if (normalized.contains('draft angle')) {
+    if (normalized.contains('extrude draft angle must')) {
+      return 'Valor de Draft inválido: $message';
+    }
+    if (normalized.contains('draft angle requires') ||
+        normalized.contains('draft angle found') ||
+        normalized.contains('draft angle could not')) {
       return 'Draft falhou para a topologia deste perfil: $message';
     }
     return 'Extrude com Draft falhou no kernel: $message';

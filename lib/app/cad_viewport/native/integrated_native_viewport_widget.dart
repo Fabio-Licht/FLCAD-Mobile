@@ -222,8 +222,9 @@ class _IntegratedCadViewportWidgetState
     }
     final result = await native.pick(position.dx, position.dy);
     if (!_canPublishTap(token, scene)) return;
-    // Native D3D deliberately excludes UI/reference overlays. Resolve those
-    // through the Flutter screen-space picker before treating this as empty.
+    // Native D3D deliberately excludes UI/reference overlays and Sketch
+    // profiles. Resolve those through the Flutter screen-space picker before
+    // treating this as empty.
     if (result == null || result.kind == NativePickKind.none) {
       _selectManagedFace(null);
       if (_pickReferenceOverlay(position, scene, additive, toggle)) return;
@@ -301,6 +302,7 @@ class _IntegratedCadViewportWidgetState
           CadSceneEntityKind.axis,
           CadSceneEntityKind.point,
           CadSceneEntityKind.coordinateSystem,
+          CadSceneEntityKind.sketch,
         }.contains(source.kind)) {
       return false;
     }

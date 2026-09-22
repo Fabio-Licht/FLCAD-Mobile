@@ -25,7 +25,8 @@ int main() {
   CHECK(flcad_occ_destroy_shape(token, error, sizeof(error)) == 1);
   CHECK(flcad_occ_shape_count() == 0);
   const double square[12] = {0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0};
-  char profile[256] = {}, drafted_extrude[256] = {};
+  char profile[256] = {}, drafted_extrude[256] = {}, symmetric_solid[256] = {},
+       symmetric_walls[256] = {};
   CHECK(flcad_occ_create_planar_face(
             square, 4, profile, sizeof(profile), fingerprint,
             sizeof(fingerprint), error, sizeof(error)) == 1);
@@ -33,6 +34,14 @@ int main() {
   CHECK(flcad_occ_extrude(
             profile, extrusion, 1, 5.0, drafted_extrude,
             sizeof(drafted_extrude), fingerprint, sizeof(fingerprint), error,
+            sizeof(error)) == 1);
+  CHECK(flcad_occ_extrude_symmetric(
+            profile, extrusion, 1, 5.0, symmetric_solid,
+            sizeof(symmetric_solid), fingerprint, sizeof(fingerprint), error,
+            sizeof(error)) == 1);
+  CHECK(flcad_occ_extrude_symmetric(
+            profile, extrusion, 0, 5.0, symmetric_walls,
+            sizeof(symmetric_walls), fingerprint, sizeof(fingerprint), error,
             sizeof(error)) == 1);
   // UI smoke contract: an independently selected geometric edge must be
   // matched back to the owning body and produce a real fillet.
@@ -103,6 +112,8 @@ int main() {
   CHECK(flcad_occ_destroy_shape(blend_b0, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(blend_b1, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(second_face, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(symmetric_walls, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(symmetric_solid, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(drafted_extrude, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(profile, error, sizeof(error)) == 1);
   CHECK(flcad_occ_shape_count() == 0);

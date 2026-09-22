@@ -130,6 +130,36 @@ typedef _ExtrudeDart =
       Pointer<Utf8>,
       int,
     );
+typedef _ExtrudeMultiNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Int32,
+      Double,
+      Int32,
+      Double,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _ExtrudeMultiDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      int,
+      double,
+      int,
+      double,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _PlaneNative =
     Int32 Function(
       Pointer<Double>,
@@ -709,6 +739,43 @@ class OpenCascadeFFI
             );
           } finally {
             calloc.free(source);
+            calloc.free(vector);
+          }
+        case 'EXTRUDE MULTI':
+          final tokens = p['inputs'];
+          if (tokens is! List || tokens.length < 2) {
+            throw ArgumentError('EXTRUDE MULTI requires at least two inputs.');
+          }
+          final duplicate =
+              tokens.cast<String>().toSet().length != tokens.length;
+          if (duplicate) {
+            throw ArgumentError(
+              'EXTRUDE MULTI does not accept duplicate inputs.',
+            );
+          }
+          final sources = _csv(tokens);
+          final vector = _nativeVector(_vector(p['direction'], 'direction'));
+          final fn = library
+              .lookupFunction<_ExtrudeMultiNative, _ExtrudeMultiDart>(
+                'flcad_occ_extrude_multi',
+              );
+          try {
+            ok = fn(
+              sources,
+              vector,
+              p['output'] == 'surface' ? 0 : 1,
+              (p['draftAngleDegrees'] as num? ?? 0).toDouble(),
+              p['symmetric'] == true ? 1 : 0,
+              (p['tolerance'] as num? ?? 1e-7).toDouble(),
+              b.token,
+              256,
+              b.fingerprint,
+              256,
+              b.error,
+              4096,
+            );
+          } finally {
+            calloc.free(sources);
             calloc.free(vector);
           }
         case 'GENERATE PLANE':

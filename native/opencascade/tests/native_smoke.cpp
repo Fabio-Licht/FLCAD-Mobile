@@ -43,6 +43,77 @@ int main() {
             profile, extrusion, 0, 5.0, symmetric_walls,
             sizeof(symmetric_walls), fingerprint, sizeof(fingerprint), error,
             sizeof(error)) == 1);
+  // Multi-profile ABI: containment parity creates islands and voids in one
+  // registered compound, while failures leave the registry untouched.
+  const double island_b_points[12] = {50, 0, 0, 60, 0, 0, 60, 10, 0, 50, 10, 0};
+  const double outer_points[12] = {0, 0, 0, 40, 0, 0, 40, 40, 0, 0, 40, 0};
+  const double hole_a_points[12] = {5, 5, 0, 15, 5, 0, 15, 15, 0, 5, 15, 0};
+  const double hole_b_points[12] = {25, 5, 0, 35, 5, 0, 35, 15, 0, 25, 15, 0};
+  char island_b[256] = {}, outer[256] = {}, hole_a[256] = {}, hole_b[256] = {};
+  CHECK(flcad_occ_create_planar_face(island_b_points, 4, island_b, sizeof(island_b), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_planar_face(outer_points, 4, outer, sizeof(outer), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_planar_face(hole_a_points, 4, hole_a, sizeof(hole_a), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_planar_face(hole_b_points, 4, hole_b, sizeof(hole_b), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  auto check_multi = [&](const std::string &ids, double draft = 0.0,
+                         int symmetric = 0) {
+    char multi[256] = {};
+    const size_t before = flcad_occ_shape_count();
+    if (flcad_occ_extrude_multi(ids.c_str(), extrusion, 1, draft, symmetric, 1e-7,
+                                multi, sizeof(multi), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) != 1)
+      return false;
+    if (flcad_occ_shape_count() != before + 1)
+      return false;
+    return flcad_occ_destroy_shape(multi, error, sizeof(error)) == 1;
+  };
+  CHECK(check_multi(std::string(profile) + "," + island_b));               // islands
+  CHECK(check_multi(std::string(outer) + "," + hole_a));                   // void
+  CHECK(check_multi(std::string(outer) + "," + hole_a + "," + hole_b));   // voids
+  CHECK(check_multi(std::string(outer) + "," + hole_a + "," + island_b)); // mixed
+  CHECK(check_multi(std::string(profile) + "," + island_b, 3.0));          // Draft
+  CHECK(check_multi(std::string(profile) + "," + island_b, 3.0, 1));       // symmetric
+  const double raised_points[12] = {0, 0, 2, 10, 0, 2, 10, 10, 2, 0, 10, 2};
+  const double crossed_points[12] = {0, 0, 0, 10, 10, 0, 0, 10, 0, 10, 0, 0};
+  char raised[256] = {}, crossed[256] = {};
+  CHECK(flcad_occ_create_planar_face(raised_points, 4, raised, sizeof(raised), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_planar_face(crossed_points, 4, crossed, sizeof(crossed), fingerprint, sizeof(fingerprint), error, sizeof(error)) == 1);
+  const size_t before_invalid_topology = flcad_occ_shape_count();
+  const std::string non_coplanar = std::string(profile) + "," + raised;
+  CHECK(flcad_occ_extrude_multi(non_coplanar.c_str(), extrusion, 1, 0.0, 0,
+                                1e-7, token, sizeof(token), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "MULTI_PROFILE_NON_COPLANAR") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_invalid_topology);
+  const std::string self_intersecting = std::string(profile) + "," + crossed;
+  CHECK(flcad_occ_extrude_multi(self_intersecting.c_str(), extrusion, 1, 0.0,
+                                0, 1e-7, token, sizeof(token), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "MULTI_PROFILE_SELF_INTERSECTION") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_invalid_topology);
+  char open_a[256] = {}, open_b[256] = {}, open_edge[256] = {}, open_wire[256] = {};
+  CHECK(flcad_occ_create_vertex(0, 0, 0, open_a, sizeof(open_a), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_vertex(5, 0, 0, open_b, sizeof(open_b), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_edge(open_a, open_b, open_edge, sizeof(open_edge),
+                              fingerprint, sizeof(fingerprint), error,
+                              sizeof(error)) == 1);
+  CHECK(flcad_occ_create_wire(open_edge, open_wire, sizeof(open_wire),
+                              fingerprint, sizeof(fingerprint), error,
+                              sizeof(error)) == 1);
+  const size_t before_open = flcad_occ_shape_count();
+  const std::string open_profiles = std::string(profile) + "," + open_wire;
+  CHECK(flcad_occ_extrude_multi(open_profiles.c_str(), extrusion, 1, 0.0, 0,
+                                1e-7, token, sizeof(token), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "MULTI_PROFILE_OPEN") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_open);
+  const size_t before_bad_multi = flcad_occ_shape_count();
+  CHECK(flcad_occ_extrude_multi("missing-token,also-missing", extrusion, 1,
+                                0.0, 0, 1e-7, token, sizeof(token),
+                                fingerprint, sizeof(fingerprint), error,
+                                sizeof(error)) == 0);
+  CHECK(flcad_occ_shape_count() == before_bad_multi);
   // UI smoke contract: an independently selected geometric edge must be
   // matched back to the owning body and produce a real fillet.
   char edge_start[256] = {}, edge_end[256] = {}, selected_edge[256] = {};
@@ -116,6 +187,16 @@ int main() {
   CHECK(flcad_occ_destroy_shape(symmetric_solid, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(drafted_extrude, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(profile, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(island_b, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(outer, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(hole_a, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(hole_b, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(raised, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(crossed, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_wire, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_edge, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_a, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_b, error, sizeof(error)) == 1);
   CHECK(flcad_occ_shape_count() == 0);
   const double center[3] = {0, 0, 0}, axis[3] = {0, 0, 1};
   CHECK(flcad_occ_create_torus(center, axis, 5, 1, token, sizeof(token),

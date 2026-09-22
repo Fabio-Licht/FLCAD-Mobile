@@ -31,6 +31,7 @@
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
@@ -93,6 +94,7 @@
 #include <gp_Torus.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
+#include <gp_Vec2d.hxx>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -379,6 +381,172 @@ TopoDS_Shape make_extrude(const TopoDS_Shape &input, const gp_Vec &extrusion,
     throw Standard_Failure("Draft angle could not be applied to the side faces");
   return drafted.Shape();
 }
+
+struct MultiLoop {
+  TopoDS_Wire wire;
+  std::vector<gp_Pnt2d> points;
+  double area = 0.0;
+  int depth = 0;
+  int parent = -1;
+};
+
+double cross2d(const gp_Pnt2d &a, const gp_Pnt2d &b, const gp_Pnt2d &c) {
+  return (b.X() - a.X()) * (c.Y() - a.Y()) -
+         (b.Y() - a.Y()) * (c.X() - a.X());
+}
+
+bool segments_intersect(const gp_Pnt2d &a, const gp_Pnt2d &b,
+                        const gp_Pnt2d &c, const gp_Pnt2d &d, double tol) {
+  const double ab_c = cross2d(a, b, c), ab_d = cross2d(a, b, d);
+  const double cd_a = cross2d(c, d, a), cd_b = cross2d(c, d, b);
+  return ((ab_c > tol && ab_d < -tol) || (ab_c < -tol && ab_d > tol)) &&
+         ((cd_a > tol && cd_b < -tol) || (cd_a < -tol && cd_b > tol));
+}
+
+bool point_in_loop(const gp_Pnt2d &p, const std::vector<gp_Pnt2d> &loop) {
+  bool inside = false;
+  for (size_t i = 0, j = loop.size() - 1; i < loop.size(); j = i++) {
+    const auto &a = loop[i];
+    const auto &b = loop[j];
+    if (((a.Y() > p.Y()) != (b.Y() > p.Y())) &&
+        p.X() < (b.X() - a.X()) * (p.Y() - a.Y()) /
+                        (b.Y() - a.Y()) +
+                    a.X())
+      inside = !inside;
+  }
+  return inside;
+}
+
+TopoDS_Wire profile_wire(const TopoDS_Shape &shape) {
+  if (shape.ShapeType() == TopAbs_WIRE)
+    return TopoDS::Wire(shape);
+  if (shape.ShapeType() == TopAbs_FACE)
+    return BRepTools::OuterWire(TopoDS::Face(shape));
+  throw Standard_Failure("MULTI_PROFILE_UNSUPPORTED: expected Wire or Face");
+}
+
+TopoDS_Shape make_multi_extrude(const char *ids, const gp_Vec &extrusion,
+                                bool solid_output, double draft_angle_degrees,
+                                bool symmetric, double tolerance) {
+  const auto tokens = split(ids);
+  if (tokens.size() < 2)
+    throw Standard_Failure("MULTI_PROFILE_COUNT: at least two profiles required");
+  if (!std::isfinite(tolerance) || tolerance <= 0.0)
+    throw Standard_Failure("MULTI_PROFILE_TOLERANCE: tolerance must be finite and positive");
+
+  std::vector<MultiLoop> loops;
+  gp_Pln plane;
+  bool has_plane = false;
+  for (const auto &token : tokens) {
+    TopoDS_Wire wire = profile_wire(get(token.c_str()));
+    if (!wire.Closed())
+      throw Standard_Failure("MULTI_PROFILE_OPEN: every profile must be a valid closed wire");
+    BRepBuilderAPI_MakeFace probe(wire, true);
+    if (!probe.IsDone())
+      throw Standard_Failure("MULTI_PROFILE_NON_PLANAR: profile does not define a planar face");
+    BRepAdaptor_Surface surface(probe.Face());
+    if (surface.GetType() != GeomAbs_Plane)
+      throw Standard_Failure("MULTI_PROFILE_NON_PLANAR: profile is not planar");
+    const gp_Pln candidate = surface.Plane();
+    if (!has_plane) {
+      plane = candidate;
+      has_plane = true;
+    }
+    MultiLoop loop;
+    loop.wire = wire;
+    for (BRepTools_WireExplorer it(wire); it.More(); it.Next()) {
+      const gp_Pnt p = BRep_Tool::Pnt(it.CurrentVertex());
+      if (std::abs(plane.Distance(p)) > tolerance)
+        throw Standard_Failure("MULTI_PROFILE_NON_COPLANAR: profiles exceed planarity tolerance");
+      const gp_Vec delta(plane.Location(), p);
+      loop.points.emplace_back(delta.Dot(gp_Vec(plane.XAxis().Direction())),
+                               delta.Dot(gp_Vec(plane.YAxis().Direction())));
+    }
+    if (loop.points.size() < 3)
+      throw Standard_Failure("MULTI_PROFILE_DEGENERATE: profile has fewer than three vertices");
+    for (size_t i = 0; i < loop.points.size(); ++i) {
+      const auto &a = loop.points[i];
+      const auto &b = loop.points[(i + 1) % loop.points.size()];
+      loop.area += a.X() * b.Y() - b.X() * a.Y();
+      for (size_t j = i + 2; j < loop.points.size(); ++j) {
+        if (i == 0 && j + 1 == loop.points.size()) continue;
+        if (segments_intersect(a, b, loop.points[j],
+                               loop.points[(j + 1) % loop.points.size()], tolerance))
+          throw Standard_Failure("MULTI_PROFILE_SELF_INTERSECTION: contour crosses itself");
+      }
+    }
+    loop.area *= 0.5;
+    if (std::abs(loop.area) <= tolerance * tolerance)
+      throw Standard_Failure("MULTI_PROFILE_DEGENERATE: contour area is zero");
+    if (!BRepCheck_Analyzer(wire).IsValid())
+      throw Standard_Failure("MULTI_PROFILE_AMBIGUOUS: closed wire topology is invalid");
+    loops.push_back(std::move(loop));
+  }
+
+  for (size_t i = 0; i < loops.size(); ++i)
+    for (size_t j = i + 1; j < loops.size(); ++j)
+      for (size_t a = 0; a < loops[i].points.size(); ++a)
+        for (size_t b = 0; b < loops[j].points.size(); ++b)
+          if (segments_intersect(
+                  loops[i].points[a],
+                  loops[i].points[(a + 1) % loops[i].points.size()],
+                  loops[j].points[b],
+                  loops[j].points[(b + 1) % loops[j].points.size()],
+                  tolerance))
+            throw Standard_Failure(
+                "MULTI_PROFILE_AMBIGUOUS: contours intersect each other");
+
+  for (size_t i = 0; i < loops.size(); ++i) {
+    double parent_area = std::numeric_limits<double>::max();
+    for (size_t j = 0; j < loops.size(); ++j) {
+      if (i == j || !point_in_loop(loops[i].points.front(), loops[j].points)) continue;
+      ++loops[i].depth;
+      if (std::abs(loops[j].area) < parent_area) {
+        parent_area = std::abs(loops[j].area);
+        loops[i].parent = static_cast<int>(j);
+      }
+    }
+  }
+
+  TopoDS_Compound result;
+  BRep_Builder compound_builder;
+  compound_builder.MakeCompound(result);
+  int islands = 0;
+  for (size_t i = 0; i < loops.size(); ++i) {
+    if ((loops[i].depth & 1) != 0) continue;
+    TopoDS_Wire outer = loops[i].area < 0 ? TopoDS::Wire(loops[i].wire.Reversed()) : loops[i].wire;
+    BRepBuilderAPI_MakeFace face_builder(plane, outer, true);
+    for (size_t j = 0; j < loops.size(); ++j) {
+      if (loops[j].parent != static_cast<int>(i) || (loops[j].depth & 1) == 0) continue;
+      TopoDS_Wire hole = loops[j].area > 0 ? TopoDS::Wire(loops[j].wire.Reversed()) : loops[j].wire;
+      face_builder.Add(hole);
+    }
+    if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid())
+      throw Standard_Failure("MULTI_PROFILE_AMBIGUOUS: island and void topology is invalid");
+    TopoDS_Shape island;
+    if (!symmetric) {
+      island = make_extrude(face_builder.Face(), extrusion, solid_output,
+                            draft_angle_degrees);
+    } else {
+      const gp_Vec half = extrusion / 2.0;
+      const TopoDS_Shape positive = make_extrude(
+          face_builder.Face(), half, solid_output, draft_angle_degrees);
+      const double negative_draft = solid_output ? draft_angle_degrees : -draft_angle_degrees;
+      const TopoDS_Shape negative = make_extrude(
+          face_builder.Face(), -half, solid_output, negative_draft);
+      BRepAlgoAPI_Fuse fused(positive, negative);
+      fused.Build();
+      if (!fused.IsDone())
+        throw Standard_Failure("MULTI_PROFILE_DRAFT: symmetric island fusion failed");
+      island = fused.Shape();
+    }
+    compound_builder.Add(result, island);
+    ++islands;
+  }
+  if (islands == 0)
+    throw Standard_Failure("MULTI_PROFILE_VOID_WITHOUT_ISLAND: no outer contour found");
+  return result;
+}
 } // namespace
 
 extern "C" {
@@ -580,6 +748,31 @@ int flcad_occ_extrude_symmetric(const char *id, const double *d,
     return fail(x.what(), e, es);
   } catch (...) {
     return fail("Unknown native exception", e, es);
+  }
+}
+int flcad_occ_extrude_multi(const char *ids, const double *d,
+                            int solid_output, double draft_angle_degrees,
+                            int symmetric, double tolerance, char *t, size_t ts,
+                            char *f, size_t fs, char *e, size_t es) {
+  try {
+    if (!ids || !*ids || !d)
+      return fail("MULTI_PROFILE_INPUT: tokens and direction are required", e, es);
+    if (!std::isfinite(draft_angle_degrees) ||
+        std::abs(draft_angle_degrees) >= 89.0)
+      return fail("MULTI_PROFILE_DRAFT: angle must be between -89 and 89 degrees", e, es);
+    const gp_Vec extrusion(d[0], d[1], d[2]);
+    if (extrusion.Magnitude() <= gp::Resolution())
+      return fail("MULTI_PROFILE_DIRECTION: direction must not be zero", e, es);
+    return output(make_multi_extrude(ids, extrusion, solid_output != 0,
+                                     draft_angle_degrees, symmetric != 0,
+                                     tolerance),
+                  t, ts, f, fs, e, es);
+  } catch (const Standard_Failure &x) {
+    return fail(x.GetMessageString(), e, es);
+  } catch (const std::exception &x) {
+    return fail(x.what(), e, es);
+  } catch (...) {
+    return fail("MULTI_PROFILE_UNKNOWN: native exception", e, es);
   }
 }
 int flcad_occ_create_plane(const double *o, const double *n, double l, double u,

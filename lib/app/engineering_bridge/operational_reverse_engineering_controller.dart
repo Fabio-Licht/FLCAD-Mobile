@@ -30,6 +30,7 @@ import '../../core/professional_fill/professional_fill.dart';
 import '../../core/professional_surface_fillet/professional_surface_fillet.dart';
 import '../../core/professional_sew/professional_sew.dart';
 import '../../core/professional_extrude/professional_extrude.dart';
+import '../../core/professional_extrude/multi_profile_extrude_runtime.dart';
 import '../../core/professional_revolve/professional_revolve.dart';
 import '../../core/professional_continuity/professional_continuity.dart';
 import '../../core/recognition_engine/recognition_result.dart';
@@ -97,6 +98,24 @@ import '../runtime/cad_runtime.dart';
 import '../runtime/world_coordinate_system.dart';
 
 enum RecognitionDecision { pending, accepted, rejected }
+
+/// A transient closed loop resolved exclusively from the profile entities the
+/// operator selected for the current Extrude command. It is never persisted.
+class _ExtrudeProfileLoop {
+  const _ExtrudeProfileLoop({
+    required this.entityIds,
+    required this.points,
+    required this.closed,
+    this.directProfileEntityId,
+  });
+
+  final List<String> entityIds;
+  final List<SketchVector> points;
+  final bool closed;
+
+  /// Circles and ellipses already have an individual closed-profile route.
+  final String? directProfileEntityId;
+}
 
 enum SketchSurfaceStage {
   idle,
@@ -197,6 +216,73 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.read<String>('solid.extrude.profileEntityId');
   set selectedExtrudeProfileEntityId(String? value) =>
       runtime.write('solid.extrude.profileEntityId', value);
+  List<String> get selectedExtrudeProfileEntityIds {
+    final persisted = runtime.read<List<String>>(
+      'solid.extrude.profileEntityIds',
+    );
+    if (persisted != null) return List.unmodifiable(persisted);
+    final single = selectedExtrudeProfileEntityId;
+    return single == null ? const [] : [single];
+  }
+
+  set selectedExtrudeProfileEntityIds(List<String> value) {
+    final stable = <String>[];
+    for (final id in value) {
+      if (id.isNotEmpty && !stable.contains(id)) stable.add(id);
+    }
+    runtime.write('solid.extrude.profileEntityIds', stable);
+    runtime.write(
+      'solid.extrude.profileGroups',
+      stable.map((id) => <String>[id]).toList(growable: false),
+    );
+    selectedExtrudeProfileEntityId = stable.isEmpty ? null : stable.first;
+  }
+
+  /// Logical profiles selected only for the active Extrude command. A profile
+  /// may be a circle/ellipse or the complete connected component of lines.
+  List<List<String>> get selectedExtrudeProfileGroups {
+    final raw = runtime.read<dynamic>('solid.extrude.profileGroups');
+    if (raw is! List) {
+      return selectedExtrudeProfileEntityIds.map((id) => [id]).toList();
+    }
+    return raw
+        .whereType<List>()
+        .map(
+          (group) =>
+              group.whereType<String>().where((id) => id.isNotEmpty).toList(),
+        )
+        .where((group) => group.isNotEmpty)
+        .toList();
+  }
+
+  void _setSelectedExtrudeProfileGroups(List<List<String>> groups) {
+    final stableGroups = <List<String>>[];
+    final seen = <String>{};
+    for (final group in groups) {
+      final stable = <String>[];
+      for (final id in group) {
+        if (id.isNotEmpty && seen.add(id)) stable.add(id);
+      }
+      if (stable.isNotEmpty) stableGroups.add(stable);
+    }
+    final flat = stableGroups.expand((group) => group).toList(growable: false);
+    runtime.write('solid.extrude.profileGroups', stableGroups);
+    runtime.write('solid.extrude.profileEntityIds', flat);
+    selectedExtrudeProfileEntityId = flat.isEmpty ? null : flat.first;
+  }
+
+  void clearProfessionalExtrudeDiagnostic({bool invalidatePreview = false}) {
+    if (invalidatePreview) {
+      final preview = professionalExtrudePreview;
+      if (preview != null) {
+        runtime.hideTransient('preview:${preview['id']}');
+        professionalExtrudePreview = null;
+      }
+    }
+    error = null;
+    notifyListeners();
+  }
+
   Map<String, dynamic>? get professionalRevolvePreview =>
       runtime.read<Map<String, dynamic>>('solid.revolve.preview');
   set professionalRevolvePreview(Map<String, dynamic>? value) =>
@@ -4888,7 +4974,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (!valid) throw StateError('Extrude source is unavailable: $id');
     selectedExtrudeSourceId = id;
     selectedExtrudeProfileEntityId = null;
-    notifyListeners();
+    selectedExtrudeProfileEntityIds = const [];
+    clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
   }
 
   /// Clears only the transient Extrude input. Document selection is cleared
@@ -4896,11 +4983,16 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   void clearExtrudeSource({bool clearDocumentSelection = false}) {
     selectedExtrudeSourceId = null;
     selectedExtrudeProfileEntityId = null;
+    selectedExtrudeProfileEntityIds = const [];
     if (clearDocumentSelection) runtime.select({});
-    notifyListeners();
+    clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
   }
 
-  bool selectExtrudeSourceFromViewport(String entityId) {
+  bool selectExtrudeSourceFromViewport(
+    String entityId, {
+    bool append = false,
+    List<double>? worldHit,
+  }) {
     final document = runtime.document;
     final entity = document?.entities[entityId];
     if (entity == null) return false;
@@ -4912,19 +5004,297 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           : entity.data['parentSketchId'] as String?;
       if (sourceId != entity.id && entity.data['sketchEntity'] is Map) {
         profileEntityId = entity.id;
+      } else if (sourceId == entity.id) {
+        // Native overlay picking can resolve an individual Sketch curve to
+        // its owning Sketch. Recover that curve from the actual hit point so
+        // Extrude Multi receives profile wires, never the Sketch root token.
+        profileEntityId = _sketchProfileAtWorldPoint(sourceId!, worldHit);
       }
     } else if (entity.kind == CadDocumentEntityKind.surface &&
         entity.shape != null) {
       sourceId = entity.id;
     }
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['sketch'] is Map &&
+        worldHit != null &&
+        profileEntityId == null) {
+      error = 'Clique diretamente em um perfil de Sketch para Extrude.';
+      notifyListeners();
+      return false;
+    }
     if (sourceId == null ||
         !extrudeSources.any((source) => source.id == sourceId)) {
       return false;
     }
+    if (profileEntityId != null) {
+      return _selectExtrudeProfileComponent(
+        sourceId,
+        profileEntityId,
+        append: append,
+      );
+    }
     selectedExtrudeSourceId = sourceId;
-    selectedExtrudeProfileEntityId = profileEntityId;
-    notifyListeners();
+    selectedExtrudeProfileEntityId = null;
+    selectedExtrudeProfileEntityIds = const [];
+    clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
     return true;
+  }
+
+  bool _selectExtrudeProfileComponent(
+    String sourceId,
+    String profileEntityId, {
+    required bool append,
+  }) {
+    final sketch = sketchApi?.sketches
+        .where((item) => item.id == sourceId)
+        .firstOrNull;
+    if (sketch == null) {
+      error = 'O Sketch de origem do perfil não está disponível.';
+      notifyListeners();
+      return false;
+    }
+    late final List<String> component;
+    try {
+      component = _extrudeProfileComponent(sketch, profileEntityId);
+    } on StateError catch (value) {
+      error = value.message.toString();
+      notifyListeners();
+      return false;
+    }
+    final groups = selectedExtrudeSourceId == sourceId
+        ? selectedExtrudeProfileGroups
+        : <List<String>>[];
+    final existing = groups.indexWhere(
+      (group) => _sameExtrudeProfileComponent(group, component),
+    );
+    if (append && existing >= 0) {
+      groups.removeAt(existing);
+    } else if (append) {
+      groups.add(component);
+    } else {
+      groups
+        ..clear()
+        ..add(component);
+    }
+    selectedExtrudeSourceId = sourceId;
+    _setSelectedExtrudeProfileGroups(groups);
+    clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
+    return true;
+  }
+
+  bool _sameExtrudeProfileComponent(List<String> a, List<String> b) =>
+      a.length == b.length && a.toSet().containsAll(b);
+
+  List<String> _extrudeProfileComponent(Sketch sketch, String entityId) {
+    final api =
+        sketchApi ?? (throw StateError('Sketch runtime is unavailable.'));
+    final entity = api.entity(entityId);
+    if (entity == null || !sketch.entityIds.contains(entityId)) {
+      throw StateError('O perfil selecionado não pertence ao Sketch ativo.');
+    }
+    if (entity.construction || entity.reference) {
+      throw StateError('O perfil selecionado não está disponível.');
+    }
+    if (entity is SketchCircle || entity is SketchEllipse) return [entityId];
+    if (entity is! SketchLine) {
+      throw StateError('Selecione uma linha, círculo ou elipse de Sketch.');
+    }
+    final lines = sketch.entityIds
+        .map(api.entity)
+        .whereType<SketchLine>()
+        .where((line) => !line.construction && !line.reference)
+        .map(
+          (line) => (
+            id: line.id,
+            start: SketchVector.fromJson(line.parameters['start']),
+            end: SketchVector.fromJson(line.parameters['end']),
+          ),
+        )
+        .toList(growable: false);
+    final component = _connectedSketchLineComponent(lines, entityId);
+    final resolved = _resolveSelectedOpenOrClosedWires(component);
+    if (resolved.length != 1) {
+      throw StateError('O perfil possui topologia ambígua.');
+    }
+    return resolved.single.entityIds;
+  }
+
+  List<({String id, SketchVector start, SketchVector end})>
+  _connectedSketchLineComponent(
+    List<({String id, SketchVector start, SketchVector end})> lines,
+    String seedId,
+  ) {
+    final seed = lines.where((line) => line.id == seedId).firstOrNull;
+    if (seed == null) {
+      throw StateError('A linha selecionada não está disponível.');
+    }
+    final component = <({String id, SketchVector start, SketchVector end})>[];
+    final pending = <({String id, SketchVector start, SketchVector end})>[seed];
+    final seen = <String>{};
+    while (pending.isNotEmpty) {
+      final line = pending.removeLast();
+      if (!seen.add(line.id)) continue;
+      component.add(line);
+      for (final candidate in lines) {
+        if (seen.contains(candidate.id)) continue;
+        if (_sameSketchPoint(line.start, candidate.start) ||
+            _sameSketchPoint(line.start, candidate.end) ||
+            _sameSketchPoint(line.end, candidate.start) ||
+            _sameSketchPoint(line.end, candidate.end)) {
+          pending.add(candidate);
+        }
+      }
+    }
+    return component;
+  }
+
+  String? _sketchProfileAtWorldPoint(String sketchId, List<double>? worldHit) {
+    if (worldHit == null ||
+        worldHit.length < 3 ||
+        worldHit.take(3).any((value) => !value.isFinite)) {
+      return null;
+    }
+    final sketch = sketchApi?.sketches
+        .where((item) => item.id == sketchId)
+        .firstOrNull;
+    if (sketch == null) return null;
+    final hit = sketch.coordinates.globalToLocal(
+      SketchVector(worldHit[0], worldHit[1], worldHit[2]),
+    );
+    String? closestId;
+    var closestDistance = double.infinity;
+    for (final id in sketch.entityIds) {
+      final entity = sketchApi?.entity(id);
+      if (entity == null || entity.construction || entity.reference) continue;
+      final points = _surfaceInputPoints(entity);
+      if (points.length < 2) continue;
+      for (var index = 0; index + 1 < points.length; index++) {
+        final distance = _distanceToSketchSegment(
+          hit,
+          points[index],
+          points[index + 1],
+        );
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestId = id;
+        }
+      }
+    }
+    // The point comes from the viewport hit. A finite technical tolerance
+    // avoids turning a click on the support plane into a profile selection.
+    return closestDistance <= 1e-3 ? closestId : null;
+  }
+
+  /// Adds a closed child profile without changing document selection. Multi
+  /// preview is deliberately limited to loops from one Sketch support.
+  bool addExtrudeProfile(String profileEntityId) {
+    final document = runtime.document;
+    final child = document?.entities[profileEntityId];
+    final sourceId = child?.data['parentSketchId'] as String?;
+    if (child == null ||
+        sourceId == null ||
+        child.data['sketchEntity'] is! Map) {
+      error = 'Selecione um perfil fechado de Sketch compatível.';
+      notifyListeners();
+      return false;
+    }
+    final source = document?.entities[sourceId];
+    if (source == null || source.data['sketch'] is! Map) {
+      error = 'O Sketch de origem do perfil não está disponível.';
+      notifyListeners();
+      return false;
+    }
+    if (selectedExtrudeSourceId != null &&
+        selectedExtrudeSourceId != sourceId) {
+      error = 'Perfis múltiplos devem pertencer ao mesmo Sketch.';
+      notifyListeners();
+      return false;
+    }
+    final selected = selectedExtrudeProfileEntityIds;
+    if (selected.contains(profileEntityId)) {
+      error = 'Este perfil já foi selecionado para o Extrude.';
+      notifyListeners();
+      return false;
+    }
+    final profile = sketchApi?.entity(profileEntityId);
+    if (profile == null ||
+        profile.construction ||
+        profile.reference ||
+        profile is SketchArc ||
+        profile is SketchSpline ||
+        profile is SketchPoint) {
+      error =
+          'A seleção contém entidades abertas. Selecione um perfil fechado ou complete o loop.';
+      notifyListeners();
+      return false;
+    }
+    return _selectExtrudeProfileComponent(
+      sourceId,
+      profileEntityId,
+      append: true,
+    );
+  }
+
+  bool removeExtrudeProfile(String profileEntityId) {
+    final groups = selectedExtrudeProfileGroups;
+    final index = groups.indexWhere((group) => group.contains(profileEntityId));
+    if (index < 0) return false;
+    groups.removeAt(index);
+    _setSelectedExtrudeProfileGroups(groups);
+    if (selectedExtrudeProfileEntityIds.isEmpty) selectedExtrudeSourceId = null;
+    clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
+    return true;
+  }
+
+  int addSelectedExtrudeProfiles() {
+    if (runtime.selection.isEmpty) {
+      error = 'Selecione outro perfil fechado na árvore ou viewport.';
+      notifyListeners();
+      return 0;
+    }
+    final before = selectedExtrudeProfileEntityIds.length;
+    for (final id in runtime.selection.toList(growable: false)) {
+      addExtrudeProfile(id);
+    }
+    final added = selectedExtrudeProfileEntityIds.length - before;
+    if (added > 0) {
+      clearProfessionalExtrudeDiagnostic(invalidatePreview: true);
+    }
+    return added;
+  }
+
+  String extrudeProfileLabel(String id) =>
+      runtime.document?.entities[id]?.data['name'] as String? ?? id;
+
+  String extrudeProfileGroupLabel(List<String> ids) {
+    if (ids.length == 1) {
+      final entity = sketchApi?.entity(ids.single);
+      if (entity is SketchCircle) return 'círculo';
+      if (entity is SketchEllipse) return 'elipse';
+      return 'cadeia aberta — 1 segmento';
+    }
+    final sourceId = selectedExtrudeSourceId;
+    final sketch = sketchApi?.sketches
+        .where((item) => item.id == sourceId)
+        .firstOrNull;
+    if (sketch == null) return 'Perfil — ${ids.length} segmentos';
+    try {
+      final lines = ids
+          .map((id) => sketchApi?.entity(id))
+          .whereType<SketchLine>()
+          .map(
+            (line) => (
+              id: line.id,
+              start: SketchVector.fromJson(line.parameters['start']),
+              end: SketchVector.fromJson(line.parameters['end']),
+            ),
+          )
+          .toList(growable: false);
+      final closed = _resolveSelectedOpenOrClosedWires(lines).single.closed;
+      return '${closed ? 'loop fechado' : 'cadeia aberta'} — ${ids.length} segmentos';
+    } on StateError {
+      return 'Perfil inválido — ${ids.length} segmentos';
+    }
   }
 
   List<({String id, String label, List<double> vector})>
@@ -5057,14 +5427,80 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       if (sourceKind == ProfessionalExtrudeSourceKind.sketch &&
           output == ProfessionalExtrudeOutput.solid &&
           !healthForSketch(source.id).readyForSurface) {
-        throw StateError('Extrude requires a healthy closed Sketch profile.');
+        throw StateError(
+          'Solid / Cylinder exige um perfil fechado e saudável.',
+        );
       }
-      final sourceHandle = sourceKind == ProfessionalExtrudeSourceKind.sketch
-          ? await _ensureSketchWire(
-              sketchApi!.sketches.firstWhere((item) => item.id == source.id),
+      final profileIds = sourceKind == ProfessionalExtrudeSourceKind.sketch
+          ? selectedExtrudeProfileEntityIds
+          : const <String>[];
+      final sourceHandles = <ShapeHandle>[];
+      var resolvedLoops = const <_ExtrudeProfileLoop>[];
+      if (sourceKind == ProfessionalExtrudeSourceKind.sketch) {
+        final sketch = sketchApi!.sketches.firstWhere(
+          (item) => item.id == source.id,
+        );
+        final validateTransientProfiles =
+            featureId == null ||
+            profileIds.length > 1 ||
+            professionalExtrudePreview?['multiProfilePreview'] == true;
+        if (profileIds.isNotEmpty && validateTransientProfiles) {
+          // Validate only the selected subset. Solids require closed loops;
+          // Surface/Walls deliberately accepts connected open wires.
+          try {
+            resolvedLoops = output == ProfessionalExtrudeOutput.solid
+                ? _resolveSelectedExtrudeLoops(sketch, profileIds)
+                : _resolveSelectedSurfaceWires(sketch, profileIds);
+          } on StateError catch (value) {
+            final message = value.message.toString();
+            if (output == ProfessionalExtrudeOutput.solid &&
+                (message.contains('abert') ||
+                    message.contains('gap') ||
+                    message.contains('incompleto'))) {
+              throw StateError(
+                'Solid / Cylinder exige um perfil fechado. Complete o loop antes do Preview.',
+              );
+            }
+            rethrow;
+          }
+        }
+        // The OCCT adapter serializes native tasks. Build wires in order so
+        // a multi-loop preview cannot start concurrent native transactions.
+        if (resolvedLoops.isEmpty) {
+          sourceHandles.add(
+            await _ensureSketchWire(
+              sketch,
               profileEntityId: selectedExtrudeProfileEntityId,
-            )
-          : await runtime.loadShape(source.shape!);
+            ),
+          );
+        } else {
+          for (final loop in resolvedLoops) {
+            if (loop.directProfileEntityId != null) {
+              sourceHandles.add(
+                await _ensureSketchWire(
+                  sketch,
+                  profileEntityId: loop.directProfileEntityId,
+                ),
+              );
+            } else {
+              sourceHandles.add(
+                await _createWireFromPoints(
+                  sourceId: '${sketch.id}:loop:${loop.entityIds.join(':')}',
+                  sourceName: sketch.name,
+                  sourceRevision: sketch.version,
+                  points: loop.points,
+                  curveType: ProfessionalCurveType.composite,
+                  color: 'polylineBlue',
+                ),
+              );
+            }
+          }
+        }
+      } else {
+        sourceHandles.add(await runtime.loadShape(source.shape!));
+      }
+      final multiProfile = resolvedLoops.length > 1;
+      final sourceHandle = sourceHandles.first;
       final contract = ProfessionalExtrudeContract(
         sourceEntityId: source.id,
         sourceKind: sourceKind,
@@ -5072,8 +5508,13 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         sourceShapeId: sourceHandle.persistentId,
         distance: distance,
         profileEntityId: sourceKind == ProfessionalExtrudeSourceKind.sketch
-            ? selectedExtrudeProfileEntityId
+            ? (profileIds.isEmpty
+                  ? selectedExtrudeProfileEntityId
+                  : profileIds.first)
             : null,
+        profileEntityIds: sourceKind == ProfessionalExtrudeSourceKind.sketch
+            ? profileIds
+            : const [],
         draftAngleDegrees: draftAngleDegrees,
         directionSourceId: directionSourceId,
         directionVector: _extrudeDirectionVector(source, directionSourceId),
@@ -5099,23 +5540,38 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               (contract.reverse ? -distance : distance) *
               (contract.extent == ProfessionalExtrudeExtent.symmetric ? 2 : 1),
       ];
-      final handle = await kernel.create(
-        'EXTRUDE',
-        {
-          'inputs': [sourceHandle],
-          'distance': distance,
-          'draftAngleDegrees': draftAngleDegrees,
-          'reverse': contract.reverse,
-          'direction': extrusionVector,
-          'output': output.name,
-          'symmetric': contract.extent == ProfessionalExtrudeExtent.symmetric,
-        },
-        persistentId: '$id:shape',
-        expectedType: output == ProfessionalExtrudeOutput.solid
-            ? CADShapeType.solid
-            : CADShapeType.shell,
-        transaction: transaction,
-      );
+      final handle = multiProfile
+          ? await const MultiProfileExtrudeRuntime().create(
+              kernel,
+              MultiProfileExtrudeRequest(
+                profiles: sourceHandles,
+                direction: extrusionVector,
+                solidOutput: output == ProfessionalExtrudeOutput.solid,
+                draftAngleDegrees: draftAngleDegrees,
+                symmetric:
+                    contract.extent == ProfessionalExtrudeExtent.symmetric,
+              ),
+              persistentId: '$id:shape',
+              transaction: transaction,
+            )
+          : await kernel.create(
+              'EXTRUDE',
+              {
+                'inputs': [sourceHandle],
+                'distance': distance,
+                'draftAngleDegrees': draftAngleDegrees,
+                'reverse': contract.reverse,
+                'direction': extrusionVector,
+                'output': output.name,
+                'symmetric':
+                    contract.extent == ProfessionalExtrudeExtent.symmetric,
+              },
+              persistentId: '$id:shape',
+              expectedType: output == ProfessionalExtrudeOutput.solid
+                  ? CADShapeType.solid
+                  : CADShapeType.shell,
+              transaction: transaction,
+            );
       await kernel.commit(transaction);
       final symmetricOffset =
           contract.extent == ProfessionalExtrudeExtent.symmetric
@@ -5139,6 +5595,20 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'displayMode': 'shadedWithEdges',
         'symmetricOffset': symmetricOffset,
         'status': 'preview',
+        if (multiProfile)
+          'profileEntityIds': resolvedLoops
+              .map((loop) => loop.entityIds.first)
+              .toList(growable: false),
+        if (multiProfile) 'profileSelectionEntityIds': profileIds,
+        if (multiProfile)
+          'profileSelectionGroups': selectedExtrudeProfileGroups
+              .map((group) => List<String>.from(group))
+              .toList(growable: false),
+        if (multiProfile)
+          'profileWireIds': sourceHandles
+              .map((item) => item.persistentId)
+              .toList(growable: false),
+        if (multiProfile) 'multiProfilePreview': true,
       };
       professionalExtrudePreview = value;
       await runtime.showTransientShape(
@@ -5188,7 +5658,22 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       Map<String, dynamic>.from(current['contract'] as Map),
     );
     final sourceId = contract.sourceEntityId;
-    selectedExtrudeProfileEntityId = contract.profileEntityId;
+    final rawGroups = current['profileSelectionGroups'];
+    if (rawGroups is List) {
+      _setSelectedExtrudeProfileGroups(
+        rawGroups
+            .whereType<List>()
+            .map((group) => group.whereType<String>().toList())
+            .toList(),
+      );
+    } else {
+      selectedExtrudeProfileEntityIds =
+          (current['profileSelectionEntityIds'] as List?)?.cast<String>() ??
+          (current['profileEntityIds'] as List?)?.cast<String>() ??
+          (contract.profileEntityId == null
+              ? const []
+              : [contract.profileEntityId!]);
+    }
     selectedExtrudeSourceId = sourceId;
     runtime.hideTransient('preview:${current['id']}');
     await previewProfessionalExtrude(
@@ -5251,6 +5736,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'featureType': 'extrude',
         'extrudeFeature': {...value, 'status': 'committed'},
         'parameters': contract.toJson(),
+        if (contract.profileEntityIds.isNotEmpty)
+          'profileEntityIds': contract.profileEntityIds,
+        if (value['profileSelectionGroups'] is List)
+          'profileSelectionGroups': value['profileSelectionGroups'],
         'references': [contract.sourceEntityId],
         'dependencies': [contract.sourceEntityId],
         'children': [contract.sourceEntityId],
@@ -5266,6 +5755,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   void cancelProfessionalExtrude() {
     final value = professionalExtrudePreview;
     if (value != null) runtime.hideTransient('preview:${value['id']}');
+    if (value?['multiProfilePreview'] == true) clearExtrudeSource();
     professionalExtrudePreview = null;
     notifyListeners();
   }
@@ -5276,8 +5766,39 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final contract = ProfessionalExtrudeContract.fromJson(
       Map<String, dynamic>.from(raw['contract'] as Map),
     );
+    final source = runtime.document?.entities[contract.sourceEntityId];
+    if (source == null) {
+      error = 'Extrude está órfão: o Sketch de origem foi removido.';
+      notifyListeners();
+      throw StateError(error!);
+    }
+    final profileIds =
+        (raw['profileSelectionEntityIds'] as List?)?.whereType<String>().toList(
+          growable: false,
+        ) ??
+        contract.profileEntityIds;
+    if (!_extrudeProfilesExistInSource(source, profileIds)) {
+      error =
+          'Extrude está órfão: um perfil de origem não está mais disponível.';
+      notifyListeners();
+      throw StateError(error!);
+    }
     selectedExtrudeSourceId = contract.sourceEntityId;
-    selectedExtrudeProfileEntityId = contract.profileEntityId;
+    final rawGroups = raw['profileSelectionGroups'];
+    if (rawGroups is List) {
+      _setSelectedExtrudeProfileGroups(
+        rawGroups
+            .whereType<List>()
+            .map((group) => group.whereType<String>().toList())
+            .toList(),
+      );
+    } else {
+      selectedExtrudeProfileEntityIds = profileIds.isNotEmpty
+          ? profileIds
+          : (contract.profileEntityId == null
+                ? const []
+                : [contract.profileEntityId!]);
+    }
     runtime.select({contract.sourceEntityId});
     await previewProfessionalExtrude(
       featureId: id,
@@ -5293,6 +5814,17 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       FeatureLifecycleState.editing,
       command: 'extrude.reenter',
     );
+  }
+
+  bool _extrudeProfilesExistInSource(
+    CadDocumentEntity source,
+    List<String> profileIds,
+  ) {
+    if (profileIds.isEmpty) return true;
+    final rawSketch = source.data['sketch'];
+    if (rawSketch is! Map) return false;
+    final sketch = Sketch.fromJson(Map<String, dynamic>.from(rawSketch));
+    return profileIds.every(sketch.entityIds.contains);
   }
 
   List<CadDocumentEntity> get selectedRevolveInputs {
@@ -6820,6 +7352,377 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return _closedLineProfilePoints(sketch, selected);
   }
 
+  List<_ExtrudeProfileLoop> _resolveSelectedExtrudeLoops(
+    Sketch sketch,
+    List<String> profileIds,
+  ) {
+    if (profileIds.length != profileIds.toSet().length) {
+      throw StateError('A seleção contém perfil duplicado.');
+    }
+    final api =
+        sketchApi ?? (throw StateError('Sketch runtime is unavailable.'));
+    final loops = <_ExtrudeProfileLoop>[];
+    final lines = <({String id, SketchVector start, SketchVector end})>[];
+    for (final id in profileIds) {
+      if (!sketch.entityIds.contains(id)) {
+        throw StateError('O perfil selecionado não pertence ao Sketch ativo.');
+      }
+      final entity = api.entity(id);
+      if (entity == null || entity.construction || entity.reference) {
+        throw StateError('O perfil selecionado não está disponível.');
+      }
+      if (entity is SketchCircle || entity is SketchEllipse) {
+        loops.add(
+          _ExtrudeProfileLoop(
+            entityIds: [id],
+            points: _surfaceInputPoints(entity),
+            closed: true,
+            directProfileEntityId: id,
+          ),
+        );
+      } else if (entity is SketchLine) {
+        lines.add((
+          id: id,
+          start: SketchVector.fromJson(entity.parameters['start']),
+          end: SketchVector.fromJson(entity.parameters['end']),
+        ));
+      } else {
+        throw StateError(
+          'A seleção contém entidades abertas. Selecione um perfil fechado ou complete o loop.',
+        );
+      }
+    }
+    if (lines.isNotEmpty) {
+      loops.addAll(_resolveSelectedLineLoops(lines));
+    }
+    loops.sort(
+      (first, second) => profileIds
+          .indexOf(first.entityIds.first)
+          .compareTo(profileIds.indexOf(second.entityIds.first)),
+    );
+    return loops;
+  }
+
+  List<_ExtrudeProfileLoop> _resolveSelectedSurfaceWires(
+    Sketch sketch,
+    List<String> profileIds,
+  ) {
+    if (profileIds.length != profileIds.toSet().length) {
+      throw StateError('A seleção contém perfil duplicado.');
+    }
+    final api =
+        sketchApi ?? (throw StateError('Sketch runtime is unavailable.'));
+    final wires = <_ExtrudeProfileLoop>[];
+    final lines = <({String id, SketchVector start, SketchVector end})>[];
+    for (final id in profileIds) {
+      if (!sketch.entityIds.contains(id)) {
+        throw StateError('O perfil selecionado não pertence ao Sketch ativo.');
+      }
+      final entity = api.entity(id);
+      if (entity == null || entity.construction || entity.reference) {
+        throw StateError('O perfil selecionado não está disponível.');
+      }
+      if (entity is SketchCircle || entity is SketchEllipse) {
+        wires.add(
+          _ExtrudeProfileLoop(
+            entityIds: [id],
+            points: _surfaceInputPoints(entity),
+            closed: true,
+            directProfileEntityId: id,
+          ),
+        );
+      } else if (entity is SketchLine) {
+        lines.add((
+          id: id,
+          start: SketchVector.fromJson(entity.parameters['start']),
+          end: SketchVector.fromJson(entity.parameters['end']),
+        ));
+      } else {
+        throw StateError('Surface / Walls aceita somente linhas ou wires.');
+      }
+    }
+    if (lines.isNotEmpty) {
+      wires.addAll(_resolveSelectedOpenOrClosedWires(lines));
+    }
+    if (wires.any((wire) => wire.closed) && wires.any((wire) => !wire.closed)) {
+      throw StateError(
+        'A seleção é mista: não combine perfis abertos e fechados nesta operação.',
+      );
+    }
+    wires.sort(
+      (first, second) => profileIds
+          .indexOf(first.entityIds.first)
+          .compareTo(profileIds.indexOf(second.entityIds.first)),
+    );
+    return wires;
+  }
+
+  List<_ExtrudeProfileLoop> _resolveSelectedOpenOrClosedWires(
+    List<({String id, SketchVector start, SketchVector end})> lines,
+  ) {
+    final nodes = <SketchVector>[];
+    int nodeFor(SketchVector point) {
+      final existing = nodes.indexWhere(
+        (item) => _sameSketchPoint(item, point),
+      );
+      if (existing >= 0) return existing;
+      nodes.add(point);
+      return nodes.length - 1;
+    }
+
+    final endpoints = <({int start, int end})>[];
+    for (final line in lines) {
+      final start = nodeFor(line.start), end = nodeFor(line.end);
+      if (start == end) {
+        throw StateError('A seleção contém segmento degenerado.');
+      }
+      endpoints.add((start: start, end: end));
+    }
+    final adjacency = List.generate(nodes.length, (_) => <int>[]);
+    for (var index = 0; index < endpoints.length; index++) {
+      adjacency[endpoints[index].start].add(index);
+      adjacency[endpoints[index].end].add(index);
+    }
+    final pending = <int>{
+      for (var index = 0; index < lines.length; index++) index,
+    };
+    final result = <_ExtrudeProfileLoop>[];
+    while (pending.isNotEmpty) {
+      final seed = pending.first;
+      final component = <int>{};
+      final queue = <int>[seed];
+      while (queue.isNotEmpty) {
+        final edge = queue.removeLast();
+        if (!component.add(edge)) continue;
+        pending.remove(edge);
+        final ends = endpoints[edge];
+        for (final node in [ends.start, ends.end]) {
+          for (final linked in adjacency[node]) {
+            if (!component.contains(linked)) queue.add(linked);
+          }
+        }
+      }
+      final degrees = <int, int>{};
+      for (final edge in component) {
+        final ends = endpoints[edge];
+        degrees.update(ends.start, (value) => value + 1, ifAbsent: () => 1);
+        degrees.update(ends.end, (value) => value + 1, ifAbsent: () => 1);
+      }
+      if (degrees.values.any((degree) => degree > 2)) {
+        throw StateError('O wire possui ramificações ou topologia ambígua.');
+      }
+      final openEnds = degrees.entries
+          .where((entry) => entry.value == 1)
+          .map((entry) => entry.key)
+          .toList(growable: false);
+      if (openEnds.isNotEmpty && openEnds.length != 2) {
+        throw StateError('O wire contém gap ou conectividade incompleta.');
+      }
+      final closed = openEnds.isEmpty;
+      if (closed) {
+        result.addAll(
+          _resolveSelectedLineLoops(
+            component.map((index) => lines[index]).toList(growable: false),
+          ),
+        );
+        continue;
+      }
+      var current = openEnds.first;
+      final visited = <int>{};
+      final orderedIds = <String>[];
+      final points = <SketchVector>[nodes[current]];
+      while (true) {
+        final candidates = adjacency[current]
+            .where(
+              (edge) => component.contains(edge) && !visited.contains(edge),
+            )
+            .toList(growable: false);
+        if (candidates.isEmpty) break;
+        if (candidates.length != 1) {
+          throw StateError('O wire possui ramificações ou topologia ambígua.');
+        }
+        final edge = candidates.single;
+        visited.add(edge);
+        orderedIds.add(lines[edge].id);
+        final ends = endpoints[edge];
+        current = ends.start == current ? ends.end : ends.start;
+        points.add(nodes[current]);
+      }
+      if (visited.length != component.length || !openEnds.contains(current)) {
+        throw StateError('O wire contém gap ou conectividade incompleta.');
+      }
+      if (_selectedLoopSelfIntersects(points, closed: false)) {
+        throw StateError('O wire é auto-intersectante.');
+      }
+      result.add(
+        _ExtrudeProfileLoop(
+          entityIds: orderedIds,
+          points: points,
+          closed: false,
+        ),
+      );
+    }
+    return result;
+  }
+
+  List<_ExtrudeProfileLoop> _resolveSelectedLineLoops(
+    List<({String id, SketchVector start, SketchVector end})> lines,
+  ) {
+    final nodes = <SketchVector>[];
+    int nodeFor(SketchVector point) {
+      final existing = nodes.indexWhere(
+        (item) => _sameSketchPoint(item, point),
+      );
+      if (existing >= 0) return existing;
+      nodes.add(point);
+      return nodes.length - 1;
+    }
+
+    final endpoints = <({int start, int end})>[];
+    for (final line in lines) {
+      final start = nodeFor(line.start);
+      final end = nodeFor(line.end);
+      if (start == end) {
+        throw StateError('A seleção contém um segmento degenerado.');
+      }
+      endpoints.add((start: start, end: end));
+    }
+    final adjacency = List.generate(nodes.length, (_) => <int>[]);
+    for (var index = 0; index < endpoints.length; index++) {
+      adjacency[endpoints[index].start].add(index);
+      adjacency[endpoints[index].end].add(index);
+    }
+    final pending = <int>{
+      for (var index = 0; index < lines.length; index++) index,
+    };
+    final loops = <_ExtrudeProfileLoop>[];
+    while (pending.isNotEmpty) {
+      final first = pending.first;
+      final component = <int>{};
+      final queue = <int>[first];
+      while (queue.isNotEmpty) {
+        final edge = queue.removeLast();
+        if (!component.add(edge)) continue;
+        pending.remove(edge);
+        final ends = endpoints[edge];
+        for (final node in [ends.start, ends.end]) {
+          for (final linked in adjacency[node]) {
+            if (!component.contains(linked)) queue.add(linked);
+          }
+        }
+      }
+      if (component.isEmpty) {
+        throw StateError(
+          'A seleção contém perfil duplicado ou loop degenerado.',
+        );
+      }
+      final degrees = <int, int>{};
+      for (final edge in component) {
+        final ends = endpoints[edge];
+        degrees.update(ends.start, (value) => value + 1, ifAbsent: () => 1);
+        degrees.update(ends.end, (value) => value + 1, ifAbsent: () => 1);
+      }
+      if (degrees.values.any((degree) => degree < 2)) {
+        throw StateError(
+          'A seleção contém entidades abertas: há gap entre segmentos. Complete o loop.',
+        );
+      }
+      if (degrees.values.any((degree) => degree != 2)) {
+        throw StateError(
+          'O perfil é auto-intersectante ou possui ramificações.',
+        );
+      }
+      final firstEnds = endpoints[first];
+      var currentNode = firstEnds.start;
+      final orderedPoints = <SketchVector>[nodes[currentNode]];
+      final orderedIds = <String>[lines[first].id];
+      final visited = <int>{first};
+      currentNode = firstEnds.end;
+      orderedPoints.add(nodes[currentNode]);
+      while (true) {
+        final candidates = adjacency[currentNode]
+            .where(
+              (edge) => component.contains(edge) && !visited.contains(edge),
+            )
+            .toList(growable: false);
+        if (candidates.length != 1) {
+          throw StateError(
+            'O perfil é auto-intersectante ou topologicamente ambíguo.',
+          );
+        }
+        final edge = candidates.single;
+        visited.add(edge);
+        orderedIds.add(lines[edge].id);
+        final ends = endpoints[edge];
+        currentNode = ends.start == currentNode ? ends.end : ends.start;
+        orderedPoints.add(nodes[currentNode]);
+        if (currentNode == firstEnds.start) break;
+      }
+      if (visited.length != component.length || orderedPoints.length < 4) {
+        throw StateError('A seleção contém loop incompleto.');
+      }
+      if (_selectedLoopSelfIntersects(orderedPoints)) {
+        throw StateError('O perfil é auto-intersectante.');
+      }
+      loops.add(
+        _ExtrudeProfileLoop(
+          entityIds: orderedIds,
+          points: orderedPoints,
+          closed: true,
+          // The subset has been proven closed; reuse the established Sketch
+          // wire materialization for this exact loop.
+          directProfileEntityId: orderedIds.first,
+        ),
+      );
+    }
+    return loops;
+  }
+
+  bool _selectedLoopSelfIntersects(
+    List<SketchVector> points, {
+    bool closed = true,
+  }) {
+    for (var first = 0; first + 1 < points.length; first++) {
+      for (var second = first + 1; second + 1 < points.length; second++) {
+        if (second == first + 1 ||
+            (closed && first == 0 && second == points.length - 2)) {
+          continue;
+        }
+        if (_sketchSegmentsIntersect(
+          points[first],
+          points[first + 1],
+          points[second],
+          points[second + 1],
+        )) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool _sketchSegmentsIntersect(
+    SketchVector a,
+    SketchVector b,
+    SketchVector c,
+    SketchVector d,
+  ) {
+    double cross(SketchVector first, SketchVector second, SketchVector third) =>
+        (second.x - first.x) * (third.y - first.y) -
+        (second.y - first.y) * (third.x - first.x);
+    bool spans(double first, double second) =>
+        (first > 1e-9 && second < -1e-9) || (first < -1e-9 && second > 1e-9);
+    final abC = cross(a, b, c);
+    final abD = cross(a, b, d);
+    final cdA = cross(c, d, a);
+    final cdB = cross(c, d, b);
+    if (spans(abC, abD) && spans(cdA, cdB)) return true;
+    return abC.abs() <= 1e-9 ||
+        abD.abs() <= 1e-9 ||
+        cdA.abs() <= 1e-9 ||
+        cdB.abs() <= 1e-9;
+  }
+
   List<SketchVector> _closedLineProfilePoints(
     Sketch sketch,
     SketchLine selected,
@@ -7002,7 +7905,11 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         type: native.type,
         revision: sourceRevision,
         fingerprint: native.fingerprint,
-        metadata: {...native.metadata, 'sourceEntityId': sourceId},
+        metadata: {
+          ...native.metadata,
+          'sourceEntityId': sourceId,
+          'closed': _sketchDistance(points.first, points.last) <= 1e-7,
+        },
       );
       final now = DateTime.now().toUtc();
       final curve = ProfessionalCurve(
@@ -10342,13 +11249,58 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           Map<String, dynamic>.from(raw['contract'] as Map),
         );
         final source = document.entities[contract.sourceEntityId];
+        final profileIds =
+            (raw['profileSelectionEntityIds'] as List?)
+                ?.whereType<String>()
+                .toList(growable: false) ??
+            contract.profileEntityIds;
         if (source == null ||
-            _loftSourceRevision(source) == contract.sourceRevision) {
+            !_extrudeProfilesExistInSource(source, profileIds)) {
+          if (raw['status'] != 'orphaned') {
+            await runtime.mutate(
+              command: 'extrude.markOrphaned',
+              upsert: [
+                CadDocumentEntity(
+                  id: entity.id,
+                  kind: entity.kind,
+                  shape: entity.shape,
+                  mesh: entity.mesh,
+                  data: {
+                    ...entity.data,
+                    'extrudeFeature': {
+                      ...raw,
+                      'status': 'orphaned',
+                      'orphanReason': source == null
+                          ? 'sourceRemoved'
+                          : 'profileRemoved',
+                    },
+                  },
+                ),
+              ],
+            );
+          }
+          continue;
+        }
+        if (_loftSourceRevision(source) == contract.sourceRevision) {
           continue;
         }
         runtime.select({source.id});
         selectedExtrudeSourceId = contract.sourceEntityId;
-        selectedExtrudeProfileEntityId = contract.profileEntityId;
+        final rawGroups = raw['profileSelectionGroups'];
+        if (rawGroups is List) {
+          _setSelectedExtrudeProfileGroups(
+            rawGroups
+                .whereType<List>()
+                .map((group) => group.whereType<String>().toList())
+                .toList(),
+          );
+        } else {
+          selectedExtrudeProfileEntityIds = profileIds.isNotEmpty
+              ? profileIds
+              : (contract.profileEntityId == null
+                    ? const []
+                    : [contract.profileEntityId!]);
+        }
         await previewProfessionalExtrude(
           featureId: entity.id,
           distance: contract.distance,

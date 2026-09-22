@@ -5503,6 +5503,14 @@ class _OfficialEngineeringWorkspaceState
                                               operational
                                                   .selectExtrudeSourceFromViewport(
                                                     pick.entityId,
+                                                    append: HardwareKeyboard
+                                                        .instance
+                                                        .isControlPressed,
+                                                    worldHit: [
+                                                      pick.hit.point.x,
+                                                      pick.hit.point.y,
+                                                      pick.hit.point.z,
+                                                    ],
                                                   )) {
                                             widget.cad.setStatus(
                                               'Perfil do Extrude selecionado na área de trabalho.',
@@ -10802,8 +10810,81 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                       Text(
                         widget.controller.selectedExtrudeSource == null
                             ? 'Select one Sketch or Surface.'
-                            : 'Source: ${widget.controller.selectedExtrudeSource!.id}',
+                            : widget
+                                  .controller
+                                  .selectedExtrudeProfileEntityIds
+                                  .isEmpty
+                            ? 'Fonte: ${widget.controller.selectedExtrudeSource!.id}'
+                            : 'Fonte: perfis individuais do Sketch',
                       ),
+                      if (widget
+                          .controller
+                          .selectedExtrudeProfileEntityIds
+                          .isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Perfis selecionados: ${widget.controller.selectedExtrudeProfileGroups.length}',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        for (
+                          var index = 0;
+                          index <
+                              widget
+                                  .controller
+                                  .selectedExtrudeProfileGroups
+                                  .length;
+                          index++
+                        )
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Perfil ${index + 1} — ${widget.controller.extrudeProfileGroupLabel(widget.controller.selectedExtrudeProfileGroups[index])}',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Remover perfil',
+                                icon: const Icon(Icons.close, size: 16),
+                                onPressed: widget.controller.busy
+                                    ? null
+                                    : () => widget.controller.removeExtrudeProfile(
+                                        widget
+                                            .controller
+                                            .selectedExtrudeProfileGroups[index]
+                                            .first,
+                                      ),
+                              ),
+                            ],
+                          ),
+                      ],
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: widget.controller.busy
+                              ? null
+                              : () {
+                                  final added = widget.controller
+                                      .addSelectedExtrudeProfiles();
+                                  if (added == 0) {
+                                    widget.controller.error =
+                                        'Selecione outro perfil fechado na árvore ou viewport.';
+                                  }
+                                },
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('Adicionar perfil selecionado'),
+                        ),
+                      ),
+                      if (widget.controller.error != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          widget.controller.error!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       TextFormField(
                         initialValue: distance.toString(),
@@ -10818,7 +10899,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           final parsed = double.tryParse(
                             value.replaceAll(',', '.'),
                           );
-                          if (parsed != null && parsed > 0) distance = parsed;
+                          if (parsed != null && parsed > 0) {
+                            distance = parsed;
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
+                          }
                         },
                       ),
                       const SizedBox(height: 14),
@@ -10841,6 +10926,8 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           );
                           if (parsed != null && parsed.abs() < 89) {
                             draftAngleDegrees = parsed;
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
                           }
                         },
                       ),
@@ -10878,7 +10965,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                             )
                             .toList(),
                         onChanged: (value) {
-                          if (value != null) directionSourceId = value;
+                          if (value != null) {
+                            directionSourceId = value;
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
+                          }
                         },
                       ),
                       const SizedBox(height: 16),
@@ -10898,7 +10989,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                             )
                             .toList(),
                         onChanged: (value) {
-                          if (value != null) direction = value;
+                          if (value != null) {
+                            direction = value;
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
+                          }
                         },
                       ),
                       const SizedBox(height: 14),
@@ -10916,7 +11011,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           ),
                         ],
                         onChanged: (value) {
-                          if (value != null) setState(() => extent = value);
+                          if (value != null) {
+                            setState(() => extent = value);
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
+                          }
                         },
                       ),
                       const SizedBox(height: 14),
@@ -10936,7 +11035,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                           ),
                         ],
                         onChanged: (value) {
-                          if (value != null) setState(() => output = value);
+                          if (value != null) {
+                            setState(() => output = value);
+                            widget.controller
+                                .clearProfessionalExtrudeDiagnostic();
+                          }
                         },
                       ),
                       const SizedBox(height: 18),
@@ -10948,15 +11051,25 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                                   widget.controller.busy ||
                                       !widget.controller.canPreviewExtrude
                                   ? null
-                                  : () => widget.controller
-                                        .previewProfessionalExtrude(
-                                          distance: distance,
-                                          draftAngleDegrees: draftAngleDegrees,
-                                          directionSourceId: directionSourceId,
-                                          direction: direction,
-                                          output: output,
-                                          extent: extent,
-                                        ),
+                                  : () async {
+                                      try {
+                                        await widget.controller
+                                            .previewProfessionalExtrude(
+                                              distance: distance,
+                                              draftAngleDegrees:
+                                                  draftAngleDegrees,
+                                              directionSourceId:
+                                                  directionSourceId,
+                                              direction: direction,
+                                              output: output,
+                                              extent: extent,
+                                            );
+                                      } catch (_) {
+                                        // The controller preserves the native
+                                        // diagnostic for this panel and has
+                                        // already removed any failed preview.
+                                      }
+                                    },
                               child: const Text('Preview'),
                             ),
                           ),
@@ -10979,19 +11092,22 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                 ),
               ),
             ],
-            const SizedBox(height: 6),
-            FilledButton.icon(
-              onPressed:
-                  widget.controller.busy || !widget.controller.canPreviewRevolve
-                  ? null
-                  : () => widget.controller.previewProfessionalRevolve(),
-              icon: const Icon(Icons.rotate_right),
-              label: const Text('Preview Revolve'),
-            ),
-            const Text(
-              'Revolve selection order: Profile first, Axis second.',
-              style: TextStyle(fontSize: 11),
-            ),
+            if (!extrudeCommandActive) ...[
+              const SizedBox(height: 6),
+              FilledButton.icon(
+                onPressed:
+                    widget.controller.busy ||
+                        !widget.controller.canPreviewRevolve
+                    ? null
+                    : () => widget.controller.previewProfessionalRevolve(),
+                icon: const Icon(Icons.rotate_right),
+                label: const Text('Preview Revolve'),
+              ),
+              const Text(
+                'Revolve selection order: Profile first, Axis second.',
+                style: TextStyle(fontSize: 11),
+              ),
+            ],
           ],
         );
       }
@@ -11005,6 +11121,11 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
             '${preview['id']} · Preview',
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          if (preview['multiProfilePreview'] == true)
+            Text(
+              'Extrude Multi: ${(preview['profileEntityIds'] as List?)?.length ?? 0} perfis Wire',
+              style: const TextStyle(fontSize: 11),
+            ),
           const SizedBox(height: 14),
           TextFormField(
             initialValue: contract.distance.toString(),

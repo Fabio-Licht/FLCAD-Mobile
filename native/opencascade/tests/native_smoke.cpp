@@ -90,7 +90,8 @@ int main() {
                                 sizeof(fingerprint), error, sizeof(error)) == 0);
   CHECK(std::strstr(error, "MULTI_PROFILE_SELF_INTERSECTION") != nullptr);
   CHECK(flcad_occ_shape_count() == before_invalid_topology);
-  char open_a[256] = {}, open_b[256] = {}, open_edge[256] = {}, open_wire[256] = {};
+  char open_a[256] = {}, open_b[256] = {}, open_edge[256] = {}, open_wire[256] = {},
+       open_c[256] = {}, open_d[256] = {}, open_edge_b[256] = {}, open_wire_b[256] = {};
   CHECK(flcad_occ_create_vertex(0, 0, 0, open_a, sizeof(open_a), fingerprint,
                                 sizeof(fingerprint), error, sizeof(error)) == 1);
   CHECK(flcad_occ_create_vertex(5, 0, 0, open_b, sizeof(open_b), fingerprint,
@@ -101,9 +102,31 @@ int main() {
   CHECK(flcad_occ_create_wire(open_edge, open_wire, sizeof(open_wire),
                               fingerprint, sizeof(fingerprint), error,
                               sizeof(error)) == 1);
+  CHECK(flcad_occ_create_vertex(0, 5, 0, open_c, sizeof(open_c), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_vertex(5, 5, 0, open_d, sizeof(open_d), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_create_edge(open_c, open_d, open_edge_b, sizeof(open_edge_b),
+                              fingerprint, sizeof(fingerprint), error,
+                              sizeof(error)) == 1);
+  CHECK(flcad_occ_create_wire(open_edge_b, open_wire_b, sizeof(open_wire_b),
+                              fingerprint, sizeof(fingerprint), error,
+                              sizeof(error)) == 1);
   const size_t before_open = flcad_occ_shape_count();
   const std::string open_profiles = std::string(profile) + "," + open_wire;
   CHECK(flcad_occ_extrude_multi(open_profiles.c_str(), extrusion, 1, 0.0, 0,
+                                1e-7, token, sizeof(token), fingerprint,
+                                sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "MULTI_PROFILE_MIXED") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_open);
+  const std::string open_walls = std::string(open_wire) + "," + open_wire_b;
+  char multi_walls[256] = {};
+  CHECK(flcad_occ_extrude_multi(open_walls.c_str(), extrusion, 0, 0.0, 1,
+                                1e-7, multi_walls, sizeof(multi_walls),
+                                fingerprint, sizeof(fingerprint), error,
+                                sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(multi_walls, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_extrude_multi(open_walls.c_str(), extrusion, 1, 0.0, 0,
                                 1e-7, token, sizeof(token), fingerprint,
                                 sizeof(fingerprint), error, sizeof(error)) == 0);
   CHECK(std::strstr(error, "MULTI_PROFILE_OPEN") != nullptr);
@@ -194,9 +217,13 @@ int main() {
   CHECK(flcad_occ_destroy_shape(raised, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(crossed, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(open_wire, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_wire_b, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(open_edge, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_edge_b, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(open_a, error, sizeof(error)) == 1);
   CHECK(flcad_occ_destroy_shape(open_b, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_c, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(open_d, error, sizeof(error)) == 1);
   CHECK(flcad_occ_shape_count() == 0);
   const double center[3] = {0, 0, 0}, axis[3] = {0, 0, 1};
   CHECK(flcad_occ_create_torus(center, axis, 5, 1, token, sizeof(token),

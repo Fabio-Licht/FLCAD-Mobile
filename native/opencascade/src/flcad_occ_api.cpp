@@ -434,6 +434,42 @@ TopoDS_Shape make_multi_extrude(const char *ids, const gp_Vec &extrusion,
   if (!std::isfinite(tolerance) || tolerance <= 0.0)
     throw Standard_Failure("MULTI_PROFILE_TOLERANCE: tolerance must be finite and positive");
 
+  std::vector<TopoDS_Wire> profile_wires;
+  bool has_open_wire = false, has_closed_wire = false;
+  for (const auto &token : tokens) {
+    TopoDS_Wire wire = profile_wire(get(token.c_str()));
+    profile_wires.push_back(wire);
+    if (wire.Closed())
+      has_closed_wire = true;
+    else
+      has_open_wire = true;
+  }
+  if (has_open_wire && has_closed_wire)
+    throw Standard_Failure(
+        "MULTI_PROFILE_MIXED: open and closed profiles cannot be combined");
+  if (solid_output && has_open_wire)
+    throw Standard_Failure(
+        "MULTI_PROFILE_OPEN: solid output requires closed profiles");
+  if (!solid_output && has_open_wire) {
+    TopoDS_Compound result;
+    BRep_Builder compound_builder;
+    compound_builder.MakeCompound(result);
+    for (const auto &wire : profile_wires) {
+      if (!symmetric) {
+        compound_builder.Add(
+            result,
+            make_extrude(wire, extrusion, false, draft_angle_degrees));
+        continue;
+      }
+      const gp_Vec half = extrusion / 2.0;
+      compound_builder.Add(
+          result, make_extrude(wire, half, false, draft_angle_degrees));
+      compound_builder.Add(
+          result, make_extrude(wire, -half, false, -draft_angle_degrees));
+    }
+    return result;
+  }
+
   std::vector<MultiLoop> loops;
   gp_Pln plane;
   bool has_plane = false;

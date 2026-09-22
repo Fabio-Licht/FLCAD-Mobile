@@ -31,8 +31,19 @@ class MultiProfileExtrudeRequest {
     if (ids.any((id) => id.isEmpty) || ids.toSet().length != ids.length) {
       throw ArgumentError('Extrude Multi profiles must be unique and valid.');
     }
-    if (profiles.any((profile) => profile.metadata['closed'] == false)) {
-      throw ArgumentError('Extrude Multi does not accept open profiles.');
+    final hasOpen = profiles.any(
+      (profile) => profile.metadata['closed'] == false,
+    );
+    final hasClosed = profiles.any(
+      (profile) => profile.metadata['closed'] == true,
+    );
+    if (solidOutput && hasOpen) {
+      throw ArgumentError(
+        'Extrude Multi solid output requires closed profiles.',
+      );
+    }
+    if (!solidOutput && hasOpen && hasClosed) {
+      throw ArgumentError('Extrude Multi cannot mix open and closed profiles.');
     }
     if (direction.length != 3 ||
         direction.any((value) => !value.isFinite) ||

@@ -22,6 +22,7 @@ class ProfessionalExtrudeContract {
     required this.sourceShapeId,
     required this.distance,
     this.profileEntityId,
+    this.profileEntityIds = const [],
     this.draftAngleDegrees = 0,
     this.directionSourceId = 'profileNormal',
     this.directionVector = const [0, 0, 1],
@@ -34,6 +35,10 @@ class ProfessionalExtrudeContract {
   final int sourceRevision;
   final double distance;
   final String? profileEntityId;
+
+  /// Ordered Sketch entities used by a real multi-profile Extrude. The legacy
+  /// singular field remains the compatibility anchor for one profile.
+  final List<String> profileEntityIds;
   final double draftAngleDegrees;
   final String directionSourceId;
   final List<double> directionVector;
@@ -48,6 +53,7 @@ class ProfessionalExtrudeContract {
     'sourceShapeId': sourceShapeId,
     'distance': distance,
     if (profileEntityId != null) 'profileEntityId': profileEntityId,
+    if (profileEntityIds.isNotEmpty) 'profileEntityIds': profileEntityIds,
     'draftAngleDegrees': draftAngleDegrees,
     'directionSourceId': directionSourceId,
     'directionVector': directionVector,
@@ -69,6 +75,9 @@ class ProfessionalExtrudeContract {
         sourceShapeId: json['sourceShapeId'] as String,
         distance: (json['distance'] as num).toDouble(),
         profileEntityId: json['profileEntityId'] as String?,
+        profileEntityIds: (json['profileEntityIds'] as List? ?? const [])
+            .whereType<String>()
+            .toList(growable: false),
         draftAngleDegrees: (json['draftAngleDegrees'] as num?)?.toDouble() ?? 0,
         directionSourceId:
             json['directionSourceId'] as String? ?? 'profileNormal',

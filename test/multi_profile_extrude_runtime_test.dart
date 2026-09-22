@@ -138,6 +138,47 @@ void main() {
     },
   );
 
+  test('accepts multiple open wires for Surface / Walls', () async {
+    final kernel = _Kernel();
+    final handle = await runtime.create(
+      kernel,
+      MultiProfileExtrudeRequest(
+        profiles: [
+          _profile('open-a', closed: false),
+          _profile('open-b', closed: false),
+        ],
+        direction: const [0, 0, 12],
+        solidOutput: false,
+        symmetric: true,
+      ),
+      persistentId: 'preview:open-walls',
+      transaction: _transaction(),
+    );
+
+    expect(kernel.operation, 'EXTRUDE MULTI');
+    expect(kernel.parameters!['output'], 'surface');
+    expect(kernel.parameters!['symmetric'], isTrue);
+    expect(handle.type, CADShapeType.compound);
+  });
+
+  test('rejects mixed open and closed Surface / Walls before kernel', () {
+    final kernel = _Kernel();
+    expect(
+      () => runtime.create(
+        kernel,
+        MultiProfileExtrudeRequest(
+          profiles: [_profile('closed'), _profile('open', closed: false)],
+          direction: const [0, 0, 1],
+          solidOutput: false,
+        ),
+        persistentId: 'never',
+        transaction: _transaction(),
+      ),
+      throwsArgumentError,
+    );
+    expect(kernel.creates, 0);
+  });
+
   test('single EXTRUDE remains a separate operation name', () {
     expect('EXTRUDE MULTI', isNot('EXTRUDE'));
   });

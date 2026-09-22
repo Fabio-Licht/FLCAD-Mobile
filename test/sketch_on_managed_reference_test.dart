@@ -16,6 +16,7 @@ import 'package:flcad_mobile/core/professional_recognition/api/professional_reco
 import 'package:flcad_mobile/core/reference_engine/api/reference_api.dart';
 import 'package:flcad_mobile/core/reference_engine/engine/reference_engine.dart';
 import 'package:flcad_mobile/core/reference_engine/repository/reference_repository.dart';
+import 'package:flcad_mobile/core/sketch_engine/entities/sketch_entities.dart';
 import 'package:flcad_mobile/core/sketch_engine/models/sketch_models.dart';
 import 'package:flcad_mobile/core/storage/local_storage_service.dart';
 import 'package:flcad_mobile/features/projects/data/project_repository.dart';
@@ -223,6 +224,410 @@ void main() {
   );
 
   test(
+    'multiple closed Sketch profiles create a transient multi-loop preview',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final outer = controller.sketchApi!.builders.circle.build(
+        const SketchVector(0, 0),
+        8,
+      );
+      final voidProfile = controller.sketchApi!.builders.circle.build(
+        const SketchVector(0, 0),
+        3,
+      );
+      final island = controller.sketchApi!.builders.circle.build(
+        const SketchVector(20, 0),
+        4,
+      );
+      await controller.finishSketch();
+
+      final sketch = controller.sketchApi!.sketches.single;
+      final outerHit = sketch.coordinates.localToGlobal(
+        const SketchVector(8, 0),
+      );
+      // Native picking may report the Sketch owner. The hit resolves to the
+      // individual circle so the first Extrude selection owns a profile wire.
+      expect(
+        controller.selectExtrudeSourceFromViewport(
+          sketch.id,
+          worldHit: outerHit.toJson(),
+        ),
+        isTrue,
+      );
+      expect(controller.selectedExtrudeProfileEntityIds, [outer.id]);
+      controller.clearExtrudeSource();
+
+      // Tree selection feeds the same transient profile list without the
+      // launcher rewriting document selection; viewport capture appends to it.
+      cad.runtime.select({outer.id});
+      expect(controller.addSelectedExtrudeProfiles(), 1);
+      expect(cad.runtime.selection, {outer.id});
+      expect(
+        controller.selectExtrudeSourceFromViewport(
+          voidProfile.id,
+          append: true,
+        ),
+        isTrue,
+      );
+      expect(
+        controller.selectExtrudeSourceFromViewport(island.id, append: true),
+        isTrue,
+      );
+      expect(controller.selectedExtrudeProfileEntityIds, [
+        outer.id,
+        voidProfile.id,
+        island.id,
+      ]);
+      expect(controller.addExtrudeProfile(island.id), isFalse);
+      expect(controller.removeExtrudeProfile(voidProfile.id), isTrue);
+      expect(controller.addExtrudeProfile(voidProfile.id), isTrue);
+
+      final entitiesBefore = cad.runtime.document!.entities.length;
+      await controller.previewProfessionalExtrude(
+        distance: 6,
+        draftAngleDegrees: 3,
+        extent: ProfessionalExtrudeExtent.symmetric,
+      );
+      final preview = controller.professionalExtrudePreview!;
+      expect(preview['multiProfilePreview'], isTrue);
+      expect(preview['profileEntityIds'], [
+        outer.id,
+        island.id,
+        voidProfile.id,
+      ]);
+      expect((preview['handle'] as Map)['type'], 'compound');
+      expect(preview['profileWireIds'], hasLength(3));
+      expect(
+        (preview['profileWireIds'] as List).any((id) => id == sketch.id),
+        isFalse,
+      );
+      final previewId = preview['id'] as String;
+      expect(cad.runtime.document!.entities.length, entitiesBefore);
+      expect(cad.runtime.scene.find('preview:$previewId'), isNotNull);
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+      await controller.updateProfessionalExtrudePreview(distance: 9);
+      expect(
+        ((controller.professionalExtrudePreview!['contract'] as Map)['distance']
+            as num),
+        9,
+      );
+      expect(controller.selectedExtrudeProfileGroups, hasLength(3));
+      await controller.confirmProfessionalExtrude();
+      expect(controller.professionalExtrudePreview, isNull);
+      expect(cad.runtime.scene.find('preview:$previewId'), isNull);
+      final committed = cad.runtime.document!.entities[previewId]!;
+      expect(committed.kind, CadDocumentEntityKind.solid);
+      final feature = Map<String, dynamic>.from(
+        committed.data['extrudeFeature'] as Map,
+      );
+      expect(feature['status'], 'committed');
+      expect(feature['profileSelectionEntityIds'], [
+        outer.id,
+        island.id,
+        voidProfile.id,
+      ]);
+      final committedContract = Map<String, dynamic>.from(
+        feature['contract'] as Map,
+      );
+      expect(committedContract['profileEntityIds'], [
+        outer.id,
+        island.id,
+        voidProfile.id,
+      ]);
+      final documentCountAfterApply = cad.runtime.document!.entities.length;
+      await controller.confirmProfessionalExtrude();
+      expect(cad.runtime.document!.entities.length, documentCountAfterApply);
+
+      await cad.runtime.undoDocument();
+      expect(cad.runtime.document!.entities[previewId], isNull);
+      await cad.runtime.redoDocument();
+      expect(
+        cad.runtime.document!.entities[previewId]?.shape?.type,
+        CADShapeType.compound,
+      );
+
+      await cad.runtime.save();
+      final scratch = await Directory(
+        p.join(root.path, 'multi-scratch'),
+      ).create();
+      controller.detachProject();
+      await cad.runtime.open('multi-scratch', scratch);
+      await cad.runtime.open('managed-reference-sketch', project);
+      await controller.configureProject(
+        projectId: 'managed-reference-sketch',
+        projectDirectory: project,
+      );
+      await controller.reenterProfessionalExtrude(previewId);
+      expect(
+        controller.professionalExtrudePreview?['multiProfilePreview'],
+        isTrue,
+      );
+      expect(controller.selectedExtrudeProfileGroups, hasLength(3));
+      controller.cancelProfessionalExtrude();
+
+      final sourceEntity = cad.runtime.document!.entities[sketch.id]!;
+      final orphanedData = Map<String, dynamic>.from(sourceEntity.data);
+      final orphanedSketch = Map<String, dynamic>.from(
+        orphanedData['sketch'] as Map,
+      );
+      orphanedSketch['entityIds'] = List<String>.from(
+        orphanedSketch['entityIds'] as List,
+      )..remove(voidProfile.id);
+      orphanedData['sketch'] = orphanedSketch;
+      await cad.runtime.mutate(
+        command: 'test.multi-profile-removed',
+        upsert: [
+          CadDocumentEntity(
+            id: sourceEntity.id,
+            kind: sourceEntity.kind,
+            shape: sourceEntity.shape,
+            mesh: sourceEntity.mesh,
+            data: orphanedData,
+          ),
+        ],
+      );
+      await expectLater(
+        controller.reenterProfessionalExtrude(previewId),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('órfão'),
+          ),
+        ),
+      );
+    },
+  );
+
+  test(
+    'open Sketch wires create walls but solids require a closed profile',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final firstLine = controller.sketchApi!.builders.line.build(
+        const SketchVector(-5, -3),
+        const SketchVector(0, -3),
+      );
+      final secondLine = controller.sketchApi!.builders.line.build(
+        const SketchVector(0, -3),
+        const SketchVector(5, -3),
+      );
+      final lines = [firstLine.id, secondLine.id];
+      await controller.finishSketch();
+
+      expect(controller.selectExtrudeSourceFromViewport(lines[0]), isTrue);
+      await controller.previewProfessionalExtrude(
+        distance: 4,
+        output: ProfessionalExtrudeOutput.surface,
+      );
+      expect(controller.professionalExtrudePreview, isNotNull);
+      expect(
+        controller.professionalExtrudePreview!['multiProfilePreview'],
+        isNot(true),
+      );
+      expect(
+        (controller.professionalExtrudePreview!['contract'] as Map)['output'],
+        ProfessionalExtrudeOutput.surface.name,
+      );
+      controller.cancelProfessionalExtrude();
+
+      expect(controller.selectExtrudeSourceFromViewport(lines[0]), isTrue);
+      await expectLater(
+        controller.previewProfessionalExtrude(distance: 4),
+        throwsStateError,
+      );
+      expect(controller.error, contains('Solid / Cylinder'));
+      expect(controller.professionalExtrudePreview, isNull);
+      expect(cad.runtime.scene.find('preview:Extrude001'), isNull);
+    },
+  );
+
+  test(
+    'two disconnected open wires create one transient multi wall preview',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final first = controller.sketchApi!.builders.line.build(
+        const SketchVector(-8, -2),
+        const SketchVector(-2, -2),
+      );
+      final second = controller.sketchApi!.builders.line.build(
+        const SketchVector(2, 2),
+        const SketchVector(8, 2),
+      );
+      await controller.finishSketch();
+
+      expect(controller.selectExtrudeSourceFromViewport(first.id), isTrue);
+      expect(
+        controller.selectExtrudeSourceFromViewport(second.id, append: true),
+        isTrue,
+      );
+      await controller.previewProfessionalExtrude(
+        distance: 7,
+        output: ProfessionalExtrudeOutput.surface,
+        extent: ProfessionalExtrudeExtent.symmetric,
+      );
+
+      final preview = controller.professionalExtrudePreview!;
+      expect(preview['multiProfilePreview'], isTrue);
+      expect((preview['handle'] as Map)['type'], 'compound');
+      expect(preview['profileWireIds'], hasLength(2));
+      controller.cancelProfessionalExtrude();
+      expect(controller.professionalExtrudePreview, isNull);
+    },
+  );
+
+  test(
+    'Extrude click selects an entire connected loop and Ctrl adds a loop',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      await controller.drawRectangle(
+        const SketchVector(-8, -3),
+        const SketchVector(-2, 3),
+      );
+      await controller.drawRectangle(
+        const SketchVector(2, -3),
+        const SketchVector(8, 3),
+      );
+      final lines = List<String>.from(controller.activeSketch!.entityIds);
+      await controller.finishSketch();
+
+      expect(controller.selectExtrudeSourceFromViewport(lines.first), isTrue);
+      expect(controller.selectedExtrudeProfileGroups, hasLength(1));
+      expect(controller.selectedExtrudeProfileGroups.single, hasLength(4));
+      expect(
+        controller.extrudeProfileGroupLabel(
+          controller.selectedExtrudeProfileGroups.single,
+        ),
+        contains('loop fechado'),
+      );
+      expect(
+        controller.selectExtrudeSourceFromViewport(lines[4], append: true),
+        isTrue,
+      );
+      expect(controller.selectedExtrudeProfileGroups, hasLength(2));
+      expect(
+        controller.selectedExtrudeProfileGroups.expand((group) => group),
+        hasLength(8),
+      );
+      expect(
+        controller.selectExtrudeSourceFromViewport(lines[4], append: true),
+        isTrue,
+      );
+      expect(controller.selectedExtrudeProfileGroups, hasLength(1));
+    },
+  );
+
+  test(
+    'changing Solid validation to Surface clears its stale diagnostic',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final line = controller.sketchApi!.builders.line.build(
+        const SketchVector(-3, 0),
+        const SketchVector(3, 0),
+      );
+      await controller.finishSketch();
+      expect(controller.selectExtrudeSourceFromViewport(line.id), isTrue);
+      await expectLater(
+        controller.previewProfessionalExtrude(distance: 4),
+        throwsStateError,
+      );
+      expect(controller.error, contains('Solid / Cylinder'));
+      controller.clearProfessionalExtrudeDiagnostic();
+      expect(controller.error, isNull);
+      await controller.previewProfessionalExtrude(
+        distance: 4,
+        output: ProfessionalExtrudeOutput.surface,
+      );
+      expect(controller.professionalExtrudePreview, isNotNull);
+      controller.cancelProfessionalExtrude();
+    },
+  );
+
+  test(
+    'mixed open and closed wall profiles are rejected before OCCT',
+    () async {
+      final step = await cad.runtime.importManagedStep(
+        p.join(source.path, 'part-0.step'),
+        nativeBridgePath: bridge,
+      );
+      final supportId = await cad.runtime.createManagedCadPlaneReference(
+        sourceEntityId: step.id,
+        presentationTriangleId: 1,
+      );
+      controller.selectSketchSupport(supportId);
+      await controller.openSketch();
+      final circle = controller.sketchApi!.builders.circle.build(
+        const SketchVector(0, 0),
+        3,
+      );
+      final line = controller.sketchApi!.builders.line.build(
+        const SketchVector(6, 0),
+        const SketchVector(10, 0),
+      );
+      await controller.finishSketch();
+
+      expect(controller.selectExtrudeSourceFromViewport(circle.id), isTrue);
+      expect(
+        controller.selectExtrudeSourceFromViewport(line.id, append: true),
+        isTrue,
+      );
+      await expectLater(
+        controller.previewProfessionalExtrude(
+          distance: 5,
+          output: ProfessionalExtrudeOutput.surface,
+        ),
+        throwsStateError,
+      );
+      expect(controller.error, contains('seleção é mista'));
+      expect(controller.professionalExtrudePreview, isNull);
+    },
+  );
+
+  test(
     'managed Sketch Draft previews, persists, reopens and cancels without residue',
     () async {
       final step = await cad.runtime.importManagedStep(
@@ -242,7 +647,7 @@ void main() {
       );
       final profileId = sketch.entityIds.first;
       await controller.finishSketch();
-      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      _selectClosedSketchProfile(controller, sketch, profileId);
       final selectionBeforePreview = Set<String>.from(cad.runtime.selection);
 
       await controller.previewProfessionalExtrude(
@@ -368,12 +773,12 @@ void main() {
       );
       final profileId = sketch.entityIds.first;
       await controller.finishSketch();
-      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      _selectClosedSketchProfile(controller, sketch, profileId);
       cad.runtime.select({sketch.id});
       controller.clearExtrudeSource(clearDocumentSelection: true);
       expect(controller.selectedExtrudeSource, isNull);
       expect(cad.runtime.selection, isEmpty);
-      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      _selectClosedSketchProfile(controller, sketch, profileId);
 
       await controller.previewProfessionalExtrude(
         distance: 10,
@@ -449,7 +854,7 @@ void main() {
       expect(reentered['direction'], 'reverse');
       controller.cancelProfessionalExtrude();
 
-      expect(controller.selectExtrudeSourceFromViewport(profileId), isTrue);
+      _selectClosedSketchProfile(controller, sketch, profileId);
       await controller.previewProfessionalExtrude(
         distance: 10,
         output: ProfessionalExtrudeOutput.surface,
@@ -592,7 +997,7 @@ Future<String> _extrudeSketchProfile(
   String profileEntityId,
   double distance,
 ) async {
-  expect(controller.selectExtrudeSourceFromViewport(profileEntityId), isTrue);
+  _selectClosedSketchProfile(controller, sketch, profileEntityId);
   expect(controller.selectedExtrudeSourceId, sketch.id);
   expect(controller.selectedExtrudeProfileEntityId, profileEntityId);
   await controller.previewProfessionalExtrude(distance: distance);
@@ -616,4 +1021,21 @@ Future<String> _extrudeSketchProfile(
     isNull,
   );
   return id;
+}
+
+void _selectClosedSketchProfile(
+  OperationalReverseEngineeringController controller,
+  Sketch sketch,
+  String profileEntityId,
+) {
+  final profile = controller.sketchApi!.entity(profileEntityId);
+  final ids = profile is SketchLine
+      ? sketch.entityIds
+            .where((id) => controller.sketchApi!.entity(id) is SketchLine)
+            .toList(growable: false)
+      : [profileEntityId];
+  expect(controller.selectExtrudeSourceFromViewport(ids.first), isTrue);
+  // Extrude resolves a clicked segment to its entire connected component;
+  // Ctrl-clicking another segment of this same loop toggles that profile off.
+  expect(controller.selectedExtrudeProfileEntityIds, containsAll(ids));
 }

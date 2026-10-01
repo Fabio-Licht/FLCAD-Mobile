@@ -112,6 +112,50 @@ int main() {
   CHECK(flcad_occ_create_wire(open_edge_b, open_wire_b, sizeof(open_wire_b),
                               fingerprint, sizeof(fingerprint), error,
                               sizeof(error)) == 1);
+
+  // Revolve publishes exactly one result for a valid Wire/Face and nothing
+  // for invalid input. Signed angles use the same axis and output contract.
+  const double revolve_origin[3] = {-20, 0, 0};
+  const double revolve_axis[3] = {0, 1, 0};
+  char revolved_solid[256] = {}, revolved_surface[256] = {},
+       revolved_negative[256] = {};
+  const size_t before_revolve = flcad_occ_shape_count();
+  CHECK(flcad_occ_revolve(profile, revolve_origin, revolve_axis, 90.0, 1,
+                          revolved_solid, sizeof(revolved_solid), fingerprint,
+                          sizeof(fingerprint), error, sizeof(error)) == 1);
+  CHECK(flcad_occ_shape_count() == before_revolve + 1);
+  CHECK(flcad_occ_revolve(open_wire, revolve_origin, revolve_axis, 90.0, 0,
+                          revolved_surface, sizeof(revolved_surface),
+                          fingerprint, sizeof(fingerprint), error,
+                          sizeof(error)) == 1);
+  CHECK(flcad_occ_revolve(profile, revolve_origin, revolve_axis, -90.0, 1,
+                          revolved_negative, sizeof(revolved_negative),
+                          fingerprint, sizeof(fingerprint), error,
+                          sizeof(error)) == 1);
+
+  char failed_revolve[256] = {};
+  const double invalid_axis[3] = {0, 0, 0};
+  const size_t before_failed_revolve = flcad_occ_shape_count();
+  CHECK(flcad_occ_revolve(profile, revolve_origin, invalid_axis, 90.0, 1,
+                          failed_revolve, sizeof(failed_revolve), fingerprint,
+                          sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "REVOLVE_AXIS_INVALID") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_failed_revolve);
+  CHECK(failed_revolve[0] == '\0');
+  CHECK(flcad_occ_revolve(open_wire, revolve_origin, revolve_axis, 90.0, 1,
+                          failed_revolve, sizeof(failed_revolve), fingerprint,
+                          sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "REVOLVE_PROFILE_OPEN") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_failed_revolve);
+  CHECK(flcad_occ_revolve(open_edge, revolve_origin, revolve_axis, 90.0, 0,
+                          failed_revolve, sizeof(failed_revolve), fingerprint,
+                          sizeof(fingerprint), error, sizeof(error)) == 0);
+  CHECK(std::strstr(error, "REVOLVE_PROFILE_INVALID") != nullptr);
+  CHECK(flcad_occ_shape_count() == before_failed_revolve);
+  CHECK(flcad_occ_destroy_shape(revolved_negative, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(revolved_surface, error, sizeof(error)) == 1);
+  CHECK(flcad_occ_destroy_shape(revolved_solid, error, sizeof(error)) == 1);
+
   const size_t before_open = flcad_occ_shape_count();
   const std::string open_profiles = std::string(profile) + "," + open_wire;
   CHECK(flcad_occ_extrude_multi(open_profiles.c_str(), extrusion, 1, 0.0, 0,

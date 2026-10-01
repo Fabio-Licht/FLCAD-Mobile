@@ -30,6 +30,7 @@
 #include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
@@ -82,6 +83,7 @@
 #include <cstring>
 #include <fstream>
 #include <gp.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
@@ -380,6 +382,36 @@ TopoDS_Shape make_extrude(const TopoDS_Shape &input, const gp_Vec &extrusion,
   if (!drafted.IsDone())
     throw Standard_Failure("Draft angle could not be applied to the side faces");
   return drafted.Shape();
+}
+
+TopoDS_Shape make_revolve(const TopoDS_Shape &input, const gp_Ax1 &axis,
+                          double angle_radians, bool solid_output) {
+  if (input.ShapeType() != TopAbs_WIRE && input.ShapeType() != TopAbs_FACE)
+    throw Standard_Failure(
+        "REVOLVE_PROFILE_INVALID: expected a Wire or Face profile");
+
+  TopoDS_Shape source = input;
+  if (solid_output && source.ShapeType() == TopAbs_WIRE) {
+    const TopoDS_Wire wire = TopoDS::Wire(source);
+    if (!wire.Closed())
+      throw Standard_Failure(
+          "REVOLVE_PROFILE_OPEN: solid output requires a closed profile");
+    BRepBuilderAPI_MakeFace face(wire, true);
+    if (!face.IsDone())
+      throw Standard_Failure(
+          "REVOLVE_PROFILE_INVALID: closed profile must be planar");
+    source = face.Face();
+  } else if (!solid_output && source.ShapeType() == TopAbs_FACE) {
+    source = BRepTools::OuterWire(TopoDS::Face(source));
+  }
+
+  BRepPrimAPI_MakeRevol revolved(source, axis, angle_radians, true);
+  revolved.Build();
+  if (!revolved.IsDone() || revolved.Shape().IsNull())
+    throw Standard_Failure("REVOLVE_GEOMETRY_FAILED: OCCT did not build a result");
+  if (!BRepCheck_Analyzer(revolved.Shape()).IsValid())
+    throw Standard_Failure("REVOLVE_GEOMETRY_INVALID: OCCT produced invalid topology");
+  return revolved.Shape();
 }
 
 struct MultiLoop {
@@ -809,6 +841,48 @@ int flcad_occ_extrude_multi(const char *ids, const double *d,
     return fail(x.what(), e, es);
   } catch (...) {
     return fail("MULTI_PROFILE_UNKNOWN: native exception", e, es);
+  }
+}
+int flcad_occ_revolve(const char *id, const double *axis_origin,
+                      const double *axis_direction, double angle_degrees,
+                      int solid_output, char *t, size_t ts, char *f, size_t fs,
+                      char *e, size_t es) {
+  try {
+    if (!id || !*id || !axis_origin || !axis_direction)
+      return fail(
+          "REVOLVE_INPUT_INVALID: profile token and axis are required", e,
+          es);
+    for (int i = 0; i < 3; ++i) {
+      if (!std::isfinite(axis_origin[i]) ||
+          !std::isfinite(axis_direction[i]))
+        return fail("REVOLVE_AXIS_INVALID: axis values must be finite", e,
+                    es);
+    }
+    const gp_Vec axis_vector(axis_direction[0], axis_direction[1],
+                             axis_direction[2]);
+    if (axis_vector.Magnitude() <= gp::Resolution())
+      return fail("REVOLVE_AXIS_INVALID: axis direction must not be zero", e,
+                  es);
+    if (!std::isfinite(angle_degrees) ||
+        std::abs(angle_degrees) <= 1.0e-9 ||
+        std::abs(angle_degrees) > 360.0)
+      return fail(
+          "REVOLVE_ANGLE_INVALID: signed angle must be non-zero and at most 360 degrees",
+          e, es);
+    constexpr double radians_per_degree =
+        3.14159265358979323846 / 180.0;
+    const gp_Ax1 axis(gp_Pnt(axis_origin[0], axis_origin[1], axis_origin[2]),
+                      gp_Dir(axis_vector));
+    return output(make_revolve(get(id), axis,
+                               angle_degrees * radians_per_degree,
+                               solid_output != 0),
+                  t, ts, f, fs, e, es);
+  } catch (const Standard_Failure &x) {
+    return fail(x.GetMessageString(), e, es);
+  } catch (const std::exception &x) {
+    return fail(x.what(), e, es);
+  } catch (...) {
+    return fail("REVOLVE_UNKNOWN: native exception", e, es);
   }
 }
 int flcad_occ_create_plane(const double *o, const double *n, double l, double u,

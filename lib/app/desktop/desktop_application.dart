@@ -4902,10 +4902,16 @@ class _OfficialEngineeringWorkspaceState
         pickedPoint: operational.activePick?.hit.point,
         pickedTriangleIndex: operational.activePick?.hit.triangleIndex,
       ),
+      // A persisted/finished Sketch is context for inspection, not an active
+      // editing session.  Opening the Sketch module in a project that already
+      // contains Sketches must therefore offer a new support, while reopening
+      // an existing Sketch remains an explicit Explorer action.
       'Sketch'
           when operational.activeSketch != null &&
-              operational.stage != SketchSurfaceStage.idle &&
-              operational.stage != SketchSurfaceStage.referenceReady =>
+              const {
+                SketchSurfaceStage.sketchActive,
+                SketchSurfaceStage.surfacePreview,
+              }.contains(operational.stage) =>
         _SketchWorkspaceFoundation(
           controller: operational,
           onExitSketch: _finishSketch,
@@ -5406,19 +5412,12 @@ class _OfficialEngineeringWorkspaceState
                                                   .sketchCreationCommandActive ||
                                               operational
                                                   .sketchEditingCommandActive)
-                                      ? () {
-                                          if (operational
-                                              .sketchEditingCommandActive) {
-                                            operational
-                                                .finishSketchEditingTool();
-                                          } else if (operational
-                                              .arcCommandActive) {
-                                            operational.finishArcCommand();
-                                          } else if (operational
-                                              .circleCommandActive) {
-                                            operational.finishCircleCommand();
-                                          } else {
-                                            operational.finishLineCommand();
+                                      ? () async {
+                                          try {
+                                            await operational
+                                                .finishSketchCommandFromSecondaryTap();
+                                          } catch (failure) {
+                                            widget.cad.setStatus('$failure');
                                           }
                                         }
                                       : null,
@@ -5482,6 +5481,17 @@ class _OfficialEngineeringWorkspaceState
                                           if (_captureContextualReferencePick(
                                             pick,
                                           )) {
+                                            return;
+                                          }
+                                          if (module == 'Solids' &&
+                                              operational
+                                                  .captureRevolveViewportEntity(
+                                                    pick.entityId,
+                                                  )) {
+                                            widget.cad.setStatus(
+                                              operational.error ??
+                                                  'SeleÃ§Ã£o do Revolve atualizada.',
+                                            );
                                             return;
                                           }
                                           geometrySelection.select(
@@ -5579,6 +5589,30 @@ class _OfficialEngineeringWorkspaceState
                                       ),
                                     ),
                               if (module == 'Sketch' &&
+                                  operational.lineHud != null)
+                                if (operational.sketchInferenceCursor
+                                    case final lineCursor?)
+                                  Positioned(
+                                    left: (lineCursor.dx + 18).clamp(
+                                      4.0,
+                                      math.max(4.0, camera.viewportWidth - 300),
+                                    ),
+                                    top: (lineCursor.dy + 34).clamp(
+                                      4.0,
+                                      math.max(4.0, camera.viewportHeight - 52),
+                                    ),
+                                    child: IgnorePointer(
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 290,
+                                        ),
+                                        child: _SketchLineHud(
+                                          controller: operational,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              if (module == 'Sketch' &&
                                   operational.sketchCreationCommandActive &&
                                   operational.sketchAssistantSuggestion !=
                                       null &&
@@ -5612,19 +5646,16 @@ class _OfficialEngineeringWorkspaceState
                                 ),
                               if (module == 'Sketch' &&
                                   operational.sketchCreationCommandActive &&
-                                  (operational.lineHud != null ||
-                                      operational.circleHud != null ||
+                                  (operational.circleHud != null ||
                                       operational.arcHud != null))
                                 Positioned(
                                   left: 14,
                                   bottom: 14,
                                   child: operational.arcCommandActive
                                       ? _SketchArcHud(controller: operational)
-                                      : operational.circleCommandActive
-                                      ? _SketchCircleHud(
+                                      : _SketchCircleHud(
                                           controller: operational,
-                                        )
-                                      : _SketchLineHud(controller: operational),
+                                        ),
                                 ),
                             ],
                           ),
@@ -9412,6 +9443,18 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                 ),
               ),
             ),
+            if (!controller.sketchCreationCommandActive)
+              if (controller.selectedSketchEntityIds.singleOrNull
+                  case final selectedLineId?)
+                if (controller.sketchApi?.entity(selectedLineId)
+                    case SketchLine(construction: false)) ...[
+                  const SizedBox(height: 6),
+                  FilledButton.tonalIcon(
+                    onPressed: controller.convertSelectedLineToConstruction,
+                    icon: const Icon(Icons.linear_scale, size: 17),
+                    label: const Text('Usar linha como eixo de construção'),
+                  ),
+                ],
             const SizedBox(height: 6),
             Row(
               children: [
@@ -9422,7 +9465,10 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                         : controller.beginLineCommand,
                     icon: const Icon(Icons.show_chart, size: 17),
                     label: Text(
-                      controller.lineCommandActive ? 'Drawing' : 'Line',
+                      controller.lineCommandActive &&
+                              !controller.polylineCommandActive
+                          ? 'Line · ativo'
+                          : 'Line',
                     ),
                   ),
                 ),
@@ -9481,6 +9527,171 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                 ),
               ],
             ),
+            if (controller.lineCommandActive &&
+                !controller.polylineCommandActive)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Botão direito inicia outra linha sem sair do comando. Esc encerra a ferramenta.',
+                  style: TextStyle(fontSize: 10),
+                ),
+              ),
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: controller.polylineCommandActive
+                    ? null
+                    : controller.beginPolylineCommand,
+                icon: const Icon(Icons.polyline, size: 17),
+                label: Text(
+                  controller.polylineCommandActive
+                      ? 'Polilinha: clique nos vértices'
+                      : 'Polilinha',
+                ),
+              ),
+            ),
+            if (controller.polylineCommandActive) ...[
+              const SizedBox(height: 5),
+              Text(
+                'Clique no primeiro vértice para fechar; botão direito ou Concluir mantém aberta. Esc cancela.',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonal(
+                      onPressed: controller.previewPoints.length >= 2
+                          ? controller.finishPolylineCommand
+                          : null,
+                      child: const Text('Concluir'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.cancelSketchCommand,
+                    child: const Text('Cancelar'),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: controller.splineCommandActive
+                    ? null
+                    : controller.beginSplineCommand,
+                icon: const Icon(Icons.show_chart, size: 17),
+                label: Text(
+                  controller.splineCommandActive
+                      ? 'Spline: clique nos pontos da curva'
+                      : 'Spline interpolada',
+                ),
+              ),
+            ),
+            if (controller.splineCommandActive) ...[
+              const SizedBox(height: 5),
+              Text(
+                'A curva passa pelos pontos clicados. Após três pontos, botão direito ou Concluir finaliza; Esc cancela.',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonal(
+                      onPressed: controller.previewPoints.length >= 3
+                          ? controller.finishSplineCommand
+                          : null,
+                      child: const Text('Concluir spline'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.cancelSplineCommand,
+                    child: const Text('Cancelar'),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: controller.sketchTangentBlendActive
+                    ? null
+                    : controller.beginSketchTangentBlend,
+                icon: const Icon(Icons.multiline_chart, size: 17),
+                label: Text(
+                  controller.sketchTangentBlendActive
+                      ? 'Blend tangente: selecione duas linhas'
+                      : 'Blend tangente',
+                ),
+              ),
+            ),
+            if (controller.sketchTangentBlendActive) ...[
+              const SizedBox(height: 5),
+              const Text(
+                'Selecione duas linhas na viewport. A prévia liga as extremidades mais próximas sem cortar as linhas.',
+                style: TextStyle(fontSize: 10),
+              ),
+              TextFormField(
+                key: const ValueKey('sketch-tangent-blend-length'),
+                initialValue: controller.sketchEditingValue.toString(),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Comprimento da tangência',
+                  suffixText: 'mm',
+                ),
+                onChanged: (text) {
+                  final value = double.tryParse(text.replaceAll(',', '.'));
+                  if (value != null) controller.setSketchEditingValue(value);
+                },
+              ),
+              if (controller.sketchEditingDiagnostic case final diagnostic?)
+                Text(
+                  diagnostic,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonal(
+                      onPressed: controller.selectedSketchEntityIds.length == 2
+                          ? () async {
+                              try {
+                                await controller.commitSketchCorner();
+                              } catch (failure) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.maybeOf(
+                                    context,
+                                  )?.showSnackBar(
+                                    SnackBar(content: Text('$failure')),
+                                  );
+                                }
+                              }
+                            }
+                          : null,
+                      child: const Text('Confirmar Blend'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.finishSketchEditingTool,
+                    child: const Text('Cancelar'),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 6),
             Row(
               children: [
@@ -9559,7 +9770,8 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
               ),
           ],
         ),
-        if (controller.sketchCreationCommandActive)
+        if (controller.sketchCreationCommandActive &&
+            !controller.splineCommandActive)
           _SketchDirectInput(controller: controller),
         ExpansionTile(
           initiallyExpanded: true,
@@ -9631,12 +9843,16 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
           ],
         ),
         ExpansionTile(
-          initiallyExpanded: controller.sketchEditingCommandActive,
+          initiallyExpanded:
+              controller.sketchEditingCommandActive &&
+              !controller.sketchTangentBlendActive,
           tilePadding: const EdgeInsets.symmetric(horizontal: 12),
           childrenPadding: const EdgeInsets.only(bottom: 8),
           leading: const Icon(Icons.edit_outlined, size: 17),
           title: const Text('Modify'),
-          subtitle: controller.sketchEditingCommandActive
+          subtitle:
+              controller.sketchEditingCommandActive &&
+                  !controller.sketchTangentBlendActive
               ? Text(
                   '${controller.activeTool.name.toUpperCase()} · persistent',
                   style: const TextStyle(fontSize: 9.5),
@@ -9658,7 +9874,8 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                     child: IconButton.filledTonal(
                       isSelected:
                           controller.sketchEditingCommandActive &&
-                          controller.activeTool == item.$3,
+                          controller.activeTool == item.$3 &&
+                          !controller.sketchTangentBlendActive,
                       onPressed: () =>
                           controller.beginSketchEditingTool(item.$3),
                       icon: Icon(item.$2, size: 17),
@@ -9667,6 +9884,7 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
               ],
             ),
             if (controller.sketchEditingCommandActive &&
+                !controller.sketchTangentBlendActive &&
                 const {
                   SketchToolType.fillet,
                   SketchToolType.chamfer,
@@ -9705,6 +9923,14 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                   value: controller.sketchFilletAutoTrim,
                   onChanged: controller.setSketchFilletAutoTrim,
                 ),
+              if (controller.sketchEditingDiagnostic case final diagnostic?)
+                Text(
+                  diagnostic,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
               const SizedBox(height: 6),
               FilledButton.icon(
                 onPressed: controller.selectedSketchEntityIds.length == 2
@@ -9718,7 +9944,8 @@ class _SketchWorkspaceFoundation extends StatelessWidget {
                 label: const Text('Confirm'),
               ),
             ],
-            if (controller.sketchEditingCommandActive)
+            if (controller.sketchEditingCommandActive &&
+                !controller.sketchTangentBlendActive)
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 7, 8, 0),
                 child: Text(
@@ -10270,17 +10497,39 @@ class _SketchLineHud extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Wrap(
+          spacing: 4,
+          runSpacing: 2,
           children: [
             Text('X ${value.x.toStringAsFixed(3)}'),
             const SizedBox(width: 12),
             Text('Y ${value.y.toStringAsFixed(3)}'),
             const SizedBox(width: 12),
+            Text('ΔX ${value.dx.toStringAsFixed(3)}'),
+            const SizedBox(width: 12),
+            Text('ΔY ${value.dy.toStringAsFixed(3)}'),
+            const SizedBox(width: 12),
             Text('L ${value.length.toStringAsFixed(3)}'),
             const SizedBox(width: 12),
             Text('∠ ${value.angle.toStringAsFixed(2)}°'),
-            if (controller.lineSnapType case final snap?) ...[
+            if (controller.sketchMagnetX != null ||
+                controller.sketchMagnetY != null) ...[
+              const SizedBox(width: 12),
+              Text(
+                'TRAVADO ${[if (controller.sketchMagnetX case final x?) 'X=${x.toStringAsFixed(3)}', if (controller.sketchMagnetY case final y?) 'Y=${y.toStringAsFixed(3)}'].join('  ')} mm',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ],
+            if (controller.activeSketchInference case final inference?) ...[
+              const SizedBox(width: 12),
+              Text(
+                inference.type.name.toUpperCase(),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ] else if (controller.lineSnapType case final snap?) ...[
               const SizedBox(width: 12),
               Text(
                 snap.name.toUpperCase(),
@@ -10622,8 +10871,10 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
   String directionSourceId = 'profileNormal';
   ProfessionalExtrudeDirection direction = ProfessionalExtrudeDirection.normal;
   ProfessionalExtrudeOutput output = ProfessionalExtrudeOutput.solid;
+  RevolveOutput revolveOutput = RevolveOutput.solid;
   ProfessionalExtrudeExtent extent = ProfessionalExtrudeExtent.distance;
   bool extrudeCommandActive = false;
+  bool revolveCommandActive = false;
   Timer? _previewUpdateDebounce;
 
   void _schedulePreviewUpdate(Future<void> Function() update) {
@@ -10757,7 +11008,10 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
             FilledButton.icon(
               onPressed: widget.controller.busy
                   ? null
-                  : () => setState(() => extrudeCommandActive = true),
+                  : () => setState(() {
+                      extrudeCommandActive = true;
+                      revolveCommandActive = false;
+                    }),
               icon: const Icon(Icons.preview),
               label: const Text('Extrude'),
             ),
@@ -11092,20 +11346,192 @@ class _ProfessionalExtrudePanelState extends State<_ProfessionalExtrudePanel> {
                 ),
               ),
             ],
-            if (!extrudeCommandActive) ...[
+            if (!extrudeCommandActive && !revolveCommandActive) ...[
               const SizedBox(height: 6),
               FilledButton.icon(
-                onPressed:
-                    widget.controller.busy ||
-                        !widget.controller.canPreviewRevolve
+                onPressed: widget.controller.busy
                     ? null
-                    : () => widget.controller.previewProfessionalRevolve(),
+                    : () => setState(() {
+                        revolveCommandActive = true;
+                        extrudeCommandActive = false;
+                      }),
                 icon: const Icon(Icons.rotate_right),
-                label: const Text('Preview Revolve'),
+                label: const Text('Revolve'),
               ),
-              const Text(
-                'Revolve selection order: Profile first, Axis second.',
-                style: TextStyle(fontSize: 11),
+            ],
+            if (revolveCommandActive) ...[
+              const SizedBox(height: 6),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Revolve',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'revolve-profile-${widget.controller.selectedRevolveProfileId}',
+                        ),
+                        initialValue:
+                            widget.controller.selectedRevolveProfileId,
+                        decoration: const InputDecoration(
+                          labelText: 'Perfil',
+                          helperText:
+                              'Sketch fechado para Solid; aberto para Surface.',
+                        ),
+                        isExpanded: true,
+                        items: widget.controller.revolveProfiles
+                            .map(
+                              (entity) => DropdownMenuItem(
+                                value: entity.id,
+                                child: Text(
+                                  entity.data['name'] as String? ?? entity.id,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: widget.controller.busy
+                            ? null
+                            : (value) {
+                                if (value != null) {
+                                  widget.controller.selectRevolveProfile(value);
+                                }
+                              },
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: widget.controller.busy
+                              ? null
+                              : () => widget.controller
+                                    .beginRevolveViewportCapture(axis: false),
+                          icon: const Icon(Icons.ads_click, size: 16),
+                          label: Text(
+                            widget.controller.revolveCaptureSlot == 'profile'
+                                ? 'Clique no perfil na viewport...'
+                                : 'Selecionar perfil na viewport',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'revolve-axis-${widget.controller.selectedRevolveAxisId}',
+                        ),
+                        initialValue: widget.controller.selectedRevolveAxisId,
+                        decoration: const InputDecoration(
+                          labelText: 'Eixo',
+                          helperText:
+                              'Use um eixo de References ou X/Y/Z do WCS.',
+                        ),
+                        isExpanded: true,
+                        items: widget.controller.revolveAxes
+                            .map(
+                              (entity) => DropdownMenuItem(
+                                value: entity.id,
+                                child: Text(
+                                  entity.data['name'] as String? ?? entity.id,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: widget.controller.busy
+                            ? null
+                            : (value) {
+                                if (value != null) {
+                                  widget.controller.selectRevolveAxis(value);
+                                }
+                              },
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: widget.controller.busy
+                              ? null
+                              : () => widget.controller
+                                    .beginRevolveViewportCapture(axis: true),
+                          icon: const Icon(Icons.ads_click, size: 16),
+                          label: Text(
+                            widget.controller.revolveCaptureSlot == 'axis'
+                                ? 'Clique no eixo na viewport...'
+                                : 'Selecionar eixo na viewport',
+                          ),
+                        ),
+                      ),
+                      DropdownButtonFormField<RevolveOutput>(
+                        initialValue: revolveOutput,
+                        decoration: const InputDecoration(
+                          labelText: 'Resultado',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: RevolveOutput.solid,
+                            child: Text('Solid'),
+                          ),
+                          DropdownMenuItem(
+                            value: RevolveOutput.surface,
+                            child: Text('Surface'),
+                          ),
+                        ],
+                        onChanged: widget.controller.busy
+                            ? null
+                            : (value) {
+                                if (value != null) {
+                                  setState(() => revolveOutput = value);
+                                }
+                              },
+                      ),
+                      if (widget.controller.error != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          widget.controller.error!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed:
+                                  widget.controller.busy ||
+                                      !widget.controller.canPreviewRevolve
+                                  ? null
+                                  : () => widget.controller
+                                        .previewProfessionalRevolve(
+                                          output: revolveOutput,
+                                        ),
+                              icon: const Icon(Icons.preview),
+                              label: const Text('Preview'),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: widget.controller.busy
+                                ? null
+                                : () {
+                                    widget.controller
+                                        .cancelProfessionalRevolve();
+                                    widget.controller.clearRevolveSelection();
+                                    setState(
+                                      () => revolveCommandActive = false,
+                                    );
+                                  },
+                            child: const Text('Cancel'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ],

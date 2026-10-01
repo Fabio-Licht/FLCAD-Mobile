@@ -25,6 +25,9 @@ FLCAD_OCC_EXPORT int flcad_occ_extrude_symmetric(const char* source_token,const 
 // Multi-profile ABI. source_tokens_csv is an ordered comma-separated list of
 // live Wire/Face tokens. tolerance is used for planarity and 2D topology.
 FLCAD_OCC_EXPORT int flcad_occ_extrude_multi(const char* source_tokens_csv,const double* direction,int solid_output,double draft_angle_degrees,int symmetric,double tolerance,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
+// Revolves one live Wire/Face token around axis_origin/axis_direction.
+// angle_degrees is signed and must be in [-360, 360], excluding zero.
+FLCAD_OCC_EXPORT int flcad_occ_revolve(const char* source_token,const double* axis_origin,const double* axis_direction,double angle_degrees,int solid_output,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_plane(const double* origin,const double* normal,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_planar_face(const double* points,size_t point_count,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);
 FLCAD_OCC_EXPORT int flcad_occ_create_cylinder(const double* origin,const double* direction,double radius,double lower,double upper,char* token,size_t token_size,char* fingerprint,size_t fingerprint_size,char* error,size_t error_size);

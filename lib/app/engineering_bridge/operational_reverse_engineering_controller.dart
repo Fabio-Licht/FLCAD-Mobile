@@ -55,6 +55,7 @@ import '../../core/sketch_editor/inferencing/sketch_inference_engine.dart';
 import '../../core/sketch_editor/health/sketch_health_analyzer.dart';
 import '../../core/sketch_editor/models/editor_models.dart';
 import '../../core/sketch_editor/snapping/editor_snapping.dart';
+import '../../core/sketch_editor/snapping/sketch_coordinate_magnet.dart';
 import '../../core/sketch_assistant/sketch_assistant.dart';
 import '../../core/sketch_engine/api/sketch_engine_api.dart';
 import '../../core/sketch_engine/entities/sketch_entities.dart'
@@ -62,6 +63,7 @@ import '../../core/sketch_engine/entities/sketch_entities.dart'
 import '../../core/sketch_engine/history/sketch_history.dart';
 import '../../core/sketch_engine/integration/sketch_factory.dart';
 import '../../core/sketch_engine/models/sketch_models.dart';
+import '../../core/sketch_engine/geometry/sketch_spline_geometry.dart';
 import '../../core/smart_reference/models/smart_reference_models.dart';
 import '../../core/smart_regions/api/smart_regions_api.dart';
 import '../../core/smart_regions/models/geometry.dart';
@@ -394,18 +396,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.write('sketch.previewPoints', value);
   bool get lineCommandActive =>
       runtime.read<bool>('sketch.line.active') ?? false;
+  bool get polylineCommandActive =>
+      lineCommandActive && activeTool == SketchToolType.polyline;
   bool get circleCommandActive =>
       runtime.read<bool>('sketch.circle.active') ?? false;
   bool get arcCommandActive => runtime.read<bool>('sketch.arc.active') ?? false;
   bool get rectangleCommandActive =>
       runtime.read<bool>('sketch.rectangle.active') ?? false;
+  bool get splineCommandActive =>
+      runtime.read<bool>('sketch.spline.active') ?? false;
   bool get sketchCreationCommandActive =>
       lineCommandActive ||
       circleCommandActive ||
       arcCommandActive ||
-      rectangleCommandActive;
+      rectangleCommandActive ||
+      splineCommandActive;
   bool get sketchEditingCommandActive =>
       runtime.read<bool>('sketch.edit.active') ?? false;
+  bool get sketchTangentBlendActive =>
+      sketchEditingCommandActive &&
+      (runtime.read<bool>('sketch.edit.tangentBlend') ?? false);
+  String? get sketchEditingDiagnostic =>
+      runtime.read<String>('sketch.edit.diagnostic');
   double get sketchEditingValue =>
       runtime.read<double>('sketch.edit.value') ?? 1;
   bool get sketchFilletAutoTrim =>
@@ -461,6 +473,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   Offset? get sketchInferenceCursor =>
       runtime.read<Offset>('sketch.inference.cursor');
   final SketchInferenceEngine _sketchInference = const SketchInferenceEngine();
+  final SketchCoordinateMagnet _sketchCoordinateMagnet =
+      SketchCoordinateMagnet();
+  double? get sketchMagnetX => _sketchCoordinateMagnet.lockedX;
+  double? get sketchMagnetY => _sketchCoordinateMagnet.lockedY;
   final SketchAssistantEngine _sketchAssistant = const SketchAssistantEngine();
   SketchAssistantSuggestion? get sketchAssistantSuggestion =>
       runtime.read<SketchAssistantSuggestion>('sketch.assistant.suggestion');
@@ -728,8 +744,9 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return 'Sketch is ready for a surface.';
   }
 
-  ({double x, double y, double length, double angle})? get lineHud {
-    final start = previewPoints.firstOrNull;
+  ({double x, double y, double dx, double dy, double length, double angle})?
+  get lineHud {
+    final start = previewPoints.lastOrNull;
     final cursor = lineCursor;
     if (!lineCommandActive || start == null || cursor == null) return null;
     final dx = cursor.x - start.x;
@@ -737,6 +754,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return (
       x: cursor.x,
       y: cursor.y,
+      dx: dx,
+      dy: dy,
       length: math.sqrt(dx * dx + dy * dy),
       angle: math.atan2(dy, dx) * 180 / math.pi,
     );
@@ -1143,6 +1162,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         final fit = _fitSectionSpline(local, tolerance);
         final spline = api.builders.spline.build(fit.controlPoints);
         spline.parameters.addAll({
+          'interpolation': 'sectionBestFitCatmullRom',
           'sampledPoints': fit.sampledPoints
               .map((point) => point.toJson())
               .toList(),
@@ -1387,6 +1407,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         final fit = _fitSectionSpline(local, tolerance);
         final entity = api.builders.spline.build(fit.controlPoints);
         entity.parameters.addAll({
+          'interpolation': 'sectionBestFitCatmullRom',
           'sampledPoints': fit.sampledPoints
               .map((point) => point.toJson())
               .toList(),
@@ -2588,6 +2609,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
     runtime.write('sketch.edit.active', true);
+    runtime.write('sketch.edit.tangentBlend', false);
+    runtime.write('sketch.edit.diagnostic', null);
     runtime.write('sketch.trim.firstId', null);
     runtime.write('sketch.trim.firstPoint', null);
     runtime.hideTransient('sketch-edit-preview');
@@ -2662,6 +2685,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (!selectedSketchEntityIds.contains(entity.id)) {
       selectedSketchEntityIds.add(entity.id);
     }
+    runtime.write('sketch.edit.diagnostic', null);
     runtime.select(selectedSketchEntityIds);
     if (activeTool == SketchToolType.extend &&
         selectedSketchEntityIds.length == 2) {
@@ -2699,6 +2723,25 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     return SketchVector(a.x + abx * t, a.y + aby * t);
   }
 
+  List<SketchVector> _selectedSketchBlendControls() {
+    if (selectedSketchEntityIds.length != 2) {
+      throw StateError('Selecione duas linhas para o Blend tangente.');
+    }
+    final ids = selectedSketchEntityIds.toList(growable: false);
+    final first = sketchApi?.entity(ids[0]);
+    final second = sketchApi?.entity(ids[1]);
+    if (first is! SketchLine || second is! SketchLine) {
+      throw StateError('O Blend tangente aceita duas linhas do Sketch.');
+    }
+    return SketchTangentBlendGeometry.betweenLines(
+      SketchVector.fromJson(first.parameters['start']),
+      SketchVector.fromJson(first.parameters['end']),
+      SketchVector.fromJson(second.parameters['start']),
+      SketchVector.fromJson(second.parameters['end']),
+      tangentLength: sketchEditingValue,
+    );
+  }
+
   void _updateSketchCornerPreview() {
     if (!const {
           SketchToolType.fillet,
@@ -2714,6 +2757,27 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final second = sketchApi?.entity(ids[1]);
     if (first is! SketchLine || second is! SketchLine) return;
     try {
+      if (sketchTangentBlendActive) {
+        final controls = _selectedSketchBlendControls();
+        final sampled = SketchSplineGeometry.cubicBezier(controls);
+        runtime.showTransient(
+          CadSceneEntity(
+            id: 'sketch-edit-preview',
+            kind: CadSceneEntityKind.preview,
+            transparent: true,
+            geometry: {
+              'points': sampled
+                  .map(activeSketch!.coordinates.localToGlobal)
+                  .map((point) => point.toJson())
+                  .toList(),
+              'displayColor': 'previewOrange',
+              'strokeWidth': SketchSceneAdapter.technicalStrokeWidth,
+            },
+          ),
+        );
+        runtime.write('sketch.edit.diagnostic', null);
+        return;
+      }
       final a = SketchVector.fromJson(first.parameters['start']);
       final b = SketchVector.fromJson(first.parameters['end']);
       final c = SketchVector.fromJson(second.parameters['start']);
@@ -2772,8 +2836,11 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
           transparent: true,
         ),
       );
-    } catch (_) {
+    } catch (failure) {
       runtime.hideTransient('sketch-edit-preview');
+      if (sketchTangentBlendActive) {
+        runtime.write('sketch.edit.diagnostic', '$failure');
+      }
     }
   }
 
@@ -2789,12 +2856,26 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (ids.length != 2) {
       throw StateError('Select two lines: reference first, target second.');
     }
-    await _run('reverse.sketch.edit', {
-      'tool': activeTool.name,
-      'ids': ids,
-      'value': sketchEditingValue,
-      'autoTrim': autoTrim ?? sketchFilletAutoTrim,
-    });
+    if (sketchTangentBlendActive) {
+      final controls = _selectedSketchBlendControls();
+      await _run('reverse.sketch.draw', {
+        'tool': SketchToolType.spline.name,
+        'points': [controls.first.toJson(), controls.last.toJson()],
+        'operationParameters': {
+          'bezierControls': controls.map((point) => point.toJson()).toList(),
+          'sourceEntityIds': ids,
+          'tangentLength': sketchEditingValue,
+        },
+      });
+    } else {
+      await _run('reverse.sketch.edit', {
+        'tool': activeTool.name,
+        'ids': ids,
+        'value': sketchEditingValue,
+        'autoTrim': autoTrim ?? sketchFilletAutoTrim,
+      });
+    }
+    if (error != null) throw StateError(error!);
     selectedSketchEntityIds.clear();
     runtime.hideTransient('sketch-edit-preview');
     runtime.write('sketch.trim.firstId', null);
@@ -2805,22 +2886,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
 
   void finishSketchEditingTool() {
     runtime.write('sketch.edit.active', false);
+    runtime.write('sketch.edit.tangentBlend', false);
     runtime.hideTransient('sketch-edit-preview');
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
     notifyListeners();
   }
 
-  void beginLineCommand() {
+  void beginPolylineCommand() =>
+      beginLineCommand(tool: SketchToolType.polyline);
+
+  void beginLineCommand({SketchToolType tool = SketchToolType.line}) {
     if (stage != SketchSurfaceStage.sketchActive) return;
     if (sketchEditingCommandActive) finishSketchEditingTool();
     if (circleCommandActive) finishCircleCommand();
     if (arcCommandActive) finishArcCommand();
     if (rectangleCommandActive) finishRectangleCommand();
-    activeTool = SketchToolType.line;
+    if (splineCommandActive) cancelSplineCommand();
+    activeTool = tool;
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
     previewPoints = const [];
+    _sketchCoordinateMagnet.clear();
     runtime.write('sketch.line.cursor', null);
     runtime.write('sketch.line.snapType', null);
     runtime.write('sketch.line.active', true);
@@ -2851,6 +2938,19 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> convertSelectedLineToConstruction() async {
+    final id = selectedSketchEntityIds.singleOrNull;
+    final entity = id == null ? null : sketchApi?.entity(id);
+    if (entity is! SketchLine || entity.construction) {
+      throw StateError('Selecione uma linha comum do Sketch.');
+    }
+    await _run('reverse.sketch.edit', {
+      'tool': SketchToolType.convertConstruction.name,
+      'ids': [id],
+    });
+    if (error != null) throw StateError(error!);
+  }
+
   void beginCircleCommand([
     SketchCircleMode mode = SketchCircleMode.centerRadius,
   ]) {
@@ -2859,6 +2959,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     finishLineCommand();
     if (arcCommandActive) finishArcCommand();
     if (rectangleCommandActive) finishRectangleCommand();
+    if (splineCommandActive) cancelSplineCommand();
     activeTool = SketchToolType.circle;
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
@@ -2878,6 +2979,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     finishLineCommand();
     if (circleCommandActive) finishCircleCommand();
     if (rectangleCommandActive) finishRectangleCommand();
+    if (splineCommandActive) cancelSplineCommand();
     activeTool = mode == SketchArcMode.threePoints
         ? SketchToolType.threePointArc
         : SketchToolType.arc;
@@ -2899,6 +3001,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     finishLineCommand();
     if (circleCommandActive) finishCircleCommand();
     if (arcCommandActive) finishArcCommand();
+    if (splineCommandActive) cancelSplineCommand();
     activeTool = SketchToolType.rectangle;
     selectedSketchEntityIds.clear();
     runtime.select(const <String>{});
@@ -2907,6 +3010,54 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.rectangle.cursor', null);
     _configureCreationSnaps();
     runtime.hideTransient('sketch-rectangle-preview');
+    notifyListeners();
+  }
+
+  void beginSketchTangentBlend() {
+    beginSketchEditingTool(SketchToolType.fillet);
+    if (!sketchEditingCommandActive) return;
+    runtime.write('sketch.edit.tangentBlend', true);
+    runtime.write('sketch.edit.value', 5.0);
+    notifyListeners();
+  }
+
+  void beginSplineCommand() {
+    if (stage != SketchSurfaceStage.sketchActive) return;
+    cancelSketchCommand();
+    if (sketchEditingCommandActive) finishSketchEditingTool();
+    activeTool = SketchToolType.spline;
+    selectedSketchEntityIds.clear();
+    runtime.select(const <String>{});
+    runtime.write('sketch.spline.active', true);
+    _configureCreationSnaps();
+    notifyListeners();
+  }
+
+  Future<void> finishSplineCommand() async {
+    if (!splineCommandActive) return;
+    if (previewPoints.length < 3) {
+      throw StateError(
+        'A spline interpolada precisa de três pontos distintos.',
+      );
+    }
+    await _run('reverse.sketch.draw', {
+      'tool': SketchToolType.spline.name,
+      'points': previewPoints.map((point) => point.toJson()).toList(),
+    });
+    if (error != null) throw StateError(error!);
+    // Keep the chosen tool armed; the next click starts a new spline.
+    previewPoints = const [];
+    runtime.hideTransient('sketch-spline-preview');
+    runtime.write('sketch.inference', null);
+    notifyListeners();
+  }
+
+  void cancelSplineCommand() {
+    runtime.write('sketch.spline.active', false);
+    runtime.hideTransient('sketch-spline-preview');
+    runtime.write('sketch.inference', null);
+    previewPoints = const [];
+    activeTool = SketchToolType.point;
     notifyListeners();
   }
 
@@ -2941,11 +3092,14 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   }
 
   void cancelSketchCommand() {
+    _sketchCoordinateMagnet.clear();
     previewPoints = const [];
     runtime.write('sketch.line.cursor', null);
     runtime.write('sketch.line.snapType', null);
     runtime.write('sketch.line.active', false);
     runtime.hideTransient('sketch-line-preview');
+    runtime.write('sketch.spline.active', false);
+    runtime.hideTransient('sketch-spline-preview');
     runtime.hideTransient('sketch-alignment-guides');
     runtime.write('sketch.circle.cursor', null);
     runtime.write('sketch.circle.snapType', null);
@@ -3001,7 +3155,44 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Right-click completes multi-point commands only after their minimum
+  /// geometry is present. Escape remains an unconditional cancellation.
+  Future<void> finishSketchCommandFromSecondaryTap() async {
+    if (sketchEditingCommandActive) {
+      finishSketchEditingTool();
+    } else if (polylineCommandActive) {
+      await finishPolylineCommand();
+    } else if (splineCommandActive) {
+      if (previewPoints.length >= 3) {
+        await finishSplineCommand();
+      } else {
+        previewPoints = const [];
+        runtime.hideTransient('sketch-spline-preview');
+        runtime.write('sketch.inference', null);
+        notifyListeners();
+      }
+    } else if (arcCommandActive) {
+      finishArcCommand();
+    } else if (circleCommandActive) {
+      finishCircleCommand();
+    } else if (rectangleCommandActive) {
+      finishRectangleCommand();
+    } else if (lineCommandActive) {
+      // Right-click ends only the current chain. Line remains ready for a
+      // disconnected next line; Escape or Select/Edit exits the tool.
+      previewPoints = const [];
+      _sketchCoordinateMagnet.clear();
+      runtime.write('sketch.line.cursor', null);
+      runtime.write('sketch.line.snapType', null);
+      runtime.hideTransient('sketch-line-preview');
+      runtime.hideTransient('sketch-alignment-guides');
+      runtime.write('sketch.inference', null);
+      notifyListeners();
+    }
+  }
+
   void finishLineCommand() {
+    _sketchCoordinateMagnet.clear();
     if (!lineCommandActive) return;
     previewPoints = const [];
     runtime.write('sketch.line.cursor', null);
@@ -3070,15 +3261,45 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       SketchVector(world.x, world.y, world.z),
     );
     final raw = SketchVector(local.x, local.y);
+    final worldPerPixel =
+        camera.projectionMode == CadProjectionMode.orthographic
+        ? camera.viewScale / math.max(camera.viewportHeight, 1)
+        : 2 *
+              (camera.target - camera.eye).length *
+              math.tan(camera.fieldOfViewRadians / 2) /
+              math.max(camera.viewportHeight, 1);
+    if (polylineCommandActive && previewPoints.length >= 3) {
+      final first = previewPoints.first;
+      final delta = raw - first;
+      if (delta.dot(delta) <= math.pow(worldPerPixel * 12, 2)) {
+        _sketchCoordinateMagnet.clear();
+        runtime.write('sketch.line.snapType', EditorSnapType.endpoint);
+        runtime.write('sketch.inference', null);
+        return first;
+      }
+    }
     final settings = editorApi?.engine.snapping.settings;
     if (settings != null) {
       settings.gridSpacing = _adaptiveSketchGridSpacing(camera);
+      // Snap acquisition stays near the pointer at every zoom level; a fixed
+      // half millimetre radius swallowed small measurements when zoomed in.
+      settings.tolerance = (worldPerPixel * 8).clamp(.001, .5);
     }
     final snap = editorApi?.snap(raw);
+    final magneticLinePlacement =
+        lineCommandActive && (snap == null || snap.type == EditorSnapType.grid);
+    final inferenceCursor = magneticLinePlacement
+        ? _sketchCoordinateMagnet.apply(
+            pointer: raw,
+            candidate: raw,
+            worldPerPixel: worldPerPixel,
+          )
+        : raw;
     final inference = _sketchInference.inferLine(
-      cursor: raw,
-      start: lineCommandActive ? previewPoints.firstOrNull : null,
+      cursor: inferenceCursor,
+      start: lineCommandActive ? previewPoints.lastOrNull : null,
       entities: sketchEntities,
+      referenceDirections: _sketchReferenceDirections(),
       snap: snap,
       spatialTolerance: editorApi?.engine.snapping.settings.tolerance ?? .5,
     );
@@ -3090,7 +3311,64 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     } else {
       runtime.write('sketch.line.snapType', snap?.type);
     }
-    return inference?.position ?? snap?.position ?? raw;
+    final candidate = inference?.position ?? snap?.position ?? raw;
+    // Endpoint/midpoint/center/origin are exact targets and outrank the
+    // coordinate magnet. The magnet only strengthens free/fine-grid line
+    // placement; it never moves an existing geometric target.
+    if (!magneticLinePlacement) {
+      _sketchCoordinateMagnet.clear();
+      return candidate;
+    }
+    return _sketchCoordinateMagnet.apply(
+      pointer: raw,
+      candidate: candidate,
+      worldPerPixel: worldPerPixel,
+    );
+  }
+
+  Iterable<SketchDirectionReference> _sketchReferenceDirections() sync* {
+    final sketch = activeSketch;
+    final document = runtime.document;
+    if (sketch == null || document == null) return;
+    for (final entity in document.entities.values) {
+      List<double>? direction;
+      final construction = entity.data['constructionEntity'];
+      if (construction is Map && construction['type'] == 'vector') {
+        final raw = construction['direction'];
+        if (raw is List && raw.length >= 3) {
+          direction = raw
+              .take(3)
+              .map((value) => (value as num).toDouble())
+              .toList();
+        }
+      } else if (entity.kind == CadDocumentEntityKind.reference) {
+        final reference = entity.data['reference'];
+        final geometry = reference is Map
+            ? reference['geometry'] ?? entity.data['sceneGeometry']
+            : entity.data['sceneGeometry'];
+        if (geometry is Map && geometry['type'] == 'axis') {
+          final raw = geometry['direction'];
+          if (raw is List && raw.length >= 3) {
+            direction = raw
+                .take(3)
+                .map((value) => (value as num).toDouble())
+                .toList();
+          }
+        }
+      }
+      if (direction == null || direction.any((value) => !value.isFinite)) {
+        continue;
+      }
+      final world = SketchVector(direction[0], direction[1], direction[2]);
+      final local = SketchVector(
+        world.dot(sketch.coordinates.xAxis),
+        world.dot(sketch.coordinates.yAxis),
+      );
+      if (local.x * local.x + local.y * local.y <= 1e-18) {
+        continue;
+      }
+      yield (id: entity.id, direction: local);
+    }
   }
 
   double _adaptiveSketchGridSpacing(CadCameraController camera) {
@@ -3101,7 +3379,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               (camera.target - camera.eye).length *
               math.tan(camera.fieldOfViewRadians / 2) /
               math.max(camera.viewportHeight, 1);
-    final target = math.max(worldPerPixel * 8, .001);
+    final target = math.max(worldPerPixel * 4, .0001);
     final exponent = math
         .pow(10, (math.log(target) / math.ln10).floor())
         .toDouble();
@@ -3113,7 +3391,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         : normalized <= 5
         ? 5.0
         : 10.0;
-    return (step * exponent).clamp(.001, 1000.0);
+    return (step * exponent).clamp(.0001, 1000.0);
   }
 
   Future<void> refreshSketchSceneAfterExit() async {
@@ -3126,9 +3404,43 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     runtime.write('sketch.inference.cursor', position);
     final point = _sketchPointAt(position, camera);
     if (point == null) return;
-    _refreshSketchAssistant(point);
+    if (splineCommandActive) {
+      _clearSketchAssistant();
+    } else {
+      _refreshSketchAssistant(point);
+    }
     if (previewPoints.isEmpty) {
       runtime.hideTransient('sketch-alignment-guides');
+      notifyListeners();
+      return;
+    }
+    if (splineCommandActive) {
+      final knots = [...previewPoints, point];
+      if (knots.length < 2 ||
+          (knots.last - knots[knots.length - 2]).dot(
+                knots.last - knots[knots.length - 2],
+              ) <=
+              1e-18) {
+        runtime.hideTransient('sketch-spline-preview');
+        notifyListeners();
+        return;
+      }
+      final sampled = SketchSplineGeometry.interpolate(knots);
+      runtime.showTransient(
+        CadSceneEntity(
+          id: 'sketch-spline-preview',
+          kind: CadSceneEntityKind.preview,
+          transparent: true,
+          geometry: {
+            'points': sampled
+                .map(activeSketch!.coordinates.localToGlobal)
+                .map((point) => point.toJson())
+                .toList(),
+            'displayColor': 'previewOrange',
+            'strokeWidth': SketchSceneAdapter.technicalStrokeWidth,
+          },
+        ),
+      );
       notifyListeners();
       return;
     }
@@ -3264,7 +3576,8 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         transparent: true,
         geometry: {
           'points': [
-            coordinates.localToGlobal(previewPoints.first).toJson(),
+            for (final vertex in previewPoints)
+              coordinates.localToGlobal(vertex).toJson(),
             coordinates.localToGlobal(point).toJson(),
           ],
           'displayColor': 'previewOrange',
@@ -3322,7 +3635,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final suggestion = _sketchAssistant.suggest(
       requested: requested,
       cursor: cursor,
-      anchor: lineCommandActive ? previewPoints.firstOrNull : null,
+      anchor: lineCommandActive ? previewPoints.lastOrNull : null,
       references: _sketchAssistantReferences(),
       precision: sketchAssistantPrecision,
     );
@@ -3527,7 +3840,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
               math.max(camera.viewportHeight, 1);
     final modelTolerance = editorApi?.engine.snapping.settings.tolerance ?? .5;
     final tolerance = math.max(modelTolerance, worldPerPixel * 10);
-    final references = <SketchVector>[];
+    final references = <SketchVector>[const SketchVector(0, 0)];
     for (final entity in sketchEntities) {
       switch (entity) {
         case SketchLine():
@@ -3589,6 +3902,27 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         coordinates.localToGlobal(horizontal).toJson(),
         coordinates
             .localToGlobal(SketchVector(cursor.x, horizontal.y))
+            .toJson(),
+      ]);
+    }
+    final magnetSpan = worldPerPixel * 36;
+    if (_sketchCoordinateMagnet.lockedX case final x?) {
+      segments.add([
+        coordinates
+            .localToGlobal(SketchVector(x, cursor.y - magnetSpan))
+            .toJson(),
+        coordinates
+            .localToGlobal(SketchVector(x, cursor.y + magnetSpan))
+            .toJson(),
+      ]);
+    }
+    if (_sketchCoordinateMagnet.lockedY case final y?) {
+      segments.add([
+        coordinates
+            .localToGlobal(SketchVector(cursor.x - magnetSpan, y))
+            .toJson(),
+        coordinates
+            .localToGlobal(SketchVector(cursor.x + magnetSpan, y))
             .toJson(),
       ]);
     }
@@ -3685,6 +4019,16 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    if (splineCommandActive) {
+      final previous = previewPoints.lastOrNull;
+      if (previous != null &&
+          (point - previous).dot(point - previous) <= 1e-18) {
+        return;
+      }
+      previewPoints = [...previewPoints, point];
+      notifyListeners();
+      return;
+    }
     if (rectangleCommandActive) {
       if (previewPoints.isEmpty) {
         previewPoints = [point];
@@ -3711,10 +4055,24 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final start = previewPoints.first;
+    final start = previewPoints.last;
     final dx = point.x - start.x;
     final dy = point.y - start.y;
     if (dx * dx + dy * dy > 1e-18) {
+      if (polylineCommandActive) {
+        final closes =
+            previewPoints.length >= 3 &&
+            (point.x - previewPoints.first.x).abs() <= 1e-9 &&
+            (point.y - previewPoints.first.y).abs() <= 1e-9;
+        previewPoints = [...previewPoints, point];
+        if (closes) {
+          await finishPolylineCommand();
+        } else {
+          runtime.write('sketch.line.cursor', point);
+          notifyListeners();
+        }
+        return;
+      }
       await _run('reverse.sketch.draw', {
         'tool': SketchToolType.line.name,
         'points': [start.toJson(), point.toJson()],
@@ -3728,6 +4086,28 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       runtime.write('sketch.inference', null);
       notifyListeners();
     }
+  }
+
+  Future<void> finishPolylineCommand() async {
+    if (!polylineCommandActive) return;
+    final points = previewPoints;
+    if (points.length >= 2) {
+      await _run('reverse.sketch.draw', {
+        'tool': SketchToolType.polyline.name,
+        'points': points.map((point) => point.toJson()).toList(),
+      });
+      if (error != null) throw StateError(error!);
+    }
+    // Completing one polyline rearms the same tool for another, with a fresh
+    // first vertex and no uncommitted geometry left behind.
+    previewPoints = const [];
+    _sketchCoordinateMagnet.clear();
+    runtime.write('sketch.line.cursor', null);
+    runtime.write('sketch.line.snapType', null);
+    runtime.hideTransient('sketch-line-preview');
+    runtime.hideTransient('sketch-alignment-guides');
+    runtime.write('sketch.inference', null);
+    notifyListeners();
   }
 
   /// Commits the current professional creation command from typed values.
@@ -3745,17 +4125,21 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (lineCommandActive) {
       final angleDegrees = secondary ?? 0;
       if (!angleDegrees.isFinite) return false;
-      final start = previewPoints.first;
+      final start = previewPoints.last;
       final angle = angleDegrees * math.pi / 180;
       final end = SketchVector(
         start.x + primary * math.cos(angle),
         start.y + primary * math.sin(angle),
       );
-      await _run('reverse.sketch.draw', {
-        'tool': SketchToolType.line.name,
-        'points': [start.toJson(), end.toJson()],
-      });
-      previewPoints = [end];
+      if (polylineCommandActive) {
+        previewPoints = [...previewPoints, end];
+      } else {
+        await _run('reverse.sketch.draw', {
+          'tool': SketchToolType.line.name,
+          'points': [start.toJson(), end.toJson()],
+        });
+        previewPoints = [end];
+      }
       runtime.write('sketch.line.cursor', end);
       runtime.hideTransient('sketch-line-preview');
       runtime.hideTransient('sketch-alignment-guides');
@@ -5830,10 +6214,106 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
   List<CadDocumentEntity> get selectedRevolveInputs {
     final document = runtime.document;
     if (document == null) return const [];
+    final profileId = selectedRevolveProfileId;
+    final axisId = selectedRevolveAxisId;
+    if (profileId != null || axisId != null) {
+      return [
+        if (profileId != null && document.entities[profileId] != null)
+          document.entities[profileId]!,
+        if (axisId != null && document.entities[axisId] != null)
+          document.entities[axisId]!,
+      ];
+    }
     return runtime.selection
         .map((id) => document.entities[id])
         .whereType<CadDocumentEntity>()
         .toList(growable: false);
+  }
+
+  String? get selectedRevolveProfileId =>
+      runtime.read<String>('revolve.selection.profile');
+  String? get selectedRevolveAxisId =>
+      runtime.read<String>('revolve.selection.axis');
+  String? get revolveCaptureSlot =>
+      runtime.read<String>('revolve.selection.captureSlot');
+
+  List<CadDocumentEntity> get revolveProfiles {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return document.entities.values
+        .where((entity) => _revolveProfileKind(entity) != null)
+        .toList(growable: false);
+  }
+
+  List<CadDocumentEntity> get revolveAxes {
+    final document = runtime.document;
+    if (document == null) return const [];
+    return document.entities.values
+        .where((entity) => _revolveAxisKind(entity) != null)
+        .toList(growable: false);
+  }
+
+  void selectRevolveProfile(String id) {
+    final entity = runtime.document?.entities[id];
+    if (entity == null || _revolveProfileKind(entity) == null) {
+      throw StateError('Selecione um Sketch ou uma Surface para Revolve.');
+    }
+    runtime.write('revolve.selection.profile', id);
+    runtime.write('revolve.selection.captureSlot', null);
+    error = null;
+    notifyListeners();
+  }
+
+  void selectRevolveAxis(String id) {
+    final entity = runtime.document?.entities[id];
+    if (entity == null || _revolveAxisKind(entity) == null) {
+      throw StateError('Selecione um eixo de References ou do sistema WCS.');
+    }
+    runtime.write('revolve.selection.axis', id);
+    runtime.write('revolve.selection.captureSlot', null);
+    error = null;
+    notifyListeners();
+  }
+
+  void beginRevolveViewportCapture({required bool axis}) {
+    runtime.write('revolve.selection.captureSlot', axis ? 'axis' : 'profile');
+    error = axis
+        ? 'Clique em um eixo na viewport.'
+        : 'Clique em um Sketch ou Surface na viewport.';
+    notifyListeners();
+  }
+
+  /// Consumes only the command-local capture. It deliberately does not call
+  /// runtime.select, so viewport capture never replaces the user selection.
+  bool captureRevolveViewportEntity(String id) {
+    final slot = revolveCaptureSlot;
+    if (slot == null) return false;
+    final entity = runtime.document?.entities[id];
+    if (slot == 'profile') {
+      if (entity == null || _revolveProfileKind(entity) == null) {
+        error = 'Este item nÃ£o pode ser usado como perfil de Revolve.';
+      } else {
+        selectRevolveProfile(id);
+        return true;
+      }
+    } else if (slot == 'axis') {
+      if (entity == null || _revolveAxisKind(entity) == null) {
+        error = 'Este item nÃ£o pode ser usado como eixo de Revolve.';
+      } else {
+        selectRevolveAxis(id);
+        return true;
+      }
+    }
+    notifyListeners();
+    return true;
+  }
+
+  void clearRevolveSelection() {
+    runtime.write('revolve.selection.profile', null);
+    runtime.write('revolve.selection.axis', null);
+    runtime.write('revolve.selection.captureSlot', null);
+    error = null;
+    notifyListeners();
   }
 
   RevolveProfileKind? _revolveProfileKind(CadDocumentEntity entity) {
@@ -5851,18 +6331,99 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     if (entity.kind == CadDocumentEntityKind.reference) {
       final rawReference = entity.data['reference'] as Map?;
       final rawGeometry = rawReference?['geometry'] as Map?;
-      if (rawGeometry?['type'] == 'axis') {
+      final sceneGeometry = entity.data['sceneGeometry'] as Map?;
+      if (rawGeometry?['type'] == 'axis' || sceneGeometry?['type'] == 'axis') {
         return RevolveAxisKind.referenceAxis;
       }
       return null;
     }
-    if (entity.kind == CadDocumentEntityKind.curve &&
-        entity.data['parentSketchId'] != null) {
-      return entity.data['construction'] == true
-          ? RevolveAxisKind.constructionLine
-          : RevolveAxisKind.sketchAxis;
+    if (entity.kind == CadDocumentEntityKind.sketch &&
+        entity.data['parentSketchId'] is String &&
+        entity.data['sketchEntity'] is Map) {
+      final raw = entity.data['sketchEntity'] as Map;
+      if (raw['type'] == SketchEntityType.line.name &&
+          raw['construction'] == true &&
+          entity.data['sceneVisible'] != false) {
+        return RevolveAxisKind.constructionLine;
+      }
     }
     return null;
+  }
+
+  ({List<double> origin, List<double> direction}) _revolveAxisFrame(
+    CadDocumentEntity axis,
+  ) {
+    final raw =
+        axis.data['sceneGeometry'] ??
+        axis.data['geometry'] ??
+        (axis.data['reference'] as Map?)?['geometry'];
+    if (raw is Map && raw['type'] == 'axis') {
+      final geometry = geometryFromJson(Map<String, dynamic>.from(raw));
+      if (geometry is AxisGeometry) {
+        final origin = geometry.origin;
+        final direction = geometry.direction;
+        final magnitude = direction.length;
+        if (!magnitude.isFinite || magnitude <= 1e-12) {
+          throw StateError('${axis.id} has an invalid zero axis direction.');
+        }
+        return (
+          origin: [origin.x, origin.y, origin.z],
+          direction: [
+            direction.x / magnitude,
+            direction.y / magnitude,
+            direction.z / magnitude,
+          ],
+        );
+      }
+    }
+    final points = (axis.data['sceneGeometry'] as Map?)?['points'] as List?;
+    if (points != null && points.length >= 2) {
+      List<double> parse(Object? value) {
+        final rawPoint = (value as List).cast<num>();
+        return [
+          rawPoint[0].toDouble(),
+          rawPoint[1].toDouble(),
+          rawPoint.length > 2 ? rawPoint[2].toDouble() : 0,
+        ];
+      }
+
+      final origin = parse(points[0]);
+      final end = parse(points[1]);
+      final direction = [
+        end[0] - origin[0],
+        end[1] - origin[1],
+        end[2] - origin[2],
+      ];
+      final magnitude = math.sqrt(
+        direction.fold<double>(0, (sum, value) => sum + value * value),
+      );
+      if (!magnitude.isFinite || magnitude <= 1e-12) {
+        throw StateError('${axis.id} has an invalid zero axis direction.');
+      }
+      return (
+        origin: origin,
+        direction: direction.map((value) => value / magnitude).toList(),
+      );
+    }
+    throw StateError('${axis.id} does not provide a usable axis.');
+  }
+
+  String _firstRevolveSketchProfileId(String sketchId) {
+    Sketch? sketch;
+    for (final item in sketchApi?.sketches ?? const <Sketch>[]) {
+      if (item.id == sketchId) {
+        sketch = item;
+        break;
+      }
+    }
+    if (sketch == null) throw StateError('Sketch $sketchId is unavailable.');
+    for (final id in sketch.entityIds) {
+      final entity = sketchApi?.entity(id);
+      if (entity != null && !entity.construction && !entity.reference) {
+        return id;
+      }
+    }
+    throw StateError('Solid Revolve requires a usable closed Sketch profile.');
   }
 
   bool get canPreviewRevolve {
@@ -5872,60 +6433,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         _revolveAxisKind(inputs.last) != null;
   }
 
-  Future<ShapeHandle> _ensureRevolveAxis(CadDocumentEntity axis) async {
-    if (axis.shape != null) return runtime.loadShape(axis.shape!);
-    final raw =
-        axis.data['sceneGeometry'] ??
-        axis.data['geometry'] ??
-        (axis.data['reference'] as Map?)?['geometry'];
-    if (raw is Map) {
-      final geometry = geometryFromJson(Map<String, dynamic>.from(raw));
-      if (geometry is AxisGeometry) {
-        final origin = geometry.origin;
-        final direction = geometry.direction.normalized;
-        final end = Vec3(
-          origin.x + direction.x * 100,
-          origin.y + direction.y * 100,
-          origin.z + direction.z * 100,
-        );
-        return _createWireFromPoints(
-          sourceId: axis.id,
-          sourceName: '${axis.data['name'] ?? axis.id}',
-          sourceRevision: _loftSourceRevision(axis),
-          points: [
-            SketchVector(origin.x, origin.y, origin.z),
-            SketchVector(end.x, end.y, end.z),
-          ],
-          curveType: ProfessionalCurveType.line3d,
-          color: 'axisBlue',
-        );
-      }
-    }
-    final points = (axis.data['sceneGeometry'] as Map?)?['points'] as List?;
-    if (points != null && points.length >= 2) {
-      final parsed = points.take(2).map((item) {
-        final value = (item as List).cast<num>();
-        return SketchVector(
-          value[0].toDouble(),
-          value[1].toDouble(),
-          value.length > 2 ? value[2].toDouble() : 0,
-        );
-      }).toList();
-      return _createWireFromPoints(
-        sourceId: axis.id,
-        sourceName: '${axis.data['name'] ?? axis.id}',
-        sourceRevision: _loftSourceRevision(axis),
-        points: parsed,
-        curveType: ProfessionalCurveType.line3d,
-        color: 'axisBlue',
-      );
-    }
-    throw StateError('${axis.id} does not provide a usable axis.');
-  }
-
   Future<void> previewProfessionalRevolve({
     double angleDegrees = 360,
     RevolveDirection direction = RevolveDirection.counterClockwise,
+    RevolveOutput? output,
     String? featureId,
   }) async {
     final inputs = selectedRevolveInputs;
@@ -5934,24 +6445,45 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'Select one Sketch or Surface first, then one Sketch/Reference Axis.',
       );
     }
+    final id =
+        featureId ??
+        ProfessionalRevolveNaming.nextId(runtime.document!.entities.keys);
     busy = true;
     error = null;
     notifyListeners();
     try {
       final profile = inputs.first, axis = inputs.last;
       final profileKind = _revolveProfileKind(profile)!;
+      final resolvedOutput =
+          output ??
+          (profileKind == RevolveProfileKind.sketch
+              ? RevolveOutput.solid
+              : RevolveOutput.surface);
       if (profileKind == RevolveProfileKind.sketch &&
+          resolvedOutput == RevolveOutput.solid &&
           !healthForSketch(profile.id).readyForSurface) {
         throw StateError(
           'Solid Revolve requires a healthy closed Sketch profile.',
         );
       }
+      final sketchHealth = profileKind == RevolveProfileKind.sketch
+          ? healthForSketch(profile.id)
+          : null;
       final profileHandle = profileKind == RevolveProfileKind.sketch
           ? await _ensureSketchWire(
               sketchApi!.sketches.firstWhere((item) => item.id == profile.id),
+              // A closed Sketch must always be rebuilt by its connected loop,
+              // including Surface output.  Flattening its lines in insertion
+              // order can produce a self-crossing/open native wire even when
+              // the Sketch is visibly healthy; OCCT then rejects Revolve with
+              // a generic geometry failure.  Open Sketchs deliberately keep
+              // the existing raw wire path, which is valid for Surface only.
+              profileEntityId: sketchHealth!.readyForSurface
+                  ? _firstRevolveSketchProfileId(profile.id)
+                  : null,
             )
           : await runtime.loadShape(profile.shape!);
-      final axisHandle = await _ensureRevolveAxis(axis);
+      final axisFrame = _revolveAxisFrame(axis);
       final contract = ProfessionalRevolveContract(
         profileEntityId: profile.id,
         profileKind: profileKind,
@@ -5960,18 +6492,16 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         axisEntityId: axis.id,
         axisKind: _revolveAxisKind(axis)!,
         axisRevision: _loftSourceRevision(axis),
-        axisShapeId: axisHandle.persistentId,
+        // The native Revolve consumes analytic axis values, not a temporary
+        // Wire. Keep a stable semantic identity without creating document
+        // geometry during Preview.
+        axisShapeId: axis.shape?.persistentId ?? '${axis.id}:analytic-axis',
         angleDegrees: angleDegrees,
         direction: direction,
-        output: profileKind == RevolveProfileKind.sketch
-            ? RevolveOutput.solid
-            : RevolveOutput.surface,
+        output: resolvedOutput,
       );
       final plan = _revolveConstraints.solve(contract),
           health = _revolveConstraints.health(contract);
-      final id =
-          featureId ??
-          ProfessionalRevolveNaming.nextId(runtime.document!.entities.keys);
       final kernel = runtime.kernels.active;
       final transaction = KernelTransaction(
         'preview-$id-${DateTime.now().microsecondsSinceEpoch}',
@@ -5986,9 +6516,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'REVOLVE',
         {
           'inputs': [profileHandle],
-          'axis': axisHandle,
-          'angle': contract.signedAngle,
+          'axisOrigin': axisFrame.origin,
+          'axisDirection': axisFrame.direction,
           'angleDegrees': contract.signedAngle,
+          'output': contract.output.name,
         },
         persistentId: '$id:shape',
         expectedType: contract.output == RevolveOutput.solid
@@ -6031,6 +6562,10 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         handle,
       );
     } catch (value) {
+      runtime.hideTransient('preview:$id');
+      if (professionalRevolvePreview?['id'] == id) {
+        professionalRevolvePreview = null;
+      }
       error = value.toString().replaceFirst('Bad state: ', '');
       rethrow;
     } finally {
@@ -6054,6 +6589,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       featureId: current['id'] as String,
       angleDegrees: angleDegrees ?? contract.angleDegrees,
       direction: direction ?? contract.direction,
+      output: contract.output,
     );
   }
 
@@ -6079,7 +6615,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     final sceneKind = contract.output == RevolveOutput.solid
         ? CadSceneEntityKind.solid
         : CadSceneEntityKind.surface;
-    await runtime.upsertEntity(
+    await runtime.upsertClosedEntity(
       command: 'revolve.confirm',
       kind: kind,
       entity: CadSceneEntity(
@@ -6111,11 +6647,6 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         'history': [...history, previous == null ? 'create' : 'edit'],
       },
     );
-    await runtime.transitionFeature(
-      id,
-      FeatureLifecycleState.closed,
-      command: 'revolve.lifecycle.commit',
-    );
     professionalRevolvePreview = null;
     notifyListeners();
   }
@@ -6138,6 +6669,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
       featureId: id,
       angleDegrees: contract.angleDegrees,
       direction: contract.direction,
+      output: contract.output,
     );
     await runtime.transitionFeature(
       id,
@@ -7866,9 +8398,18 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
     );
     await kernel.begin(transaction);
     try {
+      // A geometrically repeated final point is not enough for OCCT to call a
+      // Wire closed: the final edge must reference the first TopoDS_Vertex.
+      // Reuse that vertex rather than creating a coincident duplicate.
+      final closed =
+          points.length > 2 &&
+          _sketchDistance(points.first, points.last) <= 1e-7;
+      final vertexPoints = closed
+          ? points.sublist(0, points.length - 1)
+          : points;
       final vertices = <ShapeHandle>[];
-      for (var index = 0; index < points.length; index++) {
-        final point = points[index];
+      for (var index = 0; index < vertexPoints.length; index++) {
+        final point = vertexPoints[index];
         vertices.add(
           await kernel.create(
             'CREATE VERTEX',
@@ -7880,11 +8421,15 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         );
       }
       final edges = <ShapeHandle>[];
-      for (var index = 0; index + 1 < vertices.length; index++) {
+      final edgeCount = closed ? vertices.length : vertices.length - 1;
+      for (var index = 0; index < edgeCount; index++) {
         edges.add(
           await kernel.create(
             'CREATE EDGE',
-            {'start': vertices[index], 'end': vertices[index + 1]},
+            {
+              'start': vertices[index],
+              'end': vertices[(index + 1) % vertices.length],
+            },
             persistentId: '$sourceId:edge:$index:r$sourceRevision',
             expectedType: CADShapeType.edge,
             transaction: transaction,
@@ -7908,7 +8453,7 @@ class OperationalReverseEngineeringController extends ChangeNotifier {
         metadata: {
           ...native.metadata,
           'sourceEntityId': sourceId,
-          'closed': _sketchDistance(points.first, points.last) <= 1e-7,
+          'closed': closed,
         },
       );
       final now = DateTime.now().toUtc();

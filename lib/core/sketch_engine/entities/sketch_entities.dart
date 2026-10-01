@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../../utils/id_generator.dart';
+import '../geometry/sketch_spline_geometry.dart';
 import '../models/sketch_models.dart';
 
 enum SketchEntityType {
@@ -124,6 +125,7 @@ abstract class SketchEntity {
           (p['points'] as List).map(SketchVector.fromJson).toList(),
           id: json['id'] as String,
         );
+        entity.parameters.addAll(p);
         break;
       case SketchEntityType.ellipse:
         entity = SketchEllipse(
@@ -215,11 +217,27 @@ class SketchArc extends SketchEntity {
 }
 
 class SketchSpline extends SketchEntity {
-  SketchSpline(List<SketchVector> points, {super.id})
-    : super(
-        type: SketchEntityType.spline,
-        parameters: {'points': points.map((e) => e.toJson()).toList()},
-      );
+  SketchSpline(
+    List<SketchVector> points, {
+    super.id,
+    List<SketchVector>? bezierControls,
+  }) : super(
+         type: SketchEntityType.spline,
+         parameters: {
+           'points': points.map((e) => e.toJson()).toList(),
+           'interpolation': bezierControls == null
+               ? 'centripetalCatmullRom'
+               : 'cubicBezierG1',
+           if (bezierControls != null)
+             'bezierControls': bezierControls.map((e) => e.toJson()).toList(),
+           'sampledPoints':
+               (bezierControls == null
+                       ? SketchSplineGeometry.interpolate(points)
+                       : SketchSplineGeometry.cubicBezier(bezierControls))
+                   .map((e) => e.toJson())
+                   .toList(),
+         },
+       );
 }
 
 class SketchEllipse extends SketchEntity {

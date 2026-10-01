@@ -40,11 +40,14 @@ class ArcBuilder extends SketchEntityBuilder<SketchArc> {
 
 class SplineBuilder extends SketchEntityBuilder<SketchSpline> {
   const SplineBuilder(super.engine);
-  SketchSpline build(List<SketchVector> points) {
+  SketchSpline build(
+    List<SketchVector> points, {
+    List<SketchVector>? bezierControls,
+  }) {
     if (points.length < 2) {
       throw ArgumentError('A parametric spline needs at least two points');
     }
-    return commit(() => SketchSpline(points));
+    return commit(() => SketchSpline(points, bezierControls: bezierControls));
   }
 }
 

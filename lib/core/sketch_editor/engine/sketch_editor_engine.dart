@@ -133,7 +133,22 @@ class SketchEditorEngine {
           b.ellipse.build(p[0], _distance(p[0], p[1]), _distance(p[0], p[2])),
         );
       case SketchToolType.spline:
-        out.add(b.spline.build(p));
+        final controls = op.parameters['bezierControls'];
+        final spline = b.spline.build(
+          p,
+          bezierControls: controls is List
+              ? controls.map(SketchVector.fromJson).toList()
+              : null,
+        );
+        final sourceIds = op.parameters['sourceEntityIds'];
+        if (sourceIds is List) {
+          spline.metadata.addAll({
+            'featureType': 'tangentBlend',
+            'sourceEntityIds': sourceIds.cast<String>(),
+            'tangentLength': op.parameters['tangentLength'],
+          });
+        }
+        out.add(spline);
       case SketchToolType.slot:
         out
           ..add(b.line.build(p[0], p[1]))

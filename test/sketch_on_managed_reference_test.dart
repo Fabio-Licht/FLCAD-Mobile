@@ -12,6 +12,7 @@ import 'package:flcad_mobile/core/cad_kernel/models/kernel_models.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_ffi.dart';
 import 'package:flcad_mobile/core/cad_kernel/opencascade/open_cascade_kernel_adapter.dart';
 import 'package:flcad_mobile/core/professional_extrude/professional_extrude.dart';
+import 'package:flcad_mobile/core/professional_revolve/professional_revolve.dart';
 import 'package:flcad_mobile/core/professional_recognition/api/professional_recognition_api.dart';
 import 'package:flcad_mobile/core/reference_engine/api/reference_api.dart';
 import 'package:flcad_mobile/core/reference_engine/engine/reference_engine.dart';
@@ -917,6 +918,332 @@ void main() {
         ),
         isEmpty,
       );
+    },
+  );
+
+  test(
+    'native Professional Revolve previews, applies, persists and reenters',
+    () async {
+      const projectId = 'managed-reference-sketch';
+      const planeId = '$projectId:world:xy-plane';
+      const axisId = '$projectId:world:x-axis';
+
+      controller.selectSketchSupport(planeId);
+      await controller.openSketch();
+      await controller.drawRectangle(
+        const SketchVector(-2, 2),
+        const SketchVector(2, 5),
+      );
+      final closedSketch = controller.activeSketch!;
+      await controller.finishSketch();
+      controller.beginRevolveViewportCapture(axis: false);
+      expect(controller.captureRevolveViewportEntity(closedSketch.id), isTrue);
+      controller.beginRevolveViewportCapture(axis: true);
+      expect(controller.captureRevolveViewportEntity(axisId), isTrue);
+      expect(controller.selectedRevolveProfileId, closedSketch.id);
+      expect(controller.selectedRevolveAxisId, axisId);
+      expect(controller.revolveCaptureSlot, isNull);
+      expect(controller.canPreviewRevolve, isTrue);
+
+      await controller.previewProfessionalRevolve(
+        angleDegrees: 120,
+        output: RevolveOutput.solid,
+      );
+      final firstPreview = controller.professionalRevolvePreview!;
+      final revolveId = firstPreview['id'] as String;
+      expect((firstPreview['handle'] as Map)['type'], 'solid');
+      expect(cad.runtime.document!.entities[revolveId], isNull);
+      expect(cad.runtime.scene.find('preview:$revolveId'), isNotNull);
+      controller.cancelProfessionalRevolve();
+      expect(controller.professionalRevolvePreview, isNull);
+      expect(cad.runtime.scene.find('preview:$revolveId'), isNull);
+
+      // A healthy closed Sketch may also generate Surface/Walls. It must use
+      // the same ordered connected loop as Solid, rather than the incidental
+      // Sketch insertion order that can create a malformed native wire.
+      await controller.previewProfessionalRevolve(
+        angleDegrees: 120,
+        output: RevolveOutput.surface,
+      );
+      expect(
+        (controller.professionalRevolvePreview!['contract'] as Map)['output'],
+        RevolveOutput.surface.name,
+      );
+      controller.cancelProfessionalRevolve();
+
+      await controller.previewProfessionalRevolve(
+        angleDegrees: 120,
+        direction: RevolveDirection.clockwise,
+        output: RevolveOutput.solid,
+      );
+      final signedContract = ProfessionalRevolveContract.fromJson(
+        Map<String, dynamic>.from(
+          controller.professionalRevolvePreview!['contract'] as Map,
+        ),
+      );
+      expect(signedContract.signedAngle, -120);
+      await controller.confirmProfessionalRevolve();
+      final committed = cad.runtime.document!.entities[revolveId]!;
+      expect(committed.kind, CadDocumentEntityKind.solid);
+      expect((committed.data['revolveFeature'] as Map)['status'], 'committed');
+
+      await cad.runtime.undoDocument();
+      expect(cad.runtime.document!.entities[revolveId], isNull);
+      await cad.runtime.redoDocument();
+      expect(
+        cad.runtime.document!.entities[revolveId]?.kind,
+        CadDocumentEntityKind.solid,
+      );
+
+      await cad.runtime.save();
+      final scratch = await Directory(
+        p.join(root.path, 'revolve-scratch'),
+      ).create();
+      controller.detachProject();
+      await cad.runtime.open('revolve-scratch', scratch);
+      await cad.runtime.open(projectId, project);
+      await controller.configureProject(
+        projectId: projectId,
+        projectDirectory: project,
+      );
+      expect(
+        cad.runtime.document!.entities[revolveId]?.kind,
+        CadDocumentEntityKind.solid,
+      );
+      await controller.reenterProfessionalRevolve(revolveId);
+      expect(controller.professionalRevolvePreview, isNotNull);
+      expect(
+        ProfessionalRevolveContract.fromJson(
+          Map<String, dynamic>.from(
+            controller.professionalRevolvePreview!['contract'] as Map,
+          ),
+        ).direction,
+        RevolveDirection.clockwise,
+      );
+      controller.cancelProfessionalRevolve();
+
+      controller.selectSketchSupport(planeId);
+      await controller.openSketch();
+      controller.sketchApi!.builders.line.build(
+        const SketchVector(-3, 7),
+        const SketchVector(3, 7),
+      );
+      final openSketch = controller.activeSketch!;
+      await controller.finishSketch();
+      controller.selectRevolveProfile(openSketch.id);
+      controller.selectRevolveAxis(axisId);
+      await controller.previewProfessionalRevolve(
+        angleDegrees: 90,
+        output: RevolveOutput.surface,
+      );
+      expect(
+        (controller.professionalRevolvePreview!['contract'] as Map)['output'],
+        RevolveOutput.surface.name,
+      );
+      controller.cancelProfessionalRevolve();
+
+      await expectLater(
+        controller.previewProfessionalRevolve(
+          angleDegrees: 90,
+          output: RevolveOutput.solid,
+        ),
+        throwsStateError,
+      );
+      expect(controller.professionalRevolvePreview, isNull);
+
+      const invalidAxisId = 'reference:invalid-revolve-axis';
+      await cad.runtime.mutate(
+        command: 'test.invalid-revolve-axis',
+        upsert: [
+          CadDocumentEntity(
+            id: invalidAxisId,
+            kind: CadDocumentEntityKind.reference,
+            data: const {
+              'name': 'Invalid Axis',
+              'sceneKind': 'axis',
+              'sceneGeometry': {
+                'type': 'axis',
+                'origin': [0.0, 0.0, 0.0],
+                'direction': [0.0, 0.0, 0.0],
+              },
+            },
+          ),
+        ],
+      );
+      controller.selectRevolveProfile(closedSketch.id);
+      controller.selectRevolveAxis(invalidAxisId);
+      await expectLater(
+        controller.previewProfessionalRevolve(
+          angleDegrees: 90,
+          output: RevolveOutput.solid,
+        ),
+        throwsStateError,
+      );
+      expect(controller.error, contains('zero axis direction'));
+      expect(controller.professionalRevolvePreview, isNull);
+    },
+  );
+
+  test('construction Sketch line is an analytic Revolve axis', () async {
+    const planeId = 'managed-reference-sketch:world:xy-plane';
+    controller.selectSketchSupport(planeId);
+    await controller.openSketch();
+    await controller.drawRectangle(
+      const SketchVector(2, 2),
+      const SketchVector(5, 6),
+    );
+    final profileId = controller.activeSketch!.id;
+    final line = controller.sketchApi!.builders.line.build(
+      const SketchVector(0, 0),
+      const SketchVector(0, 10),
+    );
+    controller.selectedSketchEntityIds.add(line.id);
+    await controller.convertSelectedLineToConstruction();
+    expect(controller.sketchApi!.entity(line.id)!.construction, isTrue);
+    await controller.finishSketch();
+    expect(
+      controller.revolveAxes.map((entity) => entity.id),
+      contains(line.id),
+    );
+
+    controller.selectRevolveProfile(profileId);
+    controller.beginRevolveViewportCapture(axis: true);
+    expect(controller.captureRevolveViewportEntity(line.id), isTrue);
+    expect(controller.selectedRevolveAxisId, line.id);
+    await controller.previewProfessionalRevolve(
+      angleDegrees: 120,
+      output: RevolveOutput.solid,
+    );
+    final preview = controller.professionalRevolvePreview!;
+    expect((preview['contract'] as Map)['axisEntityId'], line.id);
+    expect((preview['handle'] as Map)['type'], 'solid');
+    controller.cancelProfessionalRevolve();
+    expect(controller.professionalRevolvePreview, isNull);
+  });
+
+  test(
+    'Sketch polyline, interpolated spline and tangent Blend stay transactional',
+    () async {
+      const planeId = 'managed-reference-sketch:world:xy-plane';
+      controller.selectSketchSupport(planeId);
+      await controller.openSketch();
+      controller.beginPolylineCommand();
+      controller.previewPoints = const [
+        SketchVector(0, 0),
+        SketchVector(8, 0),
+        SketchVector(8, 8),
+      ];
+      expect(controller.sketchApi!.engine.entities, isEmpty);
+      await controller.finishSketchCommandFromSecondaryTap();
+      expect(controller.polylineCommandActive, isTrue);
+      expect(controller.previewPoints, isEmpty);
+      expect(
+        controller.sketchApi!.engine.entities.values.whereType<SketchLine>(),
+        hasLength(2),
+      );
+      await controller.undo();
+      expect(controller.sketchApi!.engine.entities, isEmpty);
+      await controller.redo();
+      expect(
+        controller.sketchApi!.engine.entities.values.whereType<SketchLine>(),
+        hasLength(2),
+      );
+
+      controller.beginSplineCommand();
+      controller.previewPoints = const [
+        SketchVector(0, 12),
+        SketchVector(4, 14),
+        SketchVector(8, 12),
+      ];
+      await controller.finishSketchCommandFromSecondaryTap();
+      expect(controller.splineCommandActive, isTrue);
+      expect(controller.previewPoints, isEmpty);
+      final interpolated = controller.sketchApi!.engine.entities.values
+          .whereType<SketchSpline>()
+          .single;
+      expect(interpolated.parameters['interpolation'], 'centripetalCatmullRom');
+
+      final first = controller.sketchApi!.builders.line.build(
+        const SketchVector(12, 0),
+        const SketchVector(18, 0),
+      );
+      final second = controller.sketchApi!.builders.line.build(
+        const SketchVector(22, 4),
+        const SketchVector(22, 10),
+      );
+      controller.beginSketchTangentBlend();
+      controller.selectedSketchEntityIds.addAll([first.id, second.id]);
+      controller.setSketchEditingValue(3);
+      expect(cad.runtime.scene.find('sketch-edit-preview'), isNotNull);
+      expect(
+        controller.sketchApi!.engine.entities.values.whereType<SketchSpline>(),
+        hasLength(1),
+      );
+      controller.finishSketchEditingTool();
+      expect(cad.runtime.scene.find('sketch-edit-preview'), isNull);
+      controller.beginSketchTangentBlend();
+      controller.selectedSketchEntityIds.addAll([first.id, second.id]);
+      controller.setSketchEditingValue(3);
+      await controller.commitSketchCorner();
+      expect(controller.sketchTangentBlendActive, isTrue);
+      expect(controller.selectedSketchEntityIds, isEmpty);
+      final blend = controller.sketchApi!.engine.entities.values
+          .whereType<SketchSpline>()
+          .firstWhere(
+            (entity) => entity.metadata['featureType'] == 'tangentBlend',
+          );
+      expect(blend.metadata['sourceEntityIds'], [first.id, second.id]);
+      expect(blend.parameters['interpolation'], 'cubicBezierG1');
+      expect(controller.sketchApi!.entity(first.id), isNotNull);
+      expect(controller.sketchApi!.entity(second.id), isNotNull);
+      expect(cad.runtime.scene.find('sketch-edit-preview'), isNull);
+      await controller.undo();
+      expect(controller.sketchApi!.entity(blend.id), isNull);
+      await controller.redo();
+      expect(controller.sketchApi!.entity(blend.id), isNotNull);
+      await cad.runtime.save();
+      controller.detachProject();
+      await controller.configureProject(
+        projectId: 'managed-reference-sketch',
+        projectDirectory: project,
+      );
+      expect(
+        controller.sketchApi!.entity(blend.id)?.parameters['interpolation'],
+        'cubicBezierG1',
+      );
+      expect(nativeSceneUnsupportedReason(cad.runtime.scene, style: 0), isNull);
+    },
+  );
+
+  test(
+    'right click cancels incomplete polyline and spline without residue',
+    () async {
+      const planeId = 'managed-reference-sketch:world:xy-plane';
+      controller.selectSketchSupport(planeId);
+      await controller.openSketch();
+      controller.beginPolylineCommand();
+      controller.previewPoints = const [SketchVector(1, 2)];
+      await controller.finishSketchCommandFromSecondaryTap();
+      expect(controller.polylineCommandActive, isTrue);
+      expect(controller.previewPoints, isEmpty);
+      expect(controller.sketchApi!.engine.entities, isEmpty);
+
+      controller.beginSplineCommand();
+      controller.previewPoints = const [SketchVector(1, 2), SketchVector(3, 4)];
+      await controller.finishSketchCommandFromSecondaryTap();
+      expect(controller.splineCommandActive, isTrue);
+      expect(controller.previewPoints, isEmpty);
+      expect(controller.sketchApi!.engine.entities, isEmpty);
+      expect(cad.runtime.scene.find('sketch-spline-preview'), isNull);
+      controller.cancelPendingSketchOperation();
+      expect(controller.splineCommandActive, isFalse);
+      controller.beginLineCommand();
+      controller.previewPoints = const [SketchVector(7, 8)];
+      await controller.finishSketchCommandFromSecondaryTap();
+      expect(controller.lineCommandActive, isTrue);
+      expect(controller.previewPoints, isEmpty);
+      controller.cancelPendingSketchOperation();
+      expect(controller.lineCommandActive, isFalse);
     },
   );
 

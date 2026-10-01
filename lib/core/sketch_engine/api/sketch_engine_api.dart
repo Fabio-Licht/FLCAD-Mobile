@@ -255,7 +255,7 @@ class SketchEngineApi {
       case SketchCircle() || SketchArc() || SketchEllipse():
         point('center');
       case SketchSpline():
-        for (final key in ['points', 'sampledPoints']) {
+        for (final key in ['points', 'sampledPoints', 'bezierControls']) {
           final values = entity.parameters[key];
           if (values is List) {
             entity.parameters[key] = values

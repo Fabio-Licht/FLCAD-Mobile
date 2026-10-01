@@ -41,6 +41,10 @@ class SketchInference {
   final String? referenceEntityId;
 }
 
+/// A project reference direction projected into the active Sketch plane.
+/// It guides the cursor only; no constraint or document entity is created.
+typedef SketchDirectionReference = ({String id, SketchVector direction});
+
 /// Suggests one probable geometric intention. Results are transient and never
 /// create constraints or mutate Sketch entities.
 class SketchInferenceEngine {
@@ -51,6 +55,7 @@ class SketchInferenceEngine {
     required SketchVector cursor,
     required SketchVector? start,
     required Iterable<SketchEntity> entities,
+    Iterable<SketchDirectionReference> referenceDirections = const [],
     SnapCandidate? snap,
     double spatialTolerance = .5,
   }) {
@@ -126,6 +131,26 @@ class SketchInferenceEngine {
           );
         }
       }
+    }
+    for (final reference in referenceDirections) {
+      final direction = reference.direction;
+      final magnitude = math.sqrt(
+        direction.x * direction.x + direction.y * direction.y,
+      );
+      if (!magnitude.isFinite || magnitude <= 1e-9) continue;
+      final referenceAngle = math.atan2(direction.y, direction.x);
+      directionCandidate(
+        SketchInferenceType.parallel,
+        referenceAngle,
+        50,
+        referenceId: reference.id,
+      );
+      directionCandidate(
+        SketchInferenceType.perpendicular,
+        referenceAngle + math.pi / 2,
+        60,
+        referenceId: reference.id,
+      );
     }
     candidates.sort((a, b) => b.score.compareTo(a.score));
     return candidates.firstOrNull;

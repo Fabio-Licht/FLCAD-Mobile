@@ -93,6 +93,36 @@ void main() {
     expect(perpendicular?.type, SketchInferenceType.perpendicular);
   });
 
+  test(
+    'projected reference vector guides parallel and perpendicular lines',
+    () {
+      const reference = (id: 'vector:1', direction: SketchVector(3, 2));
+      final angle = math.atan2(2, 3);
+      final parallel = engine.inferLine(
+        cursor: SketchVector(
+          12 * math.cos(angle + .01),
+          12 * math.sin(angle + .01),
+        ),
+        start: const SketchVector(0, 0),
+        entities: const [],
+        referenceDirections: const [reference],
+      );
+      final perpendicular = engine.inferLine(
+        cursor: SketchVector(
+          12 * math.cos(angle + math.pi / 2 + .01),
+          12 * math.sin(angle + math.pi / 2 + .01),
+        ),
+        start: const SketchVector(0, 0),
+        entities: const [],
+        referenceDirections: const [reference],
+      );
+      expect(parallel?.type, SketchInferenceType.parallel);
+      expect(parallel?.referenceEntityId, 'vector:1');
+      expect(perpendicular?.type, SketchInferenceType.perpendicular);
+      expect(perpendicular?.referenceEntityId, 'vector:1');
+    },
+  );
+
   test('tangent suggests the closest real tangency point', () {
     final circle = SketchCircle(const SketchVector(0, 0), 1, id: 'circle');
     final inference = engine.inferLine(

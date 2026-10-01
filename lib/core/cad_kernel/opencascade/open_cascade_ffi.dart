@@ -160,6 +160,34 @@ typedef _ExtrudeMultiDart =
       Pointer<Utf8>,
       int,
     );
+typedef _RevolveNative =
+    Int32 Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Pointer<Double>,
+      Double,
+      Int32,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+      Pointer<Utf8>,
+      IntPtr,
+    );
+typedef _RevolveDart =
+    int Function(
+      Pointer<Utf8>,
+      Pointer<Double>,
+      Pointer<Double>,
+      double,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+      Pointer<Utf8>,
+      int,
+    );
 typedef _PlaneNative =
     Int32 Function(
       Pointer<Double>,
@@ -777,6 +805,42 @@ class OpenCascadeFFI
           } finally {
             calloc.free(sources);
             calloc.free(vector);
+          }
+        case 'REVOLVE':
+          final inputs = p['inputs'];
+          if (inputs is! List ||
+              inputs.length != 1 ||
+              inputs.single is! String) {
+            throw ArgumentError('REVOLVE requires exactly one profile input.');
+          }
+          final source = (inputs.single as String).toNativeUtf8();
+          final axisOrigin = _nativeVector(
+            _vector(p['axisOrigin'], 'axisOrigin'),
+          );
+          final axisDirection = _nativeVector(
+            _vector(p['axisDirection'], 'axisDirection'),
+          );
+          final fn = library.lookupFunction<_RevolveNative, _RevolveDart>(
+            'flcad_occ_revolve',
+          );
+          try {
+            ok = fn(
+              source,
+              axisOrigin,
+              axisDirection,
+              (p['angleDegrees'] as num).toDouble(),
+              p['output'] == 'surface' ? 0 : 1,
+              b.token,
+              256,
+              b.fingerprint,
+              256,
+              b.error,
+              4096,
+            );
+          } finally {
+            calloc.free(source);
+            calloc.free(axisOrigin);
+            calloc.free(axisDirection);
           }
         case 'GENERATE PLANE':
           ok = _plane(p, b);
